@@ -21,6 +21,24 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v1.0.17 (2026-11-17)
+
+- **[Multi-Agent Memory Engine & Plugin APIs] Added isolated SQLite memory backend and plugin RPC routing**:
+  - Built an isolated per-agent memory storage and full-text retrieval backend in the daemon, supporting cross-turn memory recall, background distillation, and automatic migration from legacy plugin storage.
+  - Enabled plugin RPC and isolated plugin storage endpoints in the daemon so extension panels and custom agent workflows work out of the box.
+- **[WebUI Session Mode & Context UX] Per-session approval mode persistence and instant compaction progress updates**:
+  - Scoped approval mode changes to the active session so switching conversations preserves each session's own permission setting.
+  - Updated the context usage indicator immediately after conversation compaction and refined sidebar spacing and localization labels.
+
+---
+
+- **[多智能体记忆引擎与插件接口] 新增智能体隔离记忆后端与插件 RPC 路由支持**:
+  - 在后台服务中内置多智能体隔离记忆存储与全文检索能力，支持跨轮次记忆注入、后台异步提炼以及旧版插件数据的自动平滑迁移。
+  - 正式启用插件本地数据 RPC 与隔离存储路由接口，让扩展面板与自定义智能体工作流开箱即用。
+- **[WebUI 会话模式与上下文体验] 支持按会话记忆审批模式并即时刷新压缩后上下文占用**:
+  - 支持按当前会话独立保存与切换审批权限模式，切换不同对话时不再互相覆盖。
+  - 优化上下文压缩后的进度条即时刷新反馈，并微调侧边栏列表间距与界面多语言文案。
+
 ## v1.0.16 (2026-11-13)
 
 - **[WebUI Session Opening & Layout Stability] Fixed historical session rendering crash and split-pane duplication**:
