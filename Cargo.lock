@@ -1850,370 +1850,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
-name = "zap"
-version = "1.0.16"
-dependencies = [
- "agent-client-protocol",
- "anyhow",
- "assert_cmd",
- "async-trait",
- "clap",
- "clap_complete",
- "crossterm",
- "ctor",
- "dirs",
- "is-terminal",
- "libc",
- "mimalloc",
- "predicates",
- "reqwest",
- "serde",
- "serde_json",
- "serial_test",
- "sysinfo",
- "tempfile",
- "tokio",
- "toml 0.8.23",
- "toml_edit",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "which",
- "windows-sys 0.61.2",
- "winreg 0.55.0",
- "winresource",
- "zap-auth",
- "zap-capabilities",
- "zap-coding",
- "zap-config",
- "zap-daemon",
- "zap-kernel",
- "zap-telemetry",
- "zap-tuix",
- "zap-updater",
-]
-
-[[package]]
-name = "zap-auth"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "fs2",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "toml 0.8.23",
- "tracing",
- "url",
- "uuid",
- "windows-sys 0.61.2",
- "zap-config",
- "zap-telemetry",
-]
-
-[[package]]
-name = "zap-capabilities"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "base64",
- "bincode",
- "bytes",
- "chardetng",
- "chrono",
- "ctor",
- "dirs",
- "encoding_rs",
- "flate2",
- "fs2",
- "futures",
- "getrandom 0.2.17",
- "globset",
- "grep",
- "httpdate",
- "hyper",
- "ignore",
- "libc",
- "rayon",
- "regex",
- "reqwest",
- "rusqlite",
- "rustls",
- "rustls-native-certs",
- "serde",
- "serde_json",
- "serial_test",
- "sha2",
- "similar",
- "strsim",
- "sysinfo",
- "tar",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "toml 0.8.23",
- "tracing",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-c-sharp",
- "tree-sitter-cpp",
- "tree-sitter-go",
- "tree-sitter-html",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-php",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
- "url",
- "uuid",
- "windows-sys 0.61.2",
- "winreg 0.55.0",
- "wiremock",
- "zap-auth",
- "zap-config",
- "zap-kernel",
- "zeroize",
- "zstd",
-]
-
-[[package]]
-name = "zap-clix"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "futures",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.8.23",
- "zap-capabilities",
- "zap-coding",
- "zap-config",
- "zap-kernel",
- "zap-review",
- "zap-telemetry",
-]
-
-[[package]]
-name = "zap-coding"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "ctor",
- "dirs",
- "futures",
- "serde",
- "serde_json",
- "serde_yaml",
- "serial_test",
- "tempfile",
- "tokio",
- "tokio-util",
- "toml 0.8.23",
- "tracing",
- "uuid",
- "zap-capabilities",
- "zap-config",
- "zap-kernel",
- "zap-review",
- "zap-telemetry",
-]
-
-[[package]]
-name = "zap-config"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "dirs",
- "fs2",
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "toml 0.8.23",
- "toml_edit",
- "url",
- "winreg 0.55.0",
- "zap-telemetry",
-]
-
-[[package]]
-name = "zap-daemon"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "ctor",
- "futures",
- "httpdate",
- "ignore",
- "jsonwebtoken",
- "mime_guess",
- "portable-pty",
- "qrcode",
- "regex",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_json",
- "serial_test",
- "sha2",
- "socket2",
- "sysinfo",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tower",
- "tower-http 0.5.2",
- "tracing",
- "uuid",
- "windows",
- "windows-sys 0.61.2",
- "winreg 0.55.0",
- "zap-auth",
- "zap-capabilities",
- "zap-coding",
- "zap-config",
- "zap-kernel",
- "zap-telemetry",
- "zap-updater",
-]
-
-[[package]]
-name = "zap-kernel"
-version = "1.0.16"
-dependencies = [
- "async-trait",
- "futures",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "uuid",
- "zap-config",
-]
-
-[[package]]
-name = "zap-review"
-version = "1.0.16"
-dependencies = [
- "async-trait",
- "futures",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "zap-capabilities",
- "zap-kernel",
-]
-
-[[package]]
-name = "zap-telemetry"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs",
- "flate2",
- "futures",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "wiremock",
-]
-
-[[package]]
-name = "zap-tuix"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "arboard",
- "base64",
- "chrono",
- "clipboard-win",
- "crossterm",
- "ctor",
- "dirs",
- "futures",
- "ignore",
- "image",
- "libc",
- "objc2-app-kit",
- "objc2-foundation",
- "png 0.17.16",
- "qrcode",
- "rand 0.8.7",
- "reqwest",
- "serde",
- "serde_json",
- "serial_test",
- "sha2",
- "tempfile",
- "tokio",
- "tokio-util",
- "toml 0.8.23",
- "unicode-segmentation",
- "unicode-width",
- "urlencoding",
- "uuid",
- "vte",
- "zap-auth",
- "zap-capabilities",
- "zap-coding",
- "zap-config",
- "zap-daemon",
- "zap-kernel",
- "zap-telemetry",
- "zap-updater",
- "zeroize",
-]
-
-[[package]]
-name = "zap-updater"
-version = "1.0.16"
-dependencies = [
- "anyhow",
- "chrono",
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "serial_test",
- "sha2",
- "tempfile",
- "tokio",
- "winreg 0.55.0",
- "wiremock",
- "zap-config",
-]
-
-[[package]]
 name = "jobserver"
 version = "0.1.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5236,6 +4872,372 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
+]
+
+[[package]]
+name = "zap"
+version = "1.0.16"
+dependencies = [
+ "agent-client-protocol",
+ "anyhow",
+ "assert_cmd",
+ "async-trait",
+ "clap",
+ "clap_complete",
+ "crossterm",
+ "ctor",
+ "dirs",
+ "is-terminal",
+ "libc",
+ "mimalloc",
+ "predicates",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "toml_edit",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "which",
+ "windows-sys 0.61.2",
+ "winreg 0.55.0",
+ "winresource",
+ "zap-auth",
+ "zap-capabilities",
+ "zap-coding",
+ "zap-config",
+ "zap-daemon",
+ "zap-kernel",
+ "zap-telemetry",
+ "zap-tuix",
+ "zap-updater",
+]
+
+[[package]]
+name = "zap-auth"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "toml 0.8.23",
+ "tracing",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+ "zap-config",
+ "zap-telemetry",
+]
+
+[[package]]
+name = "zap-capabilities"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "base64",
+ "bincode",
+ "bytes",
+ "chardetng",
+ "chrono",
+ "ctor",
+ "dirs",
+ "encoding_rs",
+ "flate2",
+ "fs2",
+ "futures",
+ "getrandom 0.2.17",
+ "globset",
+ "grep",
+ "httpdate",
+ "hyper",
+ "ignore",
+ "libc",
+ "rayon",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2",
+ "similar",
+ "strsim",
+ "sysinfo",
+ "tar",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+ "winreg 0.55.0",
+ "wiremock",
+ "zap-auth",
+ "zap-config",
+ "zap-kernel",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "zap-clix"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "zap-capabilities",
+ "zap-coding",
+ "zap-config",
+ "zap-kernel",
+ "zap-review",
+ "zap-telemetry",
+]
+
+[[package]]
+name = "zap-coding"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "ctor",
+ "dirs",
+ "futures",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "serial_test",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "uuid",
+ "zap-capabilities",
+ "zap-config",
+ "zap-kernel",
+ "zap-review",
+ "zap-telemetry",
+]
+
+[[package]]
+name = "zap-config"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "fs2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml 0.8.23",
+ "toml_edit",
+ "url",
+ "winreg 0.55.0",
+ "zap-telemetry",
+]
+
+[[package]]
+name = "zap-daemon"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "ctor",
+ "futures",
+ "httpdate",
+ "ignore",
+ "jsonwebtoken",
+ "mime_guess",
+ "portable-pty",
+ "qrcode",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2",
+ "socket2",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tower-http 0.5.2",
+ "tracing",
+ "uuid",
+ "windows",
+ "windows-sys 0.61.2",
+ "winreg 0.55.0",
+ "zap-auth",
+ "zap-capabilities",
+ "zap-coding",
+ "zap-config",
+ "zap-kernel",
+ "zap-telemetry",
+ "zap-updater",
+]
+
+[[package]]
+name = "zap-kernel"
+version = "1.0.16"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "zap-config",
+]
+
+[[package]]
+name = "zap-review"
+version = "1.0.16"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "zap-capabilities",
+ "zap-kernel",
+]
+
+[[package]]
+name = "zap-telemetry"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "flate2",
+ "futures",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "zap-tuix"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "base64",
+ "chrono",
+ "clipboard-win",
+ "crossterm",
+ "ctor",
+ "dirs",
+ "futures",
+ "ignore",
+ "image",
+ "libc",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "png 0.17.16",
+ "qrcode",
+ "rand 0.8.7",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "unicode-segmentation",
+ "unicode-width",
+ "urlencoding",
+ "uuid",
+ "vte",
+ "zap-auth",
+ "zap-capabilities",
+ "zap-coding",
+ "zap-config",
+ "zap-daemon",
+ "zap-kernel",
+ "zap-telemetry",
+ "zap-updater",
+ "zeroize",
+]
+
+[[package]]
+name = "zap-updater"
+version = "1.0.16"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "winreg 0.55.0",
+ "wiremock",
+ "zap-config",
 ]
 
 [[package]]

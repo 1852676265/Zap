@@ -730,6 +730,10 @@ type SessionTokenSnapshot = {
   cacheState: TokenCacheState;
   /** True when the snapshot came from provider telemetry or persisted server usage. */
   authoritative: boolean;
+  /** Set by a committed compaction until the next REAL usage frame. A persisted
+   *  turn stat can still report the pre-compaction size; this lets the smaller,
+   *  newer compaction value win instead of snapping the meter back. */
+  compacted?: boolean;
 };
 
 /** Build a displayable data URL from an ImageData. */
@@ -1219,6 +1223,8 @@ export function Chat({
   // True for the entire duration of a /compact postCommand await so sendMessage
   // can refuse to fire while the session .json is being rewritten on disk.
   const compactingRef = useRef(false);
+  /** /compact 期间的“正在压缩…”临时占位行：提交、无需压缩或失败后立即撤回。 */
+  const compactPendingNoteRef = useRef<Message | null>(null);
   // AI 执行中输入的消息排队于此，待当前回合 done 后依次自动发送（对齐 VSCode 插件）。
   // 初始化即从硬盘（localStorage）中水合恢复当前会话的队列消息（含未消费的转向消息），
   // 杜绝刷新页面时卡片瞬间丢失。
@@ -1390,10 +1396,14 @@ export function Chat({
 
   const saveTokenSnapshot = (sid: string, authoritative = tokensAuthoritativeRef.current) => {
     if (!tokensRef.current) return;
+    const prev = tokenUsageCacheRef.current.get(sid);
     tokenUsageCacheRef.current.set(sid, {
       tokens: { ...tokensRef.current },
       cacheState: { ...tokenCacheRef.current },
       authoritative,
+      // 真实 usage 入场才清除压缩标记；本地估算必须保留，否则压缩后的低值
+      // 会在下一次 tokens effect 里被自己抹掉。
+      ...(authoritative ? { compacted: false } : prev?.compacted ? { compacted: true } : {}),
     });
   };
 
@@ -1441,6 +1451,14 @@ export function Chat({
     const mem = tokenUsageCacheRef.current.get(sid);
     const running = sessionTokensRunning(sid);
 
+    // A just-committed compaction is NEWER than the persisted turn stat, which
+    // still describes the pre-compaction context. Never let that stale (larger)
+    // number snap the footer back; the next real usage frame replaces this.
+    if (mem?.compacted && serverUsage && serverUsage.total > (mem.tokens.total ?? 0)) {
+      applyTokenUsage(mem.tokens, mem.cacheState, false);
+      return;
+    }
+
     if (serverUsage && (serverUsage.prompt > 0 || serverUsage.total > 0)) {
       // Persisted turn stats are the idle baseline. During an active turn only
       // prefer in-memory telemetry when it is authoritative and ahead of disk.
@@ -1460,7 +1478,7 @@ export function Chat({
       }
     }
 
-    if (mem && (running || mem.authoritative)) {
+    if (mem && (running || mem.authoritative || mem.compacted)) {
       applyTokenUsage(mem.tokens, mem.cacheState, mem.authoritative);
       return;
     }
@@ -2019,12 +2037,7 @@ export function Chat({
           return;
         }
         if (pending.permission) {
-          const auto =
-            nativeModeRef.current === 'bypass' || modeState.confirmedMode === 'bypass';
-          if (
-            !auto
-            && !transcriptToolCallIsResolved(messagesRef.current, pending.permission.call_id)
-          ) {
+          if (!transcriptToolCallIsResolved(messagesRef.current, pending.permission.call_id)) {
             updateToolInLastAssistant(pending.permission.call_id, {
               status: 'waiting_approval',
             });
@@ -3524,13 +3537,15 @@ export function Chat({
           const origin = sessionResult.value.origin;
           protocolSessionRef.current = origin === 'protocol';
           if (!modeState.pendingMode) {
-            setModeState(
-              initModeState(
-                origin === 'protocol'
-                  ? modeForSessionOrigin(origin)
-                  : nativeModeRef.current,
-              ),
-            );
+            const sessionApproval = sessionResult.value.approval_mode ?? undefined;
+            if (origin === 'protocol') {
+              setModeState(initModeState(modeForSessionOrigin(origin)));
+            } else if (sessionApproval) {
+              nativeModeRef.current = sessionApproval;
+              setModeState(initModeState(sessionApproval));
+            } else {
+              setModeState(initModeState(nativeModeRef.current));
+            }
           }
         } else if (!isLiveSession) {
           // Draft / brand-new empty sessions 404 on disk until first persist —
@@ -3760,7 +3775,8 @@ export function Chat({
 
   useEffect(() => {
     let cancelled = false;
-    getApprovalMode()
+    const currentSid = activeIdRef.current ?? sessionId;
+    getApprovalMode(currentSid)
       .then((current) => {
         if (cancelled || protocolSessionRef.current) return;
         nativeModeRef.current = current;
@@ -3768,8 +3784,9 @@ export function Chat({
       })
       .catch(() => {});
 
-    const applyIncomingMode = (nextMode: ApprovalMode) => {
+    const applyIncomingMode = (nextMode: ApprovalMode, targetSid?: string | null) => {
       if (cancelled || protocolSessionRef.current) return;
+      if (targetSid && activeIdRef.current && targetSid !== activeIdRef.current) return;
       setModeState((cur) => {
         if (cur.pendingMode || cur.confirmedMode === nextMode) return cur;
         nativeModeRef.current = nextMode;
@@ -3782,8 +3799,12 @@ export function Chat({
     };
 
     const handleCustomEvent = (e: Event) => {
-      const mode = (e as CustomEvent<ApprovalMode>).detail;
-      if (mode) applyIncomingMode(mode);
+      const detail = (e as CustomEvent<ApprovalMode | { mode?: ApprovalMode; sessionId?: string | null }>).detail;
+      if (typeof detail === 'string') {
+        applyIncomingMode(detail);
+      } else if (detail && detail.mode) {
+        applyIncomingMode(detail.mode, detail.sessionId);
+      }
     };
 
     window.addEventListener('jeikcode:approval_mode_changed', handleCustomEvent);
@@ -3794,7 +3815,7 @@ export function Chat({
         bc = new BroadcastChannel('jeikcode_approval_mode');
         bc.onmessage = (ev) => {
           if (ev.data?.type === 'mode' && ev.data.mode) {
-            applyIncomingMode(ev.data.mode);
+            applyIncomingMode(ev.data.mode, ev.data.sessionId);
           }
         };
       }
@@ -3813,7 +3834,7 @@ export function Chat({
         Date.now() - pageHiddenSinceRef.current >= WATCH_REATTACH_AFTER_HIDDEN_MS;
       pageHiddenSinceRef.current = null;
       {
-        getApprovalMode()
+        getApprovalMode(activeIdRef.current ?? sessionId)
           .then((current) => {
             if (!cancelled) applyIncomingMode(current);
           })
@@ -4178,6 +4199,14 @@ export function Chat({
       }
       return [...prev, note];
     });
+  }
+
+  /** 压缩提交、无需压缩或失败后撤回临时的“正在压缩…”占位行。 */
+  function retireCompactPendingNotice() {
+    const note = compactPendingNoteRef.current;
+    if (!note) return;
+    compactPendingNoteRef.current = null;
+    setMessages((prev) => (prev.includes(note) ? prev.filter((m) => m !== note) : prev));
   }
 
   const slashCommandMap = useMemo(() => buildCommandMap(FRONTEND_COMMANDS), []);
@@ -5333,7 +5362,7 @@ export function Chat({
       setLivePending(null);
       onPermissionResolved?.(null);
     }
-    void postLiveMode(m)
+    void postLiveMode(m, activeIdRef.current ?? sessionId)
       .then((confirmed) => {
         setModeState((cur) => completeModeSwitch(cur, confirmed));
         onConfirmed?.(confirmed);
@@ -5501,15 +5530,23 @@ export function Chat({
                 parts: [{ kind: 'notice', text: t('cmd.compact.pending') }],
                 ts: Date.now(),
               };
+              compactPendingNoteRef.current = pendingNote;
               setMessages((prev) => [...prev, pendingNote]);
               // Gate sendMessage while the dispatch is in flight, mirroring the
               // non-sync path (compactingRef guards the submit handler).
               compactingRef.current = true;
+              // Same immediate "Compacting..." indication as a passive/auto pass.
+              setIsCompacting(true);
               try {
                 const { accepted } = await postLiveCompact();
-                if (!accepted) pushCommandNotice(t('cmd.compact.syncNoRuntime'));
+                if (!accepted) {
+                  setIsCompacting(false);
+                  retireCompactPendingNotice();
+                  pushCommandNotice(t('cmd.compact.syncNoRuntime'));
+                }
               } catch (e) {
-                setMessages((prev) => prev.filter((m) => m !== pendingNote));
+                setIsCompacting(false);
+                retireCompactPendingNotice();
                 pushCommandNotice(t('chat.connError', { msg: e instanceof Error ? e.message : String(e) }));
               } finally {
                 compactingRef.current = false;
@@ -5520,9 +5557,19 @@ export function Chat({
             return;
           }
         }
-        if (command === 'compact') pushCommandNotice(t('cmd.compact.pending'));
         const isCompact = command === 'compact';
-        if (isCompact) compactingRef.current = true;
+        if (isCompact) {
+          const pendingNote: Message = {
+            role: 'system',
+            parts: [{ kind: 'notice', text: t('cmd.compact.pending') }],
+            ts: Date.now(),
+          };
+          compactPendingNoteRef.current = pendingNote;
+          setMessages((prev) => [...prev, pendingNote]);
+          compactingRef.current = true;
+          // Immediate "Compacting..." indication, identical to a passive/auto pass.
+          setIsCompacting(true);
+        }
         try {
           let res: CommandResult;
           try {
@@ -5535,10 +5582,21 @@ export function Chat({
               provider: provider ?? undefined,
             });
           } catch (e) {
+            if (isCompact) {
+              setIsCompacting(false);
+              retireCompactPendingNotice();
+            }
             pushCommandNotice(t('chat.connError', { msg: e instanceof Error ? e.message : String(e) }));
             return;
           }
-          if (res.kind === 'error') { pushCommandNotice(res.message); return; }
+          if (res.kind === 'error') {
+            if (isCompact) {
+              setIsCompacting(false);
+              retireCompactPendingNotice();
+            }
+            pushCommandNotice(res.message);
+            return;
+          }
           if (res.kind === 'undo') {
             if (res.undone > 0 && sessionId) await reloadSessionTranscript(sessionId);
             pushCommandNotice(res.undone > 0 ? t('cmd.undo.done', { n: res.undone }) : t('cmd.undo.none'));
@@ -5552,11 +5610,30 @@ export function Chat({
             return;
           }
           if (res.kind === 'compact') {
+            setIsCompacting(false);
+            retireCompactPendingNotice();
             if (res.applied) {
               if (sessionId) await reloadSessionTranscript(sessionId);
               pushCommandNotice(t('cmd.compact.done', { n: res.removed_messages, before: res.before_tokens, after: res.after_tokens }));
-              tokenCacheRef.current = resetTokenCacheState(res.after_tokens);
-              setTokens({ prompt: res.after_tokens, completion: 0, total: res.after_tokens, cached: 0, cached_estimated: false });
+              const prompt = Math.max(0, res.after_tokens);
+              const compactCacheState = resetTokenCacheState(prompt);
+              const compactedTokens: TokenUsage = {
+                prompt,
+                completion: 0,
+                total: prompt,
+                cached: 0,
+                cached_estimated: false,
+                reasoning: 0,
+              };
+              applyTokenUsage(compactedTokens, compactCacheState, false);
+              if (sessionId) {
+                tokenUsageCacheRef.current.set(sessionId, {
+                  tokens: compactedTokens,
+                  cacheState: compactCacheState,
+                  authoritative: false,
+                  compacted: true,
+                });
+              }
             } else {
               pushCommandNotice(t('cmd.compact.none'));
             }
@@ -5594,7 +5671,13 @@ export function Chat({
             return;
           }
         } finally {
-          if (isCompact) compactingRef.current = false;
+          if (isCompact) {
+            compactingRef.current = false;
+            // The non-live `/command compact` response is returned only after the
+            // compaction committed/no-oped, so the pass is over by now.
+            setIsCompacting(false);
+            retireCompactPendingNotice();
+          }
         }
       },
       initProject: () => {
@@ -5766,6 +5849,31 @@ export function Chat({
   function applyEventToSessionCache(targetSid: string, event: SSEEvent) {
     if (event.type === 'steered') {
       foldSteeredInputs(event.inputs ?? [], event.client_input_ids, targetSid);
+      return;
+    }
+    if (event.type === 'context_compacted') {
+      // No usage event follows a compaction: refresh the background session's
+      // cached context meter immediately so switching back never shows the
+      // pre-compaction number.
+      const prompt = Math.max(0, event.tokens);
+      tokenUsageCacheRef.current.set(targetSid, {
+        tokens: {
+          prompt,
+          completion: 0,
+          total: prompt,
+          cached: 0,
+          cached_estimated: false,
+          reasoning: 0,
+        },
+        cacheState: {
+          lastPrompt: prompt,
+          providerReportsCache: false,
+          turnPromptSum: prompt,
+          turnCachedSum: 0,
+        },
+        authoritative: false,
+        compacted: true,
+      });
       return;
     }
     const msgs = messageCacheRef.current.get(targetSid);
@@ -6472,14 +6580,10 @@ export function Chat({
       }
 
       case 'permission_request':
-        // Always mark the tool row; restore the modal unless a pure observer
-        // explicitly opts out (reattach/watch must NOT pass observerOnly — that
-        // previously deadlocked Build turns after refresh).
-        if (
-          nativeModeRef.current === 'bypass'
-          || modeState.confirmedMode === 'bypass'
-          || transcriptToolCallIsResolved(messagesRef.current, event.call_id)
-        ) {
+        // Always mark the tool row and show the modal if this call is not yet resolved
+        // in transcript. Never silently drop an active backend permission_request based on
+        // optimistic client mode, or mode desync deadlocks the turn with no visible card.
+        if (transcriptToolCallIsResolved(messagesRef.current, event.call_id)) {
           break;
         }
         updateToolInLastAssistant(event.call_id, {
@@ -6662,6 +6766,8 @@ export function Chat({
 
       case 'error':
         closeOpenArtifactFence();
+        setIsCompacting(false);
+        retireCompactPendingNotice();
         appendToLastAssistant('\n\n' + t('chat.error', { msg: event.message }));
         transitionChatRecovery({ type: 'authoritative_terminal' });
         if (activeIdRef.current) {
@@ -6678,14 +6784,84 @@ export function Chat({
         setUserInputReq(null);
         break;
 
-      case 'warning':
+      case 'warning': {
         // 非致命提示（如"已自动压缩上下文"）：渲染成淡色 notice 行 —— 不染红、不并进
         // 回复文本、不结束回合（任务继续）。对齐 TUI 的黄色 "!" 提示。
         if (isIgnoredChatNotice(event.message)) {
           break;
         }
         pushNoticeToLastAssistant(t('chat.warning', { msg: event.message }), event.message_id);
+        // /live path: a compaction notice carries the post-compaction token count.
+        if (typeof event.tokens_after === 'number') {
+          retireCompactPendingNotice();
+          const prompt = Math.max(0, event.tokens_after);
+          const cacheState = {
+            lastPrompt: prompt,
+            providerReportsCache: false,
+            turnPromptSum: prompt,
+            turnCachedSum: 0,
+          };
+          applyTokenUsage(
+            { prompt, completion: 0, total: prompt, cached: 0, cached_estimated: false, reasoning: 0 },
+            cacheState,
+            false,
+          );
+          if (activeIdRef.current) {
+            tokenUsageCacheRef.current.set(activeIdRef.current, {
+              tokens: {
+                prompt,
+                completion: 0,
+                total: prompt,
+                cached: 0,
+                cached_estimated: false,
+                reasoning: 0,
+              },
+              cacheState,
+              authoritative: false,
+              compacted: true,
+            });
+          }
+          setIsCompacting(false);
+        }
         break;
+      }
+
+      case 'context_compacted': {
+        // Compaction changed the context WITHOUT a usage frame: update the footer
+        // meter right away instead of waiting for the next model response.
+        retireCompactPendingNotice();
+        const prompt = Math.max(0, event.tokens);
+        const cacheState = {
+          lastPrompt: prompt,
+          providerReportsCache: false,
+          turnPromptSum: prompt,
+          turnCachedSum: 0,
+        };
+        applyTokenUsage(
+          { prompt, completion: 0, total: prompt, cached: 0, cached_estimated: false, reasoning: 0 },
+          cacheState,
+          false,
+        );
+        if (activeIdRef.current) {
+          tokenUsageCacheRef.current.set(activeIdRef.current, {
+            tokens: {
+              prompt,
+              completion: 0,
+              total: prompt,
+              cached: 0,
+              cached_estimated: false,
+              reasoning: 0,
+            },
+            cacheState,
+            authoritative: false,
+            compacted: true,
+          });
+        }
+        // The daemon also sends SessionStatus("running"), but clear here too so a
+        // dropped status frame can never leave the shimmer stuck on "Compacting...".
+        setIsCompacting(false);
+        break;
+      }
 
       case 'persistence_warning':
         setPersistenceWarning(event.message);
@@ -9033,9 +9209,9 @@ export function Chat({
                         {contextLimit && (
                           <div class="token-popover-progress-box">
                             <div class="token-popover-progress-labels">
-                              <span class="token-popover-progress-title">{t('tokens.budgetTitle')}</span>
+                              <span class="token-popover-progress-title">{t('tokens.contextProgressTitle')}</span>
                               <span class="token-popover-progress-val">
-                                {totalStr} / {limitStr} ({pctOfLimit}%)
+                                {totalStr} / {limitStr}
                               </span>
                             </div>
                             <div class="token-popover-progress-track">
@@ -9051,8 +9227,28 @@ export function Chat({
                                       : 'var(--app-brand-accent, #10a37f)',
                                 }}
                               />
+                              <span class="token-popover-progress-pct">{pctOfLimit}%</span>
                             </div>
                           </div>
+                        )}
+
+                        {sessionId && (
+                          <button
+                            type="button"
+                            class="token-popover-compact"
+                            disabled={busy || isCompacting}
+                            title={busy ? t('cmd.session.busy') : t('tokens.compactAction')}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // Same path as the `/compact` slash command: the HIGH-QUALITY
+                              // compaction (recent window kept verbatim + anchored LLM
+                              // summary + verbatim artifact archive), not the cheap stub.
+                              void slashHandlers.execServerCommand('compact', '');
+                            }}
+                          >
+                            <span class="token-compact-icon" aria-hidden="true">🗜️</span>
+                            <span>{t('tokens.compactAction')}</span>
+                          </button>
                         )}
 
                         <div class="token-popover-grid">
@@ -9111,16 +9307,17 @@ export function Chat({
                             </div>
                           </div>
 
-                          <div class="token-popover-row is-total">
-                            <div class="token-popover-row-left">
-                              <span class="token-row-icon">🎯</span>
-                              <span class="token-row-label">{t('tokens.totalContext')}</span>
+                          {!contextLimit && (
+                            <div class="token-popover-row is-total">
+                              <div class="token-popover-row-left">
+                                <span class="token-row-icon">🎯</span>
+                                <span class="token-row-label">{t('tokens.totalContext')}</span>
+                              </div>
+                              <span class="token-popover-row-val">
+                                {totalStr}
+                              </span>
                             </div>
-                            <span class="token-popover-row-val">
-                              {totalStr}
-                              {contextLimit ? ` / ${limitStr}` : ''}
-                            </span>
-                          </div>
+                          )}
 
                           <div class="token-popover-row is-billable">
                             <div class="token-popover-row-left">
@@ -9778,6 +9975,15 @@ export function Chat({
             );
           });
         })()}
+
+        {/* Compaction in flight before the turn's assistant bubble exists (task-boundary
+            or auto pass): render the SAME shimmer status as Working..., English-only,
+            so the user never sees "Working..." while a compaction is running. */}
+        {isCompacting && !busy && (
+          <div class="compacting-status" role="status" aria-live="polite">
+            <span class="codex-shimmer-status">Compacting...</span>
+          </div>
+        )}
 
         {/* 排队中的消息：执行中输入、待当前回合结束后自动发送，卡片下方提供立即发送、转向、取消按钮。 */}
         {queued.map((q) => (

@@ -12,14 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
 use zap_capabilities::mcp::McpRegistry;
 use zap_capabilities::tools::PermissionDecision;
 use zap_coding::runtime::{CodingRuntimeEvent, CompactionCompletion};
 use zap_config::config::Config;
 use zap_kernel::message::{ImageContent, Message as KernelMessage, SessionSnapshot};
 use zap_telemetry::Telemetry;
-use tokio::sync::{broadcast, mpsc, Mutex};
-use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
 use std::sync::OnceLock;
@@ -612,12 +612,11 @@ pub fn live_set_mode_for_session(session_id: Option<&str>, mode: ApprovalMode) {
     if let Some(sid) = target {
         let sid = sid.trim();
         if let Ok(Some(resolved)) = crate::resolve_session_by_id(sid) {
-            let _ = zap_capabilities::session::SessionManager::for_project(
-                &resolved.meta.working_dir,
-            )
-            .update_meta(sid, |meta| {
-                meta.approval_mode = Some(mode.wire().to_string());
-            });
+            let _ =
+                zap_capabilities::session::SessionManager::for_project(&resolved.meta.working_dir)
+                    .update_meta(sid, |meta| {
+                        meta.approval_mode = Some(mode.wire().to_string());
+                    });
         }
     }
     if let Ok(binding) = crate::native_live::binding() {
@@ -626,6 +625,11 @@ pub fn live_set_mode_for_session(session_id: Option<&str>, mode: ApprovalMode) {
             None => true,
         };
         if affects_binding {
+            // 无 session_id 的兼容调用切到了当前活跃 binding 时，同步更新其会话缓存，
+            // 防止 runtime 已切模式而 SESSION_APPROVAL_MODES 仍保留旧值导致下轮回退。
+            if target.is_none() && !live_global_mode_enabled() {
+                live_set_session_approval_mode(Some(&binding.session_id), mode);
+            }
             let _ = crate::native_live::publish_unsequenced(
                 &binding,
                 zap_coding::CodingRuntimeEvent::ModeChanged {
@@ -910,9 +914,8 @@ pub(crate) fn chat_runtime_config(
         // WebUI/daemon projection is intentionally deferred; avoid a hidden
         // auxiliary model request until that driver renders the suggestion.
         next_prompt_suggestions: false,
-        pricing: p.and_then(|provider| {
-            zap_coding::resolve_provider_pricing(provider_name, provider)
-        }),
+        pricing: p
+            .and_then(|provider| zap_coding::resolve_provider_pricing(provider_name, provider)),
         supports_vision: p.map(|provider| provider.accepts_images()).unwrap_or(false),
         extra_system_append: None,
         session_display_name: None,
@@ -1442,9 +1445,10 @@ pub(crate) async fn run_chat_turn_v2(
         };
         match ev {
             event @ CodingRuntimeEvent::Agent(_) => {
-                if let CodingRuntimeEvent::Agent(
-                    zap_kernel::event::AgentEvent::Steered { count, .. },
-                ) = &event
+                if let CodingRuntimeEvent::Agent(zap_kernel::event::AgentEvent::Steered {
+                    count,
+                    ..
+                }) = &event
                 {
                     let n = *count;
                     let _ = unfolded_steers.fetch_update(
@@ -1453,9 +1457,9 @@ pub(crate) async fn run_chat_turn_v2(
                         |cur| Some(cur.saturating_sub(n)),
                     );
                 }
-                if let CodingRuntimeEvent::Agent(
-                    zap_kernel::event::AgentEvent::ToolStarted { call },
-                ) = &event
+                if let CodingRuntimeEvent::Agent(zap_kernel::event::AgentEvent::ToolStarted {
+                    call,
+                }) = &event
                 {
                     if let Some(tool_name) = persist_after_start.remove(&call.id) {
                         persist_chat_mcp_approval(
@@ -1479,9 +1483,8 @@ pub(crate) async fn run_chat_turn_v2(
                     let _ = handle.respond(request.id, serde_json::Value::Null).await;
                     continue;
                 }
-                let manager = zap_capabilities::session::SessionManager::for_project(
-                    &coding_cfg.working_dir,
-                );
+                let manager =
+                    zap_capabilities::session::SessionManager::for_project(&coding_cfg.working_dir);
                 let pending = manager
                     .load_pending_permission(&session_id)
                     .ok()
@@ -1498,8 +1501,7 @@ pub(crate) async fn run_chat_turn_v2(
                     let _ = handle.respond(request.id, serde_json::Value::Null).await;
                     continue;
                 };
-                let approval_id =
-                    crate::permission_bridge::approval_id_for_pending(&pending);
+                let approval_id = crate::permission_bridge::approval_id_for_pending(&pending);
                 tracing::warn!(
                     has_interactive_responder = permission_responders.is_some(),
                     approval_mode = ?approval_mode,
@@ -1576,10 +1578,13 @@ pub(crate) async fn run_chat_turn_v2(
                                                 let submission = envelope.submission();
                                                 accepted_envelope = Some(envelope);
                                                 if session_mode() == ApprovalMode::Auto {
-                                                    let _ = handle.set_mode(zap_coding::RuntimeMode::Auto).await;
+                                                    let _ = handle
+                                                        .set_mode(zap_coding::RuntimeMode::Auto)
+                                                        .await;
                                                 }
                                                 let persist = submission.persist
-                                                    && submission.decision == PermissionDecision::AllowAlways;
+                                                    && submission.decision
+                                                        == PermissionDecision::AllowAlways;
                                                 break (submission.decision, persist);
                                             }
                                             ChatPermissionWaitOutcome::TimedOut => {
@@ -1596,7 +1601,9 @@ pub(crate) async fn run_chat_turn_v2(
                                     }
                                     ChatPermissionDriverEvent::ModePoll => {
                                         if session_mode() == ApprovalMode::Auto {
-                                            let _ = handle.set_mode(zap_coding::RuntimeMode::Auto).await;
+                                            let _ = handle
+                                                .set_mode(zap_coding::RuntimeMode::Auto)
+                                                .await;
                                             responders.unregister(&session_id, &approval_id);
                                             break (PermissionDecision::AllowOnce, false);
                                         }
@@ -1772,14 +1779,15 @@ pub(crate) async fn run_chat_turn_v2(
                 ) {
                     Ok(applied) => applied,
                     Err(error) => {
-                        let _ = runtime_event_tx.send(CodingRuntimeEvent::ControllerWarning(format!(
-                            "session naming failed: {error}"
-                        )));
+                        let _ = runtime_event_tx.send(CodingRuntimeEvent::ControllerWarning(
+                            format!("session naming failed: {error}"),
+                        ));
                         false
                     }
                 };
                 if applied {
-                    let _ = runtime_event_tx.send(CodingRuntimeEvent::SessionNameSuggested { name });
+                    let _ =
+                        runtime_event_tx.send(CodingRuntimeEvent::SessionNameSuggested { name });
                 }
             }
             CodingRuntimeEvent::SessionTitleSeeded { name } => {
@@ -1799,6 +1807,12 @@ pub(crate) async fn run_chat_turn_v2(
         }
     };
     if let Some(terminal) = final_messages {
+        crate::neural_memory::maybe_capture_turn_from_snapshot(
+            &session_id,
+            &runtime_working_dir,
+            &terminal.snapshot.messages,
+            &coding_cfg.provider_name,
+        );
         let mut c = conv.lock().await;
         install_authoritative_terminal_snapshot(&mut c, terminal.snapshot, &turn_base);
     }
@@ -2196,8 +2210,7 @@ impl NativeLiveWireProjector {
                 anchor_message_id,
             },
             crate::live_hub::LiveViewEvent::RequestResolved { request_id, kind } => {
-                if kind == zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND
-                {
+                if kind == zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND {
                     LiveWireEvent::UserInputResolved { request_id }
                 } else {
                     return None;
@@ -2423,13 +2436,11 @@ impl NativeLiveWireProjector {
             crate::live_hub::LiveViewEvent::Runtime(Runtime::TurnFinished(completion)) => {
                 self.tools.clear();
                 match completion {
-                    zap_coding::TurnCompletion::Completed { reason, .. } => {
-                        LiveWireEvent::State {
-                            running: false,
-                            stop_reason: Some(crate::stop_reason_wire(reason).to_string()),
-                            message: None,
-                        }
-                    }
+                    zap_coding::TurnCompletion::Completed { reason, .. } => LiveWireEvent::State {
+                        running: false,
+                        stop_reason: Some(crate::stop_reason_wire(reason).to_string()),
+                        message: None,
+                    },
                     zap_coding::TurnCompletion::SnapshotUnavailable { error, .. } => {
                         LiveWireEvent::State {
                             running: false,
@@ -2861,8 +2872,7 @@ fn live_stream_from_hub_join(mut join: crate::live_hub::LiveJoin) -> axum::respo
     let mut snapshot = (*join.snapshot).clone();
     // `/live` is another resume entrypoint: overlay any per-token checkpoint from
     // a crashed `/chat` turn before handing the snapshot to the runtime.
-    if let Some(partial) =
-        zap_capabilities::session::partial::load_global(&join.binding.session_id)
+    if let Some(partial) = zap_capabilities::session::partial::load_global(&join.binding.session_id)
     {
         let _ = crate::overlay_partial_stream(&mut snapshot.messages, &partial);
     }
@@ -3014,9 +3024,7 @@ pub(crate) async fn preprocess_image_caption(
     message: &str,
     images: &[ImageContent],
 ) -> String {
-    use zap_coding::vision::{
-        run_vl_caption, should_skip, vl_model_display, PreprocessOutcome,
-    };
+    use zap_coding::vision::{run_vl_caption, should_skip, vl_model_display, PreprocessOutcome};
     // Short-circuit: no images, or the main model already accepts images.
     // Prefer the resolved selection's config/protocol flag over model-name guessing.
     let supports_vision = config
@@ -3211,8 +3219,7 @@ pub(crate) async fn live_message(
             } else {
                 live_current_working_dir(&working_dir)
             };
-            let registry =
-                zap_coding::session_runtime_registry::SessionRuntimeRegistry::global();
+            let registry = zap_coding::session_runtime_registry::SessionRuntimeRegistry::global();
             if registry.handle(&session_id).is_none() {
                 if let Err(error) = crate::native_live::ensure_registry_runner(
                     wd.clone(),
@@ -3276,11 +3283,15 @@ pub(crate) async fn live_message(
                             }
                             _ => {}
                         }
-                        let runtime_config = live_runtime_config(
+                        let mut runtime_config = live_runtime_config(
                             &reload_config,
                             requested,
                             &wd,
                             state.telemetry.clone(),
+                        );
+                        crate::neural_memory::apply_session_static_system_append(
+                            &mut runtime_config,
+                            Some(&session_id),
                         );
                         let next =
                             crate::kernel_runtime::coding_config_from_runtime(&runtime_config);
@@ -3322,6 +3333,12 @@ pub(crate) async fn live_message(
                     state.telemetry.clone(),
                 )
                 .await;
+                let runtime_text = crate::neural_memory::append_dynamic_reminder_to_text(
+                    &session_id,
+                    &req.message,
+                    &wd,
+                    runtime_text,
+                );
                 stash_vl_display_images(&wd, &session_id, &runtime_text, &original_images);
                 let (runtime_input, echo_input) =
                     split_live_inputs(req.message, original_images, runtime_text);
@@ -3405,11 +3422,15 @@ pub(crate) async fn live_message(
             &requested_provider,
             &requested_fingerprint,
         ) {
-            let runtime_config = chat_runtime_config(
+            let mut runtime_config = chat_runtime_config(
                 &config,
                 &requested_provider,
                 &join.binding.working_dir,
                 state.telemetry.clone(),
+            );
+            crate::neural_memory::apply_session_static_system_append(
+                &mut runtime_config,
+                Some(&join.binding.session_id),
             );
             let next = crate::kernel_runtime::coding_config_from_runtime(&runtime_config);
             if let Err(error) =
@@ -3445,6 +3466,12 @@ pub(crate) async fn live_message(
         state.telemetry.clone(),
     )
     .await;
+    let runtime_text = crate::neural_memory::append_dynamic_reminder_to_text(
+        &join.binding.session_id,
+        &req.message,
+        &join.binding.working_dir,
+        runtime_text,
+    );
     // VL preprocessing produced a caption ⇒ the runtime strips the image from the
     // conversation (it must never re-enter model context — see estimate_tokens). Stash the
     // originals in the display-only sidecar so a page refresh re-attaches the thumbnail.
@@ -4075,13 +4102,12 @@ pub(crate) async fn live_reasoning_effort(
         .map(str::to_string);
     if let Some(sid) = session_scope.as_deref() {
         if let Ok(Some(resolved)) = crate::resolve_session_by_id(sid) {
-            let _ = zap_capabilities::session::SessionManager::for_project(
-                &resolved.meta.working_dir,
-            )
-            .update_meta(sid, |meta| {
-                meta.reasoning_effort = stored_effort.clone();
-                meta.thinking_budget = stored_budget;
-            });
+            let _ =
+                zap_capabilities::session::SessionManager::for_project(&resolved.meta.working_dir)
+                    .update_meta(sid, |meta| {
+                        meta.reasoning_effort = stored_effort.clone();
+                        meta.thinking_budget = stored_budget;
+                    });
         }
     }
     let registry = zap_coding::session_runtime_registry::SessionRuntimeRegistry::global();
@@ -4363,8 +4389,7 @@ pub(crate) async fn live_cancel(
 /// `NativeLiveWireProjector`（CompactionFinished → Warning）回流到各视图。
 /// 返回 `{"accepted": bool}`：false 表示当前没有绑定的实时运行时（无可压缩对象）。
 pub(crate) async fn live_compact(State(_state): State<AppState>) -> impl IntoResponse {
-    let accepted =
-        crate::native_live::dispatch(zap_coding::DriverCommand::Compact(None)).is_ok();
+    let accepted = crate::native_live::dispatch(zap_coding::DriverCommand::Compact(None)).is_ok();
     Json(serde_json::json!({ "accepted": accepted }))
 }
 
@@ -4576,12 +4601,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn mcp_trust_round_trip_clears_blocked() {
-        use zap_capabilities::mcp::config::{
-            McpConfigSource, McpServerConfig, McpTransportConfig,
-        };
-        use zap_capabilities::mcp::trust::{
-            is_project_trusted, partition_by_trust, trust_project,
-        };
+        use zap_capabilities::mcp::config::{McpConfigSource, McpServerConfig, McpTransportConfig};
+        use zap_capabilities::mcp::trust::{is_project_trusted, partition_by_trust, trust_project};
 
         let store_dir = tempfile::tempdir().unwrap();
         // SAFETY: test seam; serial attribute prevents concurrent mutation.
@@ -4651,8 +4672,7 @@ mod tests {
             zap_kernel::message::LEGACY_COLD_SUMMARY_PREFIX
         ));
         cold.synthetic = true;
-        cold.internal_origin =
-            Some(zap_kernel::message::LEGACY_COLD_SUMMARY_ORIGIN.to_string());
+        cold.internal_origin = Some(zap_kernel::message::LEGACY_COLD_SUMMARY_ORIGIN.to_string());
         let mut buffer = vec![cold, Message::user("cancelled prompt")];
 
         install_authoritative_terminal_snapshot(&mut buffer, SessionSnapshot::new(Vec::new()), &[]);
@@ -5504,10 +5524,7 @@ mod tests {
     fn native_live_projector_preserves_the_authoritative_stop_reason() {
         for (reason, expected) in [
             (zap_kernel::event::StopReason::MaxRounds, "max_rounds"),
-            (
-                zap_kernel::event::StopReason::RepeatLoop,
-                "repeat_loop",
-            ),
+            (zap_kernel::event::StopReason::RepeatLoop, "repeat_loop"),
             (
                 zap_kernel::event::StopReason::ToolLoopDetected,
                 "tool_loop_detected",
@@ -5519,9 +5536,9 @@ mod tests {
                     CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::Completed {
                         turn_id: 7,
                         reason,
-                        snapshot: std::sync::Arc::new(
-                            zap_kernel::message::SessionSnapshot::new(Vec::new()),
-                        ),
+                        snapshot: std::sync::Arc::new(zap_kernel::message::SessionSnapshot::new(
+                            Vec::new(),
+                        )),
                         stats: zap_coding::RuntimeTurnStats::default(),
                     }),
                 ))
@@ -5561,16 +5578,14 @@ mod tests {
         let mut projector = NativeLiveWireProjector::default();
         let wire = projector
             .project(crate::live_hub::LiveViewEvent::Runtime(
-                CodingRuntimeEvent::TurnFinished(
-                    zap_coding::TurnCompletion::SnapshotUnavailable {
-                        turn_id: 7,
-                        reason: zap_kernel::event::StopReason::Stopped,
-                        error: zap_coding::RuntimeSnapshotError {
-                            message: "snapshot failed".into(),
-                        },
-                        stats: zap_coding::RuntimeTurnStats::default(),
+                CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::SnapshotUnavailable {
+                    turn_id: 7,
+                    reason: zap_kernel::event::StopReason::Stopped,
+                    error: zap_coding::RuntimeSnapshotError {
+                        message: "snapshot failed".into(),
                     },
-                ),
+                    stats: zap_coding::RuntimeTurnStats::default(),
+                }),
             ))
             .expect("snapshot failure must reach the live wire");
         let json = serde_json::to_value(wire).unwrap();
@@ -5673,16 +5688,14 @@ mod tests {
         let mut projector = NativeLiveWireProjector::default();
         assert!(projector
             .project(crate::live_hub::LiveViewEvent::Runtime(
-                zap_coding::CodingRuntimeEvent::Agent(
-                    zap_kernel::event::AgentEvent::Steered {
-                        count: 1,
-                        inputs: vec![zap_kernel::event::SteeredInput {
-                            text: "unanchored duplicate".into(),
-                            images: Vec::new(),
-                            message_id: Some("m-steer-1".into()),
-                        }],
-                    },
-                ),
+                zap_coding::CodingRuntimeEvent::Agent(zap_kernel::event::AgentEvent::Steered {
+                    count: 1,
+                    inputs: vec![zap_kernel::event::SteeredInput {
+                        text: "unanchored duplicate".into(),
+                        images: Vec::new(),
+                        message_id: Some("m-steer-1".into()),
+                    }],
+                },),
             ))
             .is_none());
     }
@@ -5806,9 +5819,7 @@ mod tests {
         assert!(snapshot.messages[0].synthetic);
         assert_eq!(snapshot.messages[0].text, "after compact");
         // Cold summaries live inline as synthetic messages; none tagged here.
-        assert!(
-            zap_kernel::message::cold_summaries_from_messages(&snapshot.messages).is_empty()
-        );
+        assert!(zap_kernel::message::cold_summaries_from_messages(&snapshot.messages).is_empty());
     }
 
     #[test]

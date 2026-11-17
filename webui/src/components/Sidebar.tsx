@@ -2603,7 +2603,12 @@ export function Sidebar({
 
                 {/* 1. 独立会话列表（类似 DeepSeek，普通无项目会话直接平铺展示在最近区域顶部） */}
                 {recentsExpanded && recentsList.length > 0 && (
-                  <div class="sidebar-recents-section" style={{ marginBottom: (projectsExpanded && visibleProjects.length > 0) ? '12px' : 0 }}>
+                  <div
+                    class={
+                      'sidebar-recents-section' +
+                      (projectsExpanded && visibleProjects.length > 0 ? ' has-projects-below' : '')
+                    }
+                  >
                     <div class="project-sessions-list" style={{ paddingLeft: 0 }}>
                       {displayRecents.map(renderItem)}
                     </div>
@@ -2666,7 +2671,9 @@ export function Sidebar({
               </div>
             </div>
 
-            {projectsExpanded && visibleProjects.map((p) => {
+            {projectsExpanded && visibleProjects.length > 0 && (
+              <div class="sidebar-projects-list">
+                {visibleProjects.map((p) => {
               const isExpanded = expandedProjects.has(p.hash);
               const isShowAll = showAllProjects.has(p.hash);
 
@@ -2741,6 +2748,8 @@ export function Sidebar({
                 </div>
               );
             })}
+              </div>
+            )}
 
             {visibleProjects.length === 0 && recentsList.length === 0 && (
               <div class="session-empty" style={{ padding: '12px', fontSize: '12px' }}>

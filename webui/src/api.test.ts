@@ -112,6 +112,35 @@ test('live mode still rejects protocol-level failures', async () => {
   }
 });
 
+test('postLiveMode and getApprovalMode pass session_id when provided', async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return new Response(
+      JSON.stringify({ ok: true, mode: 'bypass', global: false }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const { postLiveMode, getApprovalMode } = await import('./api.ts');
+    const switched = await postLiveMode('bypass', 'sess-123');
+    assert.equal(switched, 'bypass');
+    assert.equal(calls[0].url, '/approval_mode');
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+      mode: 'bypass',
+      session_id: 'sess-123',
+    });
+
+    const fetched = await getApprovalMode('sess-123');
+    assert.equal(fetched, 'bypass');
+    assert.equal(calls[1].url, '/approval_mode?session_id=sess-123');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('postLiveUserInput rejects an answer the runtime did not accept', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response(

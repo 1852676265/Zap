@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
+use tokio::sync::Mutex;
 use zap_coding::{
     CodingRuntime, CodingRuntimeConfig, DriverCommand, RuntimeMode, RuntimePhase, UserInput,
 };
 use zap_kernel::message::SessionSnapshot;
 use zap_telemetry::Telemetry;
-use tokio::sync::Mutex;
 
 use crate::live_hub::{HubError, LiveBinding, LiveJoin, LiveRuntimeControl, LiveViewHub};
 
@@ -215,10 +215,8 @@ pub fn take_session_draft_provider(session_id: &str) -> Option<String> {
 }
 
 pub(crate) fn runtime_start_is_session_in_use(error: &zap_coding::RuntimeStartError) -> bool {
-    matches!(
-        error,
-        zap_coding::RuntimeStartError::SessionInUse { .. }
-    ) || error.to_string().contains("already in use")
+    matches!(error, zap_coding::RuntimeStartError::SessionInUse { .. })
+        || error.to_string().contains("already in use")
 }
 
 /// How a chat view should join `session_id`'s unique in-process runtime.
@@ -371,9 +369,8 @@ pub async fn ensure_registry_runner(
         return Ok(());
     }
 
-    let config =
-        zap_config::config::Config::load(&zap_config::config::Config::default_path())
-            .map_err(|error| error.to_string())?;
+    let config = zap_config::config::Config::load(&zap_config::config::Config::default_path())
+        .map_err(|error| error.to_string())?;
     if !config.selection_exists(&provider_name) {
         return Err(format!("provider {provider_name:?} not found"));
     }
@@ -383,6 +380,10 @@ pub async fn ensure_registry_runner(
     crate::live_api::apply_session_effort_override(
         &mut runtime_config,
         &working_dir,
+        Some(&session_id),
+    );
+    crate::neural_memory::apply_session_static_system_append(
+        &mut runtime_config,
         Some(&session_id),
     );
 
@@ -444,15 +445,24 @@ pub async fn ensure_registry_runner(
 
     let forward_id = session_id.clone();
     let forward_dir = working_dir;
+    let forward_provider = provider_name.clone();
     tokio::spawn(async move {
         let reg = zap_coding::session_runtime_registry::SessionRuntimeRegistry::global();
         let _ = reg.open_or_attach(forward_id.clone(), forward_dir.clone());
         while let Some(envelope) = events.recv().await {
-            if let zap_coding::CodingRuntimeEvent::SessionNameSuggested { name } =
-                &envelope.event
+            if let zap_coding::CodingRuntimeEvent::TurnFinished(
+                zap_coding::TurnCompletion::Completed { snapshot, .. },
+            ) = &envelope.event
             {
-                let bucket =
-                    zap_capabilities::session::SessionManager::project_hash(&forward_dir);
+                crate::neural_memory::maybe_capture_turn_from_snapshot(
+                    &forward_id,
+                    &forward_dir,
+                    &snapshot.messages,
+                    &forward_provider,
+                );
+            }
+            if let zap_coding::CodingRuntimeEvent::SessionNameSuggested { name } = &envelope.event {
+                let bucket = zap_capabilities::session::SessionManager::project_hash(&forward_dir);
                 let _ = crate::legacy_convert::apply_ai_catalog_name_in_project(
                     &bucket,
                     &forward_id,
@@ -767,9 +777,7 @@ pub fn submit(input: UserInput) -> Result<(), HubError> {
     hub().submit(input)
 }
 
-pub async fn submit_confirmed(
-    input: UserInput,
-) -> Result<zap_coding::SubmitReceipt, HubError> {
+pub async fn submit_confirmed(input: UserInput) -> Result<zap_coding::SubmitReceipt, HubError> {
     hub().submit_confirmed(input).await
 }
 
@@ -791,10 +799,7 @@ pub fn accept_local_input(input: UserInput) -> Result<(), HubError> {
     hub().accept_local_input(input)
 }
 
-pub fn respond(
-    id: zap_kernel::event::RequestId,
-    value: serde_json::Value,
-) -> Result<(), HubError> {
+pub fn respond(id: zap_kernel::event::RequestId, value: serde_json::Value) -> Result<(), HubError> {
     hub().respond(id, value)
 }
 
@@ -884,9 +889,7 @@ pub fn provider_fingerprint(
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-pub async fn resume_session(
-    session_id: String,
-) -> Result<zap_coding::SessionChanged, HubError> {
+pub async fn resume_session(session_id: String) -> Result<zap_coding::SessionChanged, HubError> {
     let binding = hub().binding()?;
     if binding.session_id == session_id {
         // View-only switch onto a draft leaves an empty hub snapshot. Refresh
@@ -1152,9 +1155,8 @@ pub async fn ensure_headless_runtime(
         let _ = hub().unbind(&old.binding);
     }
 
-    let config =
-        zap_config::config::Config::load(&zap_config::config::Config::default_path())
-            .map_err(|error| error.to_string())?;
+    let config = zap_config::config::Config::load(&zap_config::config::Config::default_path())
+        .map_err(|error| error.to_string())?;
     if !config.selection_exists(&provider_name) {
         return Err(format!("provider {provider_name:?} not found"));
     }
@@ -1164,6 +1166,10 @@ pub async fn ensure_headless_runtime(
     crate::live_api::apply_session_effort_override(
         &mut runtime_config,
         &working_dir,
+        requested_session_id.as_deref(),
+    );
+    crate::neural_memory::apply_session_static_system_append(
+        &mut runtime_config,
         requested_session_id.as_deref(),
     );
     let (session_mode, initial_snapshot) = match requested_session_id {
@@ -1229,8 +1235,7 @@ pub async fn ensure_headless_runtime(
                 }
                 _ => None,
             };
-            if let zap_coding::CodingRuntimeEvent::SessionNameSuggested { name } = &event.event
-            {
+            if let zap_coding::CodingRuntimeEvent::SessionNameSuggested { name } = &event.event {
                 let bucket = zap_capabilities::session::SessionManager::project_hash(
                     &event_binding.working_dir,
                 );

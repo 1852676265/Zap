@@ -2,13 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::broadcast;
 use zap_coding::{
     CodingRuntimeEvent, CodingRuntimeHandle, DriverCommand, RuntimePhase, RuntimeStatus,
     RuntimeUnavailable, SequencedRuntimeEvent, SubmitReceipt, TurnCompletion, UserInput,
 };
 use zap_kernel::event::{AgentEvent, RequestId};
 use zap_kernel::message::SessionSnapshot;
-use tokio::sync::broadcast;
 
 const BROADCAST_CAPACITY: usize = 1024;
 
@@ -1385,6 +1385,22 @@ impl LiveViewHub {
                 runtime_edge = true;
             }
             CodingRuntimeEvent::TurnFinished(TurnCompletion::Completed { snapshot, .. }) => {
+                if let (Some(sid), Some(wd)) = (
+                    state.execution_session_id().map(str::to_string),
+                    state.execution_working_dir(),
+                ) {
+                    let prov = state
+                        .binding
+                        .as_ref()
+                        .map(|b| b.identity.provider.clone())
+                        .unwrap_or_default();
+                    crate::neural_memory::maybe_capture_turn_from_snapshot(
+                        &sid,
+                        &wd,
+                        &snapshot.messages,
+                        &prov,
+                    );
+                }
                 *state.exec_snapshot_mut() = Some(snapshot.clone());
                 *state.exec_snapshot_error_mut() = None;
                 state.exec_replay_mut().clear();
@@ -1817,10 +1833,7 @@ fn session_view_from_live(
     }
 }
 
-fn session_change_is_noop(
-    binding: &LiveBinding,
-    changed: &zap_coding::SessionChanged,
-) -> bool {
+fn session_change_is_noop(binding: &LiveBinding, changed: &zap_coding::SessionChanged) -> bool {
     changed.generation.0 == binding.generation
         && changed.session_id.as_deref() == Some(binding.session_id.as_str())
         && changed.working_dir == binding.working_dir

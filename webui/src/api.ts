@@ -288,7 +288,9 @@ export type SSEEvent =
   | { type: 'done'; tokens: unknown; tool_calls: unknown; session_id: string; stop_reason?: string; message?: string }
   | { type: 'stopped' }
   | { type: 'error'; message: string }
-  | { type: 'warning'; message: string; message_id?: string }
+  | { type: 'warning'; message: string; message_id?: string; /** Live path: committed compaction's post-context tokens. */ tokens_after?: number }
+  /** Committed compaction: update the context meter immediately (no usage follows). */
+  | { type: 'context_compacted'; session_id?: string; tokens: number }
   | { type: 'persistence_warning'; message: string }
   | { type: 'rate_limited'; reset_at_display: string; reset_label: string; secs_until_reset: number | null; auto_resuming: boolean; server_message?: string | null }
   // Artifact events: the daemon's ArtifactDetector strips fenced code blocks from
@@ -1035,6 +1037,8 @@ export interface SessionDetail {
   token_usage?: SessionTokenUsage | null;
   /** `manual` / `scheduled` / `protocol`. Protocol sessions are observed in Auto. */
   origin?: 'manual' | 'scheduled' | 'protocol';
+  /** Per-session persisted approval mode. */
+  approval_mode?: ApprovalMode | null;
   /** Authoritative active todo list from backend transcript. */
   todos?: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }>;
   /** Per-turn execution telemetry (tokens, duration, tool call count, errors) for turn analysis. */
@@ -2046,6 +2050,7 @@ export type ApprovalMode = 'build' | 'plan' | 'bypass' | 'accept_edits';
 export interface ApprovalModeResponse {
   ok: boolean;
   mode: ApprovalMode;
+  global?: boolean;
 }
 
 /**
@@ -2119,7 +2124,8 @@ export type LiveWireEvent =
   | { type: 'tokens'; prompt: number; completion: number; total: number; cached?: number }
   | { type: 'state'; running: boolean; stop_reason?: string; message?: string }
   | { type: 'error'; message: string }
-  | { type: 'warning'; message: string; message_id?: string }
+  | { type: 'warning'; message: string; message_id?: string; /** Live path: committed compaction's post-context tokens. */ tokens_after?: number }
+  | { type: 'context_compacted'; session_id?: string; tokens: number }
   | { type: 'persistence_warning'; message: string }
   | { type: 'rate_limited'; reset_at_display: string; reset_label: string; secs_until_reset: number | null; auto_resuming: boolean; server_message?: string | null }
   | { type: 'permission_request'; session_id?: string; runtime_instance_id: string; generation: number; request_id: number; tool_name: string; reason: string; call_id: string; arguments: string }
@@ -2286,11 +2292,19 @@ function getModeBroadcastChannel(): BroadcastChannel | null {
   return modeBroadcastChannel;
 }
 
-export function broadcastApprovalMode(mode: ApprovalMode): void {
+export function broadcastApprovalMode(mode: ApprovalMode, sessionId?: string | null): void {
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('jeikcode:approval_mode_changed', { detail: mode }));
+    window.dispatchEvent(
+      new CustomEvent('jeikcode:approval_mode_changed', {
+        detail: { mode, sessionId: sessionId ?? null },
+      }),
+    );
     try {
-      getModeBroadcastChannel()?.postMessage({ type: 'mode', mode });
+      getModeBroadcastChannel()?.postMessage({
+        type: 'mode',
+        mode,
+        sessionId: sessionId ?? null,
+      });
     } catch {
       // ignore
     }
@@ -2300,21 +2314,31 @@ export function broadcastApprovalMode(mode: ApprovalMode): void {
 /** Switch the approval mode (build / accept_edits / bypass / plan). Runtime
  *  session state — the next turn's PermissionDecider follows it; broadcast to
  *  other tabs. */
-export async function postLiveMode(mode: ApprovalMode): Promise<ApprovalMode> {
+export async function postLiveMode(
+  mode: ApprovalMode,
+  sessionId?: string | null,
+  global?: boolean,
+): Promise<ApprovalMode> {
+  const payload: Record<string, unknown> = { mode };
+  if (sessionId && sessionId.trim()) payload.session_id = sessionId.trim();
+  if (typeof global === 'boolean') payload.global = global;
   const resp = await apiFetch('/approval_mode', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify(payload),
   });
   if (!resp.ok) throw new Error(`switch mode failed: ${resp.status}`);
   const body = (await resp.json()) as ApprovalModeResponse;
   if (!body.ok) throw new Error('live runtime rejected the mode switch');
-  broadcastApprovalMode(body.mode);
+  broadcastApprovalMode(body.mode, body.global ? null : (sessionId ?? null));
   return body.mode;
 }
 
-export async function getApprovalMode(): Promise<ApprovalMode> {
-  const resp = await apiFetch('/approval_mode', { headers: authHeaders() });
+export async function getApprovalMode(sessionId?: string | null): Promise<ApprovalMode> {
+  const qs = sessionId && sessionId.trim()
+    ? `?session_id=${encodeURIComponent(sessionId.trim())}`
+    : '';
+  const resp = await apiFetch(`/approval_mode${qs}`, { headers: authHeaders() });
   if (!resp.ok) throw new Error(`get mode failed: ${resp.status}`);
   const body = (await resp.json()) as ApprovalModeResponse;
   return body.mode;

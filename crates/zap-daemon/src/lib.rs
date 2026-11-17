@@ -63,12 +63,13 @@ pub use live_api::live_set_mode;
 pub use live_api::live_set_working_dir;
 pub use live_api::live_switch_session;
 pub mod auth_token;
+pub mod neural_memory;
 pub mod permission_bridge;
+pub mod plugin_rpc;
+pub mod plugins_api;
 mod telemetry_scope;
 mod terminal_session;
 pub mod webui;
-pub mod plugin_rpc;
-pub mod plugins_api;
 
 pub(crate) use telemetry_scope::daemon_scope;
 
@@ -1041,10 +1042,7 @@ mod session_window_tests {
                 elapsed_ms: None,
             }
         }
-        fn turn_stat(
-            after_message: usize,
-            turn_id: u64,
-        ) -> zap_capabilities::session::TurnStat {
+        fn turn_stat(after_message: usize, turn_id: u64) -> zap_capabilities::session::TurnStat {
             zap_capabilities::session::TurnStat {
                 after_message,
                 position_valid: true,
@@ -1653,12 +1651,11 @@ mod transcript_display_tests {
     #[test]
     fn display_record_round_trips_images_and_tool_results() {
         let mut user = display_record("user", "看这张图");
-        user.images
-            .push(zap_capabilities::session::DisplayImage {
-                media_type: "image/png".into(),
-                data: "AAAA".into(),
-                missing: false,
-            });
+        user.images.push(zap_capabilities::session::DisplayImage {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+            missing: false,
+        });
         let info = display_record_to_message_info(&user);
         assert_eq!(info.images.as_ref().unwrap()[0].data, "AAAA");
         let back = display_record_from_message_info("s1", 0, &info);
@@ -2712,8 +2709,7 @@ fn append_pending_inputs(
         }) {
             continue;
         }
-        let content =
-            zap_capabilities::session::user_text_for_display(working_dir, &input.text);
+        let content = zap_capabilities::session::user_text_for_display(working_dir, &input.text);
         let images: Vec<ImageData> = input
             .images
             .iter()
@@ -2798,8 +2794,7 @@ fn append_folded_steer_outline(
         if existing.contains(&input.id) || existing.contains(outline_identity) {
             continue;
         }
-        let content =
-            zap_capabilities::session::user_text_for_display(working_dir, &input.text);
+        let content = zap_capabilities::session::user_text_for_display(working_dir, &input.text);
         let label_text = if content.trim().is_empty() {
             if input.images.is_empty() {
                 continue;
@@ -3067,10 +3062,7 @@ pub struct SessionDetail {
 }
 
 fn is_manual_session_origin(origin: &zap_capabilities::session::SessionOrigin) -> bool {
-    matches!(
-        origin,
-        zap_capabilities::session::SessionOrigin::Manual
-    )
+    matches!(origin, zap_capabilities::session::SessionOrigin::Manual)
 }
 
 /// Token footer snapshot derived from [`SessionMeta::turn_stats`].
@@ -4044,9 +4036,7 @@ impl ActiveChatRegistry {
         }
         cancellation.cancel();
         if let Some(ref sid) = op_session_id {
-            zap_capabilities::tools::bash_runtime::cancel_foreground_live_bash_for_session(
-                sid,
-            );
+            zap_capabilities::tools::bash_runtime::cancel_foreground_live_bash_for_session(sid);
         } else {
             zap_capabilities::tools::legacy_bash_runtime_state().cancel_foreground_live_bash();
         }
@@ -5730,9 +5720,8 @@ pub(crate) fn fanout_chat_events_for_session(
                             .cloned()
                             .zip(inputs.iter().map(|input| input.message_id.clone()))
                             .collect();
-                        let _ = zap_capabilities::session::inputs::mark_promoted_global(
-                            &sid, &pairs,
-                        );
+                        let _ =
+                            zap_capabilities::session::inputs::mark_promoted_global(&sid, &pairs);
                         retire_folded_steers_from_queue(&sid, &pairs).await;
                         publish_global(GlobalWireEvent::SteerFolded {
                             session_id: sid,
@@ -6928,7 +6917,11 @@ fn is_private_network_authority(authority: &str) -> bool {
             std::net::IpAddr::V4(v4) => {
                 let octets = v4.octets();
                 let is_cgnat = octets[0] == 100 && (octets[1] & 0xc0) == 64;
-                v4.is_private() || v4.is_link_local() || v4.is_loopback() || v4.is_unspecified() || is_cgnat
+                v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_loopback()
+                    || v4.is_unspecified()
+                    || is_cgnat
             }
             std::net::IpAddr::V6(v6) => {
                 let seg0 = v6.segments()[0];
@@ -7154,10 +7147,8 @@ fn list_projects_in_root(
     active: Option<&zap_capabilities::session::CatalogLocation>,
 ) -> std::io::Result<Vec<ProjectInfo>> {
     let scan = catalog_scan_in_root(sessions_root)?;
-    let mut by_project_entries = std::collections::BTreeMap::<
-        String,
-        Vec<zap_capabilities::session::CatalogEntry>,
-    >::new();
+    let mut by_project_entries =
+        std::collections::BTreeMap::<String, Vec<zap_capabilities::session::CatalogEntry>>::new();
     for entry in scan.entries {
         if is_system_temp_dir(&entry.working_dir) {
             continue;
@@ -8320,9 +8311,7 @@ async fn get_session_detail(
                 if let Some(anchor) = messages.iter().position(|message| {
                     message.role.eq_ignore_ascii_case("user")
                         && message.synthetic
-                        && zap_capabilities::compaction::is_compaction_anchor_text(
-                            &message.content,
-                        )
+                        && zap_capabilities::compaction::is_compaction_anchor_text(&message.content)
                 }) {
                     if let Some(turns) = load_display_transcript(&hash, &session.meta.id) {
                         let boundary = messages[anchor + 1..].iter().find(|message| {
@@ -12368,13 +12357,12 @@ mod chat_event_type_tests {
 
     #[test]
     fn tool_batch_payload_is_kernel_native() {
-        let calls: Vec<zap_kernel::event::ToolBatchCall> =
-            vec![zap_kernel::event::ToolBatchCall {
-                id: "call-1".into(),
-                name: "read".into(),
-                arguments: "{}".into(),
-                parallel_safe: true,
-            }];
+        let calls: Vec<zap_kernel::event::ToolBatchCall> = vec![zap_kernel::event::ToolBatchCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+            parallel_safe: true,
+        }];
 
         let event = ChatEvent::ToolBatchStarted { calls };
         let json = serde_json::to_value(event).unwrap();
@@ -12482,10 +12470,8 @@ mod chat_event_type_tests {
             },
             ..Default::default()
         };
-        let events = projector.project_agent(
-            zap_kernel::event::AgentEvent::Usage(meta),
-            "test-session",
-        );
+        let events =
+            projector.project_agent(zap_kernel::event::AgentEvent::Usage(meta), "test-session");
 
         assert!(matches!(
             events.as_slice(),
@@ -12565,18 +12551,12 @@ mod chat_event_type_tests {
     fn abnormal_completed_turn_reaches_done_with_its_authoritative_reason() {
         for (reason, expected) in [
             (zap_kernel::event::StopReason::MaxRounds, "max_rounds"),
-            (
-                zap_kernel::event::StopReason::RepeatLoop,
-                "repeat_loop",
-            ),
+            (zap_kernel::event::StopReason::RepeatLoop, "repeat_loop"),
             (
                 zap_kernel::event::StopReason::ToolLoopDetected,
                 "tool_loop_detected",
             ),
-            (
-                zap_kernel::event::StopReason::PolicyDenied,
-                "policy_denied",
-            ),
+            (zap_kernel::event::StopReason::PolicyDenied, "policy_denied"),
         ] {
             let mut projector = ChatRuntimeProjector::default();
             let events = projector.project_runtime(
@@ -12584,9 +12564,9 @@ mod chat_event_type_tests {
                     zap_coding::TurnCompletion::Completed {
                         turn_id: 7,
                         reason,
-                        snapshot: std::sync::Arc::new(
-                            zap_kernel::message::SessionSnapshot::new(Vec::new()),
-                        ),
+                        snapshot: std::sync::Arc::new(zap_kernel::message::SessionSnapshot::new(
+                            Vec::new(),
+                        )),
                         stats: zap_coding::RuntimeTurnStats::default(),
                     },
                 ),
@@ -12632,16 +12612,14 @@ mod chat_event_type_tests {
         ));
 
         let terminal = projector.project_runtime(
-            zap_coding::CodingRuntimeEvent::TurnFinished(
-                zap_coding::TurnCompletion::Completed {
-                    turn_id: 8,
-                    reason: zap_kernel::event::StopReason::ProviderError,
-                    snapshot: std::sync::Arc::new(zap_kernel::message::SessionSnapshot::new(
-                        Vec::new(),
-                    )),
-                    stats: zap_coding::RuntimeTurnStats::default(),
-                },
-            ),
+            zap_coding::CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::Completed {
+                turn_id: 8,
+                reason: zap_kernel::event::StopReason::ProviderError,
+                snapshot: std::sync::Arc::new(
+                    zap_kernel::message::SessionSnapshot::new(Vec::new()),
+                ),
+                stats: zap_coding::RuntimeTurnStats::default(),
+            }),
             "session-1",
         );
         assert!(matches!(
@@ -14194,14 +14172,12 @@ impl ChatRuntimeProjector {
                 self.partial_tools = calls
                     .iter()
                     .enumerate()
-                    .map(
-                        |(index, call)| zap_capabilities::session::PartialToolCall {
-                            index: u32::try_from(index).unwrap_or(u32::MAX),
-                            id: Some(call.id.clone()),
-                            name: Some(call.name.clone()),
-                            arguments: call.arguments.clone(),
-                        },
-                    )
+                    .map(|(index, call)| zap_capabilities::session::PartialToolCall {
+                        index: u32::try_from(index).unwrap_or(u32::MAX),
+                        id: Some(call.id.clone()),
+                        name: Some(call.name.clone()),
+                        arguments: call.arguments.clone(),
+                    })
                     .collect();
                 self.maybe_save_partial();
                 vec![ChatEvent::ToolBatchStarted { calls }]
@@ -14379,8 +14355,7 @@ impl ChatRuntimeProjector {
                 crate::finish_compaction_phase(session_id, crate::COMPACTION_OWNER_TURN, true);
                 let est_before = (bytes_before as f32 / 3.5).ceil() as usize;
                 let est_after = (bytes_after as f32 / 3.5).ceil() as usize;
-                let mark =
-                    zap_config::i18n::format_compaction_mark(removed, est_before, est_after);
+                let mark = zap_config::i18n::format_compaction_mark(removed, est_before, est_after);
                 let notice_event = match persist_session_display_notice(session_id, &mark, None) {
                     Some(record) => ChatEvent::DisplayNotice {
                         session_id: session_id.to_string(),
@@ -15196,6 +15171,12 @@ pub(crate) async fn process_chat_request(
             &images,
         )
         .await;
+        let runtime_text = crate::neural_memory::append_dynamic_reminder_to_text(
+            &session_id,
+            &base_message,
+            &working_dir,
+            runtime_text,
+        );
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -15355,6 +15336,10 @@ pub(crate) async fn process_chat_request(
         live_api::apply_session_effort_override(&mut runtime_cfg, &working_dir, Some(&session_id));
         runtime_cfg.shared_mcp_registry = shared_mcp_reg;
         runtime_cfg.extra_system_append = req.extra_system_append.clone();
+        crate::neural_memory::apply_session_static_system_append(
+            &mut runtime_cfg,
+            Some(&session_id),
+        );
         runtime_cfg.session_display_name = req.session_title.clone();
         runtime_cfg.dangerously_skip_permissions = approval_mode
             == crate::approval_mode::ApprovalMode::Auto
@@ -15607,8 +15592,8 @@ fn publish_chat_session_assignment(
             meta.user_renamed = true;
             meta.protocol_key = Some(title.to_string());
             meta.origin = zap_capabilities::session::SessionOrigin::Protocol;
-        } else if let Some(provisional) = first_user_prompt
-            .and_then(zap_coding::session_title::provisional_title_from_user_input)
+        } else if let Some(provisional) =
+            first_user_prompt.and_then(zap_coding::session_title::provisional_title_from_user_input)
         {
             meta.name = provisional.clone();
             provisional_name = Some(provisional);
@@ -16305,9 +16290,7 @@ async fn stop_chat(
             if sid != &req.session_id {
                 stopped_reg = crate::native_live::cancel_via_registry(sid).is_ok() || stopped_reg;
             }
-            zap_capabilities::tools::bash_runtime::cancel_foreground_live_bash_for_session(
-                sid,
-            );
+            zap_capabilities::tools::bash_runtime::cancel_foreground_live_bash_for_session(sid);
         } else {
             zap_capabilities::tools::bash_runtime::cancel_foreground_live_bash_for_session(
                 &req.session_id,
@@ -18661,9 +18644,9 @@ async fn admit_chat_steer(
                 data: image.data.clone(),
             })
             .collect(),
-        created_at: req.created_at.unwrap_or_else(|| {
-            u64::try_from(zap_capabilities::session::now_ms()).unwrap_or(0)
-        }),
+        created_at: req
+            .created_at
+            .unwrap_or_else(|| u64::try_from(zap_capabilities::session::now_ms()).unwrap_or(0)),
         message_id: None,
         operation_id,
     };
@@ -18849,9 +18832,9 @@ async fn chat_steer(
                     data: image.data.clone(),
                 })
                 .collect(),
-            created_at: req.created_at.unwrap_or_else(|| {
-                u64::try_from(zap_capabilities::session::now_ms()).unwrap_or(0)
-            }),
+            created_at: req
+                .created_at
+                .unwrap_or_else(|| u64::try_from(zap_capabilities::session::now_ms()).unwrap_or(0)),
             message_id: None,
             operation_id,
         };
@@ -18887,10 +18870,8 @@ async fn chat_steer(
     };
     if tx.send(live_api::ChatSteerSignal::Submit(pending)).is_err() {
         if let Some(client_id) = req.client_input_id.as_deref() {
-            let _ = zap_capabilities::session::inputs::mark_rejected_global(
-                &req.session_id,
-                client_id,
-            );
+            let _ =
+                zap_capabilities::session::inputs::mark_rejected_global(&req.session_id, client_id);
             update_chat_queue_steer_state(&req.session_id, client_id, "queue", None).await;
         }
         return (
@@ -18952,8 +18933,8 @@ async fn chat_steer(
 
 /// GET /chat/active - Return list of session IDs currently generating
 async fn active_chat_sessions(State(state): State<AppState>) -> impl IntoResponse {
-    use zap_coding::session_runtime_registry::SessionRuntimeRegistry;
     use std::collections::HashSet;
+    use zap_coding::session_runtime_registry::SessionRuntimeRegistry;
 
     let mut ids: HashSet<String> = state
         .active_chats
@@ -19259,8 +19240,7 @@ async fn post_notify_focus(Json(req): Json<NotifyFocusPost>) -> impl IntoRespons
             Json(serde_json::json!({ "ok": false })),
         );
     }
-    let Some(session_id) =
-        zap_capabilities::notify::sanitize_focus_session_id(&req.session_id)
+    let Some(session_id) = zap_capabilities::notify::sanitize_focus_session_id(&req.session_id)
     else {
         return (
             StatusCode::BAD_REQUEST,
@@ -19746,10 +19726,7 @@ async fn build_mcp_status_for(
                 .iter_mut()
                 .filter(|(existing, _)| existing == name)
                 .for_each(|(_, current)| {
-                    if matches!(
-                        current,
-                        zap_capabilities::mcp::ServerStatus::Connecting
-                    ) {
+                    if matches!(current, zap_capabilities::mcp::ServerStatus::Connecting) {
                         *current = zap_capabilities::mcp::ServerStatus::Connected;
                     }
                 });
@@ -20371,14 +20348,12 @@ fn install_panic_hook(telemetry: Arc<Telemetry>) {
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_default();
         let bt = std::backtrace::Backtrace::force_capture().to_string();
-        let scrubbed_loc =
-            zap_telemetry::scrub::scrub_path(&loc, home.as_deref(), cwd.as_deref());
+        let scrubbed_loc = zap_telemetry::scrub::scrub_path(&loc, home.as_deref(), cwd.as_deref());
         let scrubbed_msg = zap_telemetry::scrub::truncate_head(
             &zap_telemetry::scrub::scrub_path(&msg, home.as_deref(), cwd.as_deref()),
             zap_telemetry::scrub::HEAD_MAX,
         );
-        let frames =
-            zap_telemetry::scrub::backtrace_top_k(&bt, 5, home.as_deref(), cwd.as_deref());
+        let frames = zap_telemetry::scrub::backtrace_top_k(&bt, 5, home.as_deref(), cwd.as_deref());
         telemetry.track(Event::Panic {
             location: scrubbed_loc,
             message_head: scrubbed_msg,
@@ -22401,7 +22376,13 @@ pub async fn run_server(opts: ServerOpts) -> anyhow::Result<()> {
             "/provider-accounts/:id",
             put(api_provider::create_or_update_provider_account)
                 .delete(api_provider::delete_provider_account),
-        );
+        )
+        // 外部工作台插件本地数据 RPC 与插件市场/隔离存储 API
+        .route(
+            "/api/plugins-rpc/:plugin_id",
+            post(plugin_rpc::handle_plugin_rpc),
+        )
+        .merge(plugins_api::router());
     let protected = api_update::register_update_routes(protected)
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -25016,9 +24997,10 @@ mod tests {
         let session_id = "historical-session";
         let manager = SessionManager::with_root(tmp.path().join(project_bucket));
         let lease = manager.acquire_lease(session_id).unwrap();
-        let snapshot = zap_kernel::message::SessionSnapshot::new(vec![
-            zap_kernel::message::Message::user("修复 VS Code 历史标题"),
-        ]);
+        let snapshot =
+            zap_kernel::message::SessionSnapshot::new(vec![zap_kernel::message::Message::user(
+                "修复 VS Code 历史标题",
+            )]);
         let mut meta = SessionMeta::new(session_id, "/project", 1);
         meta.owner = StorageOwner::Native;
         meta.message_count = 1;
@@ -25210,9 +25192,10 @@ mod tests {
         let session_id = "searchable-history";
         let manager = SessionManager::with_root(tmp.path().join(project_bucket));
         let lease = manager.acquire_lease(session_id).unwrap();
-        let snapshot = zap_kernel::message::SessionSnapshot::new(vec![
-            zap_kernel::message::Message::user("可搜索的历史标题"),
-        ]);
+        let snapshot =
+            zap_kernel::message::SessionSnapshot::new(vec![zap_kernel::message::Message::user(
+                "可搜索的历史标题",
+            )]);
         let mut meta = SessionMeta::new(session_id, "/project", 1);
         meta.owner = StorageOwner::Native;
         meta.message_count = 1;
@@ -26622,8 +26605,8 @@ utun7: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1300
     #[ignore = "requires a real session bucket via JEIKCODE_REAL_SESSION_DIR"]
     #[tokio::test]
     async fn real_session_display_projection_stability() {
-        use zap_kernel::message::Message;
         use std::collections::{BTreeMap, BTreeSet};
+        use zap_kernel::message::Message;
 
         let (Ok(source_dir), Ok(id)) = (
             std::env::var("JEIKCODE_REAL_SESSION_DIR"),

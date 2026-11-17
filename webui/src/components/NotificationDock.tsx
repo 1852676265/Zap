@@ -490,11 +490,10 @@ export function NotificationDock({
     return () => window.clearTimeout(timer);
   }, [toasts]);
 
-  const allowPermission = showPermissionNotice(mode);
-  const livePermission = allowPermission ? liveReview?.permission ?? null : null;
+  const livePermission = liveReview?.permission ?? null;
   const liveUserInput = liveReview?.userInput ?? null;
   const liveSessionId = liveReview?.sessionId ?? null;
-  const chatPerm = allowPermission ? chatPermission : null;
+  const chatPerm = chatPermission;
 
   const permissionCards: Array<{
     key: string;
@@ -531,7 +530,7 @@ export function NotificationDock({
   }
   for (const item of polled) {
     const perm = item.permission;
-    if (!allowPermission || !perm) continue;
+    if (!perm) continue;
     const identityKey = permissionInstanceKey(item.sessionId, perm);
     if (dismissedKeys.has(`poll:${identityKey}`) || dismissedKeys.has(identityKey)) {
       continue;

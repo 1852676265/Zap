@@ -3,6 +3,7 @@
 //! 为已安装的本地工作台插件（如 DevOrbit 等）提供与宿主系统的本地数据双向互通支持，
 //! 包含工作区资产探测、SQL 发布跟踪、任务归档、文档读取与外部文件管理器联动。
 
+use crate::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -11,7 +12,6 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path as StdPath, PathBuf};
-use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct PluginRpcRequest {
@@ -24,11 +24,15 @@ fn get_devorbit_config_path() -> PathBuf {
     #[cfg(windows)]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            let p = PathBuf::from(&appdata).join("dev-orbit").join("devorbit_config.json");
+            let p = PathBuf::from(&appdata)
+                .join("dev-orbit")
+                .join("devorbit_config.json");
             if p.is_file() {
                 return p;
             }
-            let legacy = PathBuf::from(&appdata).join("dev-task-hub").join("devtaskhub_config.json");
+            let legacy = PathBuf::from(&appdata)
+                .join("dev-task-hub")
+                .join("devtaskhub_config.json");
             if legacy.is_file() {
                 return legacy;
             }
@@ -74,7 +78,11 @@ fn get_devorbit_config_dir() -> PathBuf {
 }
 
 fn get_quick_notes_file(ws: &str, file_name: &str) -> PathBuf {
-    let base = if ws.trim().is_empty() { "D:\\工作" } else { ws.trim() };
+    let base = if ws.trim().is_empty() {
+        "D:\\工作"
+    } else {
+        ws.trim()
+    };
     PathBuf::from(base).join("_quick_notes").join(file_name)
 }
 
@@ -82,7 +90,11 @@ fn read_quick_notes_json(ws: &str, file_name: &str, default_val: Value) -> Value
     let p = get_quick_notes_file(ws, file_name);
     if p.is_file() {
         if let Ok(s) = std::fs::read_to_string(&p) {
-            let clean = if s.starts_with('\u{feff}') { &s[3..] } else { &s };
+            let clean = if s.starts_with('\u{feff}') {
+                &s[3..]
+            } else {
+                &s
+            };
             if let Ok(v) = serde_json::from_str::<Value>(clean) {
                 return v;
             }
@@ -138,12 +150,19 @@ fn parse_task_folder(task_dir: &StdPath, fallback_year: &str) -> Option<Value> {
 
     if sql_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&sql_dir) {
-            let records = meta.get("sqlReleaseRecords").cloned().unwrap_or_else(|| json!({}));
+            let records = meta
+                .get("sqlReleaseRecords")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("sql") {
                     sql_count += 1;
-                    let file_name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let file_name = p
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     let r = records.get(&file_name);
                     let test_rel = r
                         .and_then(|v| v.get("testReleased"))
@@ -197,6 +216,15 @@ pub async fn handle_plugin_rpc(
     let payload = req.payload;
 
     match action {
+        a if a.starts_with("neural:") => match crate::neural_memory::handle_rpc(a, &payload) {
+            Ok(val) => Json(val).into_response(),
+            Err(err) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "success": false, "error": err })),
+            )
+                .into_response(),
+        },
+
         "storage:get" => {
             let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("");
             let base = if let Ok(home) = std::env::var("HOME") {
@@ -206,7 +234,11 @@ pub async fn handle_plugin_rpc(
             } else {
                 PathBuf::from(".")
             };
-            let p = base.join(".zap").join("plugin-storage").join(&plugin_id).join("storage.json");
+            let p = base
+                .join(".zap")
+                .join("plugin-storage")
+                .join(&plugin_id)
+                .join("storage.json");
             if !p.is_file() {
                 return Json(json!({ "success": true, "value": Value::Null })).into_response();
             }
@@ -229,7 +261,11 @@ pub async fn handle_plugin_rpc(
             } else {
                 PathBuf::from(".")
             };
-            let p = base.join(".zap").join("plugin-storage").join(&plugin_id).join("storage.json");
+            let p = base
+                .join(".zap")
+                .join("plugin-storage")
+                .join(&plugin_id)
+                .join("storage.json");
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -336,7 +372,8 @@ pub async fn handle_plugin_rpc(
                             for sub_entry in sub_entries.flatten() {
                                 let sub_path = sub_entry.path();
                                 if sub_path.is_dir() {
-                                    let sub_name = sub_entry.file_name().to_string_lossy().to_string();
+                                    let sub_name =
+                                        sub_entry.file_name().to_string_lossy().to_string();
                                     if !sub_name.starts_with('.') && !sub_name.starts_with('_') {
                                         if let Some(t) = parse_task_folder(&sub_path, &name) {
                                             tasks.push(t);
@@ -399,7 +436,11 @@ pub async fn handle_plugin_rpc(
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("sql") {
-                        let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        let file_name = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
                         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                         let updated_at = entry
                             .metadata()
@@ -448,8 +489,14 @@ pub async fn handle_plugin_rpc(
         }
 
         "update-sql-status" => {
-            let task_dir = payload.get("taskDir").and_then(|v| v.as_str()).unwrap_or("");
-            let file_name = payload.get("fileName").and_then(|v| v.as_str()).unwrap_or("");
+            let task_dir = payload
+                .get("taskDir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let file_name = payload
+                .get("fileName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let env = payload.get("env").and_then(|v| v.as_str()).unwrap_or("");
             let is_released = payload
                 .get("status")
@@ -476,7 +523,10 @@ pub async fn handle_plugin_rpc(
                 json!({})
             };
 
-            if !meta.get("sqlReleaseRecords").map_or(false, |v| v.is_object()) {
+            if !meta
+                .get("sqlReleaseRecords")
+                .map_or(false, |v| v.is_object())
+            {
                 meta["sqlReleaseRecords"] = json!({});
             }
 
@@ -511,7 +561,10 @@ pub async fn handle_plugin_rpc(
         }
 
         "read-sql-content" => {
-            let file_path = payload.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
+            let file_path = payload
+                .get("filePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let content = if !file_path.is_empty() && StdPath::new(file_path).is_file() {
                 std::fs::read_to_string(file_path).unwrap_or_default()
             } else {
@@ -521,8 +574,14 @@ pub async fn handle_plugin_rpc(
         }
 
         "save-sql-content" => {
-            let file_path = payload.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
-            let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let file_path = payload
+                .get("filePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let content = payload
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if !file_path.is_empty() {
                 if let Some(parent) = StdPath::new(file_path).parent() {
                     let _ = std::fs::create_dir_all(parent);
@@ -533,7 +592,10 @@ pub async fn handle_plugin_rpc(
         }
 
         "get-task-notes" => {
-            let task_dir = payload.get("taskDir").and_then(|v| v.as_str()).unwrap_or("");
+            let task_dir = payload
+                .get("taskDir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let meta_file = PathBuf::from(task_dir).join("task.json");
             let notes = if meta_file.is_file() {
                 std::fs::read_to_string(&meta_file)
@@ -548,7 +610,10 @@ pub async fn handle_plugin_rpc(
         }
 
         "save-task-notes" => {
-            let task_dir = payload.get("taskDir").and_then(|v| v.as_str()).unwrap_or("");
+            let task_dir = payload
+                .get("taskDir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let notes = payload.get("notes").cloned().unwrap_or_else(|| json!([]));
             let meta_file = PathBuf::from(task_dir).join("task.json");
             let mut meta = if meta_file.is_file() {
@@ -567,7 +632,10 @@ pub async fn handle_plugin_rpc(
         }
 
         "get-task-file" => {
-            let task_dir = payload.get("taskDir").and_then(|v| v.as_str()).unwrap_or("");
+            let task_dir = payload
+                .get("taskDir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let file_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let docs_dir = PathBuf::from(task_dir).join("docs");
             let target = if file_type == "note" {
@@ -584,7 +652,10 @@ pub async fn handle_plugin_rpc(
         }
 
         "get-dir-files" => {
-            let dir_path = payload.get("dirPath").and_then(|v| v.as_str()).unwrap_or("");
+            let dir_path = payload
+                .get("dirPath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let path = PathBuf::from(dir_path);
             let mut files = Vec::new();
             if path.is_dir() {
@@ -592,7 +663,11 @@ pub async fn handle_plugin_rpc(
                     for entry in entries.flatten() {
                         let p = entry.path();
                         if p.is_file() {
-                            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            let name = p
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
                             if !name.starts_with('.') {
                                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                                 files.push(json!({
@@ -609,10 +684,22 @@ pub async fn handle_plugin_rpc(
         }
 
         "create-task" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
-            let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("新开发任务");
-            let year = payload.get("year").and_then(|v| v.as_str()).unwrap_or("2026");
-            let project = payload.get("project").and_then(|v| v.as_str()).unwrap_or("常规项目");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
+            let title = payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("新开发任务");
+            let year = payload
+                .get("year")
+                .and_then(|v| v.as_str())
+                .unwrap_or("2026");
+            let project = payload
+                .get("project")
+                .and_then(|v| v.as_str())
+                .unwrap_or("常规项目");
 
             let task_dir = PathBuf::from(ws).join(year).join(title);
             let sql_dir = task_dir.join("sql");
@@ -620,7 +707,8 @@ pub async fn handle_plugin_rpc(
             let _ = std::fs::create_dir_all(&sql_dir);
             let _ = std::fs::create_dir_all(&docs_dir);
 
-            let req_content = format!("# {title} - 任务需求\n\n> 归属年份: {year} 年\n> 所属模块: {project}\n");
+            let req_content =
+                format!("# {title} - 任务需求\n\n> 归属年份: {year} 年\n> 所属模块: {project}\n");
             let note_content = format!("# {title} - 开发笔记与联调备忘\n\n");
             let _ = std::fs::write(docs_dir.join("需求.md"), req_content);
             let _ = std::fs::write(docs_dir.join("笔记.md"), note_content);
@@ -634,14 +722,20 @@ pub async fn handle_plugin_rpc(
                 "sqlReleaseRecords": {},
                 "notes": []
             });
-            let _ = std::fs::write(task_dir.join("task.json"), serde_json::to_string_pretty(&initial_meta).unwrap());
+            let _ = std::fs::write(
+                task_dir.join("task.json"),
+                serde_json::to_string_pretty(&initial_meta).unwrap(),
+            );
 
             let task_obj = parse_task_folder(&task_dir, year).unwrap_or(initial_meta);
             Json(json!({ "success": true, "task": task_obj })).into_response()
         }
 
         "delete-task" => {
-            let task_dir = payload.get("taskDir").and_then(|v| v.as_str()).unwrap_or("");
+            let task_dir = payload
+                .get("taskDir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if !task_dir.is_empty() {
                 let p = PathBuf::from(task_dir);
                 if p.is_dir() {
@@ -652,9 +746,17 @@ pub async fn handle_plugin_rpc(
         }
 
         "open-in-explorer" => {
-            let mut target_path = payload.get("targetPath").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mut target_path = payload
+                .get("targetPath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if target_path.is_empty() {
-                target_path = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作").to_string();
+                target_path = payload
+                    .get("workspacePath")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("D:\\工作")
+                    .to_string();
             }
             if !target_path.is_empty() {
                 #[cfg(windows)]
@@ -666,9 +768,7 @@ pub async fn handle_plugin_rpc(
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    let _ = std::process::Command::new("open")
-                        .arg(&target_path)
-                        .spawn();
+                    let _ = std::process::Command::new("open").arg(&target_path).spawn();
                 }
                 #[cfg(target_os = "linux")]
                 {
@@ -686,7 +786,11 @@ pub async fn handle_plugin_rpc(
                 std::fs::read_to_string(&config_path)
                     .ok()
                     .and_then(|s| {
-                        let clean = if s.starts_with('\u{feff}') { &s[3..] } else { &s };
+                        let clean = if s.starts_with('\u{feff}') {
+                            &s[3..]
+                        } else {
+                            &s
+                        };
                         serde_json::from_str::<Value>(clean).ok()
                     })
                     .unwrap_or_else(|| json!({}))
@@ -694,7 +798,11 @@ pub async fn handle_plugin_rpc(
                 json!({})
             };
 
-            if cfg.get("workspacePath").and_then(|v| v.as_str()).map_or(true, |s| s.is_empty()) {
+            if cfg
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .map_or(true, |s| s.is_empty())
+            {
                 cfg["workspacePath"] = json!("D:\\工作");
             }
             if cfg.get("defaultYear").is_none() {
@@ -719,7 +827,11 @@ pub async fn handle_plugin_rpc(
                 std::fs::read_to_string(&config_path)
                     .ok()
                     .and_then(|s| {
-                        let clean = if s.starts_with('\u{feff}') { &s[3..] } else { &s };
+                        let clean = if s.starts_with('\u{feff}') {
+                            &s[3..]
+                        } else {
+                            &s
+                        };
                         serde_json::from_str::<Value>(clean).ok()
                     })
                     .unwrap_or_else(|| json!({}))
@@ -755,9 +867,7 @@ pub async fn handle_plugin_rpc(
             }
             #[cfg(target_os = "macos")]
             {
-                let _ = std::process::Command::new("open")
-                    .arg(&config_dir)
-                    .spawn();
+                let _ = std::process::Command::new("open").arg(&config_dir).spawn();
             }
             #[cfg(target_os = "linux")]
             {
@@ -765,7 +875,8 @@ pub async fn handle_plugin_rpc(
                     .arg(&config_dir)
                     .spawn();
             }
-            Json(json!({ "success": true, "path": config_dir.to_string_lossy().to_string() })).into_response()
+            Json(json!({ "success": true, "path": config_dir.to_string_lossy().to_string() }))
+                .into_response()
         }
 
         "select-workspace-dir" => {
@@ -796,25 +907,37 @@ pub async fn handle_plugin_rpc(
         }
 
         "get-quick-notes" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let data = read_quick_notes_json(ws, "notes.json", json!([]));
             Json(data).into_response()
         }
 
         "save-quick-notes-batch" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let notes = payload.get("notes").cloned().unwrap_or_else(|| json!([]));
             write_quick_notes_json(ws, "notes.json", &notes);
             Json(json!({ "success": true })).into_response()
         }
 
         "save-quick-note" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let note = payload.get("note").cloned().unwrap_or_else(|| json!({}));
             let mut list = read_quick_notes_json(ws, "notes.json", json!([]));
             if let Some(arr) = list.as_array_mut() {
                 let id = note.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(idx) = arr.iter().position(|item| item.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                if let Some(idx) = arr
+                    .iter()
+                    .position(|item| item.get("id").and_then(|v| v.as_str()) == Some(id))
+                {
                     arr[idx] = note;
                 } else {
                     arr.insert(0, note);
@@ -825,7 +948,10 @@ pub async fn handle_plugin_rpc(
         }
 
         "delete-quick-note" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
             let mut list = read_quick_notes_json(ws, "notes.json", json!([]));
             if let Some(arr) = list.as_array_mut() {
@@ -836,18 +962,27 @@ pub async fn handle_plugin_rpc(
         }
 
         "get-memos" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let data = read_quick_notes_json(ws, "memos.json", json!([]));
             Json(data).into_response()
         }
 
         "save-memo" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let memo = payload.get("memo").cloned().unwrap_or_else(|| json!({}));
             let mut list = read_quick_notes_json(ws, "memos.json", json!([]));
             if let Some(arr) = list.as_array_mut() {
                 let id = memo.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(idx) = arr.iter().position(|item| item.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                if let Some(idx) = arr
+                    .iter()
+                    .position(|item| item.get("id").and_then(|v| v.as_str()) == Some(id))
+                {
                     arr[idx] = memo;
                 } else {
                     arr.insert(0, memo);
@@ -858,7 +993,10 @@ pub async fn handle_plugin_rpc(
         }
 
         "delete-memo" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
             let mut list = read_quick_notes_json(ws, "memos.json", json!([]));
             if let Some(arr) = list.as_array_mut() {
@@ -869,26 +1007,42 @@ pub async fn handle_plugin_rpc(
         }
 
         "get-server-credentials" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let data = read_quick_notes_json(ws, "server_credentials.json", json!([]));
             Json(data).into_response()
         }
 
         "save-server-credentials" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
-            let creds = payload.get("credentials").cloned().unwrap_or_else(|| json!([]));
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
+            let creds = payload
+                .get("credentials")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
             write_quick_notes_json(ws, "server_credentials.json", &creds);
             Json(json!({ "success": true })).into_response()
         }
 
         "get-credentials-meta" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
-            let data = read_quick_notes_json(ws, "credentials_meta.json", json!({ "lastSync": "刚刚" }));
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
+            let data =
+                read_quick_notes_json(ws, "credentials_meta.json", json!({ "lastSync": "刚刚" }));
             Json(data).into_response()
         }
 
         "save-credentials-meta" => {
-            let ws = payload.get("workspacePath").and_then(|v| v.as_str()).unwrap_or("D:\\工作");
+            let ws = payload
+                .get("workspacePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("D:\\工作");
             let meta = payload.get("meta").cloned().unwrap_or_else(|| json!({}));
             write_quick_notes_json(ws, "credentials_meta.json", &meta);
             Json(json!({ "success": true })).into_response()
@@ -896,7 +1050,8 @@ pub async fn handle_plugin_rpc(
 
         _ => {
             // 未知 action：提供默认 success 响应，确保插件前端不抛出异常
-            Json(json!({ "success": true, "unhandledAction": action, "pluginId": plugin_id })).into_response()
+            Json(json!({ "success": true, "unhandledAction": action, "pluginId": plugin_id }))
+                .into_response()
         }
     }
 }
