@@ -2,7 +2,7 @@
 
 [package]
 name = "zap-desktop"
-version = "1.0.17"
+version = "1.0.18"
 edition = "2021"
 description = "Zap desktop shell"
 publish = false

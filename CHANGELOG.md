@@ -21,6 +21,32 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v1.0.18 (2026-11-18)
+
+- **[Unified `.zap` Workspace Directory] Consolidated project and global configuration directories under `.zap`**:
+  - Unified project-level and global configuration, session, skill, MCP, plugin, code graph, and runtime state directories to `.zap`, eliminating duplicate `.jeikcode` and `.zap` folders in workspaces while maintaining seamless read compatibility for existing `.jeikcode` setups.
+  - Automatically cleans up legacy `.jeikcode/codegraph` cache folders once `.zap` index storage is active.
+- **[WebUI Session Switching, Smooth Scrolling & Live Thinking Pill] Fixed stale chat flash, eliminated scroll jank, and redesigned live thinking feedback**:
+  - Fixed an intermittent display issue where switching conversations could briefly leave messages from the previous conversation visible on screen.
+  - Significantly improved scrolling smoothness across both the conversation timeline and the project/session sidebar.
+  - Redesigned the thinking indicator into a rounded pill that continuously scrolls the latest reasoning line, plays a live shimmer animation, and rotates stage hints during tool execution and network waits so active turns never appear frozen.
+- **[Neural Memory Engine & Plugin Settings] Modularized per-agent memory recall and added model picker controls**:
+  - Upgraded the per-agent memory engine with dedicated on-demand memory recall, transient turn context injection, and non-blocking background storage handlers.
+  - Added an interactive model selector with live refresh in the plugin settings center.
+
+---
+
+- **[统一 `.zap` 配置与工作区目录] 全量收敛项目级与全局目录至 `.zap`**：
+  - 将项目级与全局配置、会话、技能、MCP、插件、代码图谱及运行态目录统一收敛为 `.zap`，解决工作区同时生成 `.jeikcode` 与 `.zap` 两个目录的问题，并平滑兼容读取已有 `.jeikcode` 历史配置。
+  - 在新索引就绪后自动清理遗留的旧版代码图谱缓存目录。
+- **[WebUI 会话切换、流畅滚动与动态思考胶囊] 修复切会话残留、消除滚动卡顿并重塑思考动效**：
+  - 修复切换会话时偶发残留上一个会话历史对话内容的显示问题。
+  - 大幅优化对话消息列表与左侧项目/会话边栏在高频滚动时的帧率与流畅度。
+  - 将「思考过程」升级为圆角浅底动态胶囊，支持实时滚动最新思考行、持续流光扫过与尾部跳动圆点，并在工具执行或等待响应期间自动轮播阶段状态提示，彻底消除“卡死”错觉。
+- **[智能体记忆引擎与插件设置] 升级按需记忆召回架构并新增插件模型选择器**：
+  - 升级多智能体独立记忆引擎，支持按需记忆检索工具、轮次瞬态上下文注入与无阻塞后台存储调度。
+  - 在插件设置中心新增带实时刷新按钮的模型下拉选择器，方便按需指定或跟随当前对话模型。
+
 ## v1.0.17 (2026-11-17)
 
 - **[Multi-Agent Memory Engine & Plugin APIs] Added isolated SQLite memory backend and plugin RPC routing**:
