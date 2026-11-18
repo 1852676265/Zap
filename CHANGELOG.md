@@ -21,6 +21,26 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v1.0.19 (2026-11-18)
+
+- **[Multi-Agent Team Orchestration] Added persistent cross-repository Agent Teams engine in daemon**:
+  - Built a resident team orchestrator with SQLite persistence, AI lead task planning, wave-based parallel execution across separate project directories, and seamless integration with per-agent neural memory.
+  - Added structured schema/API contract handoff, read-only cross-repository peer consultation, independent acceptance verification with bounded automatic rework, and a joint troubleshooting mode that converts root-cause reports into repair pipelines.
+- **[Neural Memory & Plugin Platform] Refined async memory loading and streamlined plugin RPC surface**:
+  - Improved asynchronous system prompt assembly and memory distillation reliability for bound neural agents, and cleaned up legacy pet and deprecated plugin endpoints.
+- **[WebUI Chat & Markdown] Improved conversation rendering, turn navigation, and plugin center**:
+  - Enhanced chat message display, Markdown rendering, turn navigator behavior, and plugin kernel integration across the web workspace.
+
+---
+
+- **[多智能体团队协作引擎] 新增常驻跨仓库团队拆单与波次调度后端**：
+  - 内置支持 SQLite 持久化的常驻团队编排引擎，提供 AI 智能拆单、多项目代码目录分波次并发执行以及专属神经记忆智能体联动能力。
+  - 支持上游结构化表结构/接口契约自动接力、跨项目只读问询同事、独立交叉验收与有限次自动打回返工，以及三方跨库联合排障会诊（支持一键转为修复派工单）。
+- **[神经记忆与插件平台] 优化异步记忆装载并精简插件接口**：
+  - 优化专属记忆智能体的异步提示词注入与后台记忆提炼稳定性，清理遗留宠物面板及废弃插件接口。
+- **[WebUI 对话与渲染体验] 完善对话渲染、轮次导航与插件中心**：
+  - 优化对话消息流展示、Markdown 排版渲染、轮次导航交互以及插件微内核设置中心体验。
+
 ## v1.0.18 (2026-11-18)
 
 - **[Unified `.zap` Workspace Directory] Consolidated project and global configuration directories under `.zap`**:
