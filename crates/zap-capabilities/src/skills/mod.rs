@@ -9,8 +9,8 @@
 //!
 //! Behind the opt-in `skills` cargo feature (no extra dependencies).
 
-use zap_kernel::tool::{ToolRegistry, ToolResult};
 use std::sync::Arc;
+use zap_kernel::tool::{ToolRegistry, ToolResult};
 
 pub mod catalog_hook;
 pub mod controls;

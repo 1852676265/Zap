@@ -511,8 +511,7 @@ pub async fn get_git_repos(
                         let sub_path_clean = sub_path_str.trim();
                         let sub_full = root_p.join(sub_path_clean);
                         let sub_canon = sub_full.canonicalize().unwrap_or(sub_full);
-                        let sub_canon =
-                            zap_capabilities::pathnorm::strip_verbatim_path(&sub_canon);
+                        let sub_canon = zap_capabilities::pathnorm::strip_verbatim_path(&sub_canon);
                         if visited_roots.insert(sub_canon.clone()) {
                             let current_branch = git_cmd(&sub_canon)
                                 .args(["rev-parse", "--abbrev-ref", "HEAD"])

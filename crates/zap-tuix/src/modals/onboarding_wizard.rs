@@ -321,8 +321,7 @@ pub struct OnboardingWizard {
 /// Languages offered by the wizard, in display order. Aliased to
 /// [`zap_config::locale::Locale::ALL`] so `/language` and onboarding
 /// can never disagree about the set or the ordering.
-pub const ONBOARDING_LANGUAGES: &[zap_config::locale::Locale] =
-    zap_config::locale::Locale::ALL;
+pub const ONBOARDING_LANGUAGES: &[zap_config::locale::Locale] = zap_config::locale::Locale::ALL;
 
 impl OnboardingWizard {
     /// Standard constructor — `/welcome` with empty body. The 3-step

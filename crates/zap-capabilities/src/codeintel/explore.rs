@@ -19,7 +19,6 @@ use super::graph::{CodeGraph, EdgeKind, SymbolId, SymbolKind, SymbolNode};
 use super::index::CodeIndex;
 use super::{canonical, err, normalize_path_for_match, ok, path_matches_scope};
 use async_trait::async_trait;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
@@ -27,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 const DEFAULT_MAX_FILES: usize = 12;
 const MAX_ALLOWED_FILES: usize = 30;
@@ -217,7 +217,7 @@ impl CodeExploreTool {
         // existing files are not overwritten here. Bundled-file updates,
         // including `.codegraphignore`, are offered by config sync as checked diffs.
         seed_fork_defaults();
-        // Load default user-level thesaurus from ~/.jeikcode/thesaurus (or JEIKCODE_HOME)
+        // Load default user-level thesaurus from ~/.zap/thesaurus (or ZAP_HOME)
         let global_thesaurus = crate::paths::config_dir().join("thesaurus");
         if global_thesaurus.is_dir() {
             dt.load_from_dir(&global_thesaurus);
@@ -271,7 +271,7 @@ fn seed_fork_defaults() {
     }
     // .codegraphignore — bundled ignore rules. First run writes the file.
     // A later change to the asset is not written over an existing copy here.
-    // Config sync compares the bundled file with ~/.jeikcode/.codegraphignore
+    // Config sync compares the bundled file with ~/.zap/.codegraphignore
     // and offers it as a checked file diff (scan_zap_config_diffs).
     let ignore_dest = dir.join(".codegraphignore");
     if !ignore_dest.exists() {
@@ -355,11 +355,11 @@ static THESAURUS_ASSETS: std::sync::LazyLock<
 static BUILTIN_TOOLS_ASSET: &str = include_str!("../../assets/builtin-tools.txt");
 
 /// Bundled default MCP server wiring (ddg-search),
-/// seeded as `~/.jeikcode/mcp.json` on first run (never overwrites existing).
+/// seeded as `~/.zap/mcp.json` on first run (never overwrites existing).
 static MCP_JSON_ASSET: &str = include_str!("../../assets/mcp.json");
 
 /// Bundled default code-graph ignore rules (generated/minified artifacts,
-/// vendored deps), seeded as `~/.jeikcode/.codegraphignore` on first run.
+/// vendored deps), seeded as `~/.zap/.codegraphignore` on first run.
 static CODEGRAPH_IGNORE_ASSET: &str = include_str!("../../assets/.codegraphignore");
 /// Sensitive-credential rules (`assets/.codegraphignore.graph`): applied by code graph
 /// indexing and as the default glob/grep exclusion; `include_sensitive` is approval-gated.
@@ -507,12 +507,15 @@ impl Tool for CodeExploreTool {
             }),
         );
 
-        // Load project-specific thesaurus from `.jeikcode/thesaurus`
+        // Load project-specific thesaurus from `.zap/thesaurus` (with legacy `.jeikcode/thesaurus` fallback)
         {
-            let project_thesaurus_dir = root.join(".jeikcode").join("thesaurus");
-            if project_thesaurus_dir.is_dir() {
-                if let Ok(mut th) = self.thesaurus.write() {
-                    th.load_from_dir(&project_thesaurus_dir);
+            for dir_name in [".zap", ".jeikcode"] {
+                let project_thesaurus_dir = root.join(dir_name).join("thesaurus");
+                if project_thesaurus_dir.is_dir() {
+                    if let Ok(mut th) = self.thesaurus.write() {
+                        th.load_from_dir(&project_thesaurus_dir);
+                    }
+                    break;
                 }
             }
         }
@@ -3971,8 +3974,8 @@ mod tests {
 
     #[tokio::test]
     async fn identical_query_rewrites_frozen_incremental_headers() {
-        use zap_kernel::tool::{ProgressSink, Tool, ToolContext};
         use tokio_util::sync::CancellationToken;
+        use zap_kernel::tool::{ProgressSink, Tool, ToolContext};
 
         query_cache_clear();
         let d = tempfile::tempdir().unwrap();
@@ -4031,8 +4034,8 @@ mod tests {
                 the guarded execute calls); production code_explore/init is unaffected"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn accepts_workspace_root_paths() {
-        use zap_kernel::tool::{ProgressSink, Tool, ToolContext};
         use tokio_util::sync::CancellationToken;
+        use zap_kernel::tool::{ProgressSink, Tool, ToolContext};
 
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join("src")).unwrap();
@@ -4917,8 +4920,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(offline_verdict)]
     async fn test_code_explore_works_offline_with_air_gap() {
-        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
         use tokio_util::sync::CancellationToken;
+        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
 
         struct ResetGuard;
         impl Drop for ResetGuard {

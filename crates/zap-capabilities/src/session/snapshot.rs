@@ -894,17 +894,13 @@ impl LifecycleHooks for SnapshotHook {
         let prompt_number = convo
             .messages
             .iter()
-            .filter(|message| {
-                message.role == zap_kernel::message::Role::User && !message.synthetic
-            })
+            .filter(|message| message.role == zap_kernel::message::Role::User && !message.synthetic)
             .count();
         let prompt_preview = convo
             .messages
             .iter()
             .rev()
-            .find(|message| {
-                message.role == zap_kernel::message::Role::User && !message.synthetic
-            })
+            .find(|message| message.role == zap_kernel::message::Role::User && !message.synthetic)
             .map(|message| message.text.chars().take(120).collect())
             .unwrap_or_default();
         let checkpoint = self

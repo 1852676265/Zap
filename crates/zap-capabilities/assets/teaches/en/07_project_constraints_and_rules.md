@@ -8,11 +8,11 @@ The system resolves and injects project instructions as **two independent blocks
 
 | Tier | File Path (First matching hit in order) | Inject Block | Purpose & Nuances |
 | :--- | :--- | :--- | :--- |
-| **1. Global Tier** | `~/.jeikcode/AGENTS.md`<br>`~/.jeikcode/JEIKCODE.md` | `<user_preferences>` | Universal cross-project personal preferences. |
-| **2. Project Tier** | `1. AGENTS.md`<br>`2. .jeikcode.md`<br>`3. JEIKCODE.md`<br>`4. CLAUDE.md`<br>`5. claude.md` | `<project_instructions>` | **Core project standards** (architecture boundaries, coding style, commit rules). Recommended to commit to Git for team sharing. |
+| **1. Global Tier** | `~/.zap/AGENTS.md`<br>`~/.zap/ZAP.md` | `<user_preferences>` | Universal cross-project personal preferences. |
+| **2. Project Tier** | `1. AGENTS.md`<br>`2. .zap.md`<br>`3. ZAP.md`<br>`4. CLAUDE.md`<br>`5. claude.md` | `<project_instructions>` | **Core project standards** (architecture boundaries, coding style, commit rules). Recommended to commit to Git for team sharing. |
 
 > Precedence: non-conflicting rule sets (global preferences / project instructions / system defaults) all apply together; on conflict **project instructions >> memory > user preferences > system rules**. The precedence policy and review boundary are owned by sys-1; the two instruction blocks no longer repeat a leading precedence note.
-> (The former `.jeikcode.user.md` tier was removed; core safety gates and destructive-operation confirmation gates remain non-overridable.)
+> (The former `.zap.user.md` tier was removed; core safety gates and destructive-operation confirmation gates remain non-overridable.)
 
 ---
 
@@ -22,11 +22,11 @@ The system supports 3 specialized domain knowledge files within the project, che
 
 | Knowledge Pack | Candidate File Paths (First matching hit stops search) | Purpose |
 | :--- | :--- | :--- |
-| **Domain Glossary (`glossary.md`)** | `.jeikcode/glossary.md`<br>`docs/glossary.md`<br>`glossary.md` | Maps business jargon and domain concepts to code symbols and classes. |
-| **Business Rules (`rules.md`)** | `.jeikcode/rules.md`<br>`docs/rules.md`<br>`rules.md` | Business logic, approval workflows, and state machine constraints. |
-| **Database Dictionary (`dbwords.md`)** | `.jeikcode/dbwords.md`<br>`docs/dbwords.md`<br>`dbwords.md` | Table names, column definitions, and entity relationship mappings. |
+| **Domain Glossary (`glossary.md`)** | `.zap/glossary.md`<br>`docs/glossary.md`<br>`glossary.md` | Maps business jargon and domain concepts to code symbols and classes. |
+| **Business Rules (`rules.md`)** | `.zap/rules.md`<br>`docs/rules.md`<br>`rules.md` | Business logic, approval workflows, and state machine constraints. |
+| **Database Dictionary (`dbwords.md`)** | `.zap/dbwords.md`<br>`docs/dbwords.md`<br>`dbwords.md` | Table names, column definitions, and entity relationship mappings. |
 
-- **Search Semantics**: Knowledge packs stop at the **first hit** in the candidate order. For example, finding `.jeikcode/glossary.md` immediately stops searching and does not merge with `docs/glossary.md`.
+- **Search Semantics**: Knowledge packs stop at the **first hit** in the candidate order. For example, finding `.zap/glossary.md` immediately stops searching and does not merge with `docs/glossary.md`.
 
 ---
 
@@ -34,10 +34,10 @@ The system supports 3 specialized domain knowledge files within the project, che
 
 | Extension | Path Location |
 | :--- | :--- |
-| **Project Skills** | `<workspace>/.skills/<skill-name>/SKILL.md` or `<workspace>/.jeikcode/skills/<skill-name>/SKILL.md` |
-| **Prompt Wrap** | `<workspace>/.jeikcode/user-wrap.md` or `<workspace>/user-wrap.md` |
+| **Project Skills** | `<workspace>/.skills/<skill-name>/SKILL.md` or `<workspace>/.zap/skills/<skill-name>/SKILL.md` |
+| **Prompt Wrap** | `<workspace>/.zap/user-wrap.md` or `<workspace>/user-wrap.md` |
 | **Project MCP** | `<workspace>/.mcp.json` |
-| **Project Thesaurus** | `<workspace>/.jeikcode/thesaurus/*.txt` |
+| **Project Thesaurus** | `<workspace>/.zap/thesaurus/*.txt` |
 | **Index/Search Ignore** | `<workspace>/.codegraphignore` (Noise rules for code graph and the default glob/grep filter; `include_ignored=true` opens them) |
 | **Sensitive Credential Rules (Graph + Default Search Exclusion)** | `<workspace>/.codegraphignore.graph` (`.env`, secrets, SSH keys are hidden from graph indexing and excluded from glob/grep by default; `include_sensitive=true` enables approved search) |
 
@@ -48,7 +48,7 @@ The system supports 3 specialized domain knowledge files within the project, che
 ```text
 my-project/
 ├── AGENTS.md                 # Project architecture boundaries & development constraints
-├── .jeikcode/
+├── .zap/
 │   ├── user-wrap.md          # Project-specific prompt wrapper
 │   ├── rules.md              # Business logic & state machine rules
 │   ├── glossary.md           # Business terminology glossary

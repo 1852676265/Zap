@@ -1,7 +1,7 @@
 //! Test-only isolation of `JEIKCODE_HOME`.
 //!
-//! jeikcode persists sessions / config / memory under `JEIKCODE_HOME` (default
-//! `~/.jeikcode`). Tests that construct a `SessionManager`, run the agent, or
+//! persists sessions / config / memory under `ZAP_HOME` / `JEIKCODE_HOME` (default
+//! `~/.zap`). Tests that construct a `SessionManager`, run the agent, or
 //! otherwise persist without setting `JEIKCODE_HOME` write into the developer's
 //! REAL home — a full `cargo test` run leaves dozens of junk `sessions/<hash>/`
 //! buckets (working dirs that are throwaway `tempfile` paths).
@@ -44,10 +44,10 @@ static INIT: Once = Once::new();
 /// race-free (runs once). Call from a `#[ctor]` so it lands before any test.
 pub fn isolate_home() {
     INIT.call_once(|| {
-        if std::env::var_os("JEIKCODE_HOME").is_some() {
+        if std::env::var_os("ZAP_HOME").is_some() || std::env::var_os("JEIKCODE_HOME").is_some() {
             return; // explicit override (real run, or a test that set its own) wins
         }
-        let dir = normalized_temp_dir().join(format!("jeikcode-test-home-{}", std::process::id()));
+        let dir = normalized_temp_dir().join(format!("zap-test-home-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         std::env::set_var("JEIKCODE_HOME", &dir);
     });

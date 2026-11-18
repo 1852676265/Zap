@@ -21,9 +21,9 @@
 
 use super::render::CATALOG_HEADER;
 use async_trait::async_trait;
+use std::sync::Mutex;
 use zap_kernel::hook::LifecycleHooks;
 use zap_kernel::message::Conversation;
-use std::sync::Mutex;
 
 /// Injects the pre-rendered skill catalog. `None` catalog (no skills installed) →
 /// the hook is a no-op on a fresh session and prunes a stale block on resume.

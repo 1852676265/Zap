@@ -1,7 +1,7 @@
-use zap_config::schedule::{Schedule, ScheduleTask};
 #[cfg(any(test, not(target_os = "windows")))]
 use std::path::PathBuf;
 use std::sync::Arc;
+use zap_config::schedule::{Schedule, ScheduleTask};
 
 // ---- InstallState ----
 

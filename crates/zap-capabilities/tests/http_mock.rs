@@ -7,6 +7,10 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 use zap_capabilities::hooks::WireLogHooks;
 use zap_capabilities::provider::{OpenAiCompatConfig, OpenAiCompatProvider, RetryPolicy};
 use zap_kernel::agent::{Agent, AutoRespond};
@@ -15,10 +19,6 @@ use zap_kernel::message::Message;
 use zap_kernel::provider::{ChatOptions, LlmProvider};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::tool::{Tool, ToolContext, ToolRegistry, ToolResult};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const CHAT_PATH: &str = "/chat/completions";
 

@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
@@ -5,9 +8,6 @@ use zap_kernel::testkit::{
     ApprovalMiddleware, ArgGatedProbeTool, ConcurrencyProbeTool, MockProvider, RiskyWriteTool,
 };
 use zap_kernel::tool::{Tool, ToolContext, ToolRegistry, ToolResult};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 
 fn send(t: &str) -> AgentCommand {
     AgentCommand::SendMessage {

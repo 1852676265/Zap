@@ -11,10 +11,10 @@
 
 use super::{err, ok, resolve_path};
 use async_trait::async_trait;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 /// Candidate binary names, in order (`ast-grep` is canonical; `sg` is the short alias).
 const BINARIES: &[&str] = &["ast-grep", "sg"];

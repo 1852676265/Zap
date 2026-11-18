@@ -312,8 +312,8 @@ mod tests {
 
     #[tokio::test]
     async fn hook_syncs_live_from_session_board_so_execute_rejects_unknown_ids() {
-        use zap_kernel::tool::{Tool, ToolContext};
         use tokio_util::sync::CancellationToken;
+        use zap_kernel::tool::{Tool, ToolContext};
 
         let fixture = BoardFixture::new("unknown-ids");
         fixture.set_items(&[("only", TodoStatus::Pending)]);

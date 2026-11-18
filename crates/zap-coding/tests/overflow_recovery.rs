@@ -4,13 +4,13 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use std::sync::{Arc, Mutex};
 use zap_coding::{build_coding_agent_with, CodingAgentConfig};
 use zap_kernel::agent::AutoRespond;
 use zap_kernel::message::Message;
 use zap_kernel::provider::{ChatOptions, LlmProvider};
 use zap_kernel::stream::{ProviderError, StreamEvent};
 use zap_kernel::tool::ToolDef;
-use std::sync::{Arc, Mutex};
 
 /// Fails the FIRST open with a context-overflow error, then succeeds — regardless of size.
 struct OverflowOnce {

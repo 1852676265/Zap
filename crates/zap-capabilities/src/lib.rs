@@ -18,9 +18,9 @@
 //!     and Ollama native (`/api/chat`).
 //!   - (future) `tools`, `mcp`, `skills`, `codeintel`.
 
-// Redirect `JEIKCODE_HOME` to a throwaway temp dir before libtest spawns any thread,
+// Redirect `ZAP_HOME` / `JEIKCODE_HOME` to a throwaway temp dir before libtest spawns any thread,
 // so the crate's own unit tests never persist sessions/config/memory into the
-// developer's real `~/.jeikcode`. Feature-independent (std + dev-deps only); kept at
+// developer's real `~/.zap`. Feature-independent (std + dev-deps only); kept at
 // crate root so it is NOT inside a feature-gated module. Each `tests/*.rs` integration
 // binary carries its own copy (separate binaries don't share this ctor).
 #[cfg(test)]
@@ -211,7 +211,7 @@ pub mod mcp;
 pub mod session;
 
 /// User-driven persistent memory: the production `memory.md` store (global
-/// `$JEIKCODE_HOME/memory.md` + per-project `<root>/.jeikcode/memory.md` — the SAME
+/// `$ZAP_HOME/memory.md` + per-project `<root>/.zap/memory.md` — the SAME
 /// files production reads/writes, so the two stacks share one memory) + a
 /// [`MemoryHook`](memory::MemoryHook) that injects the merged entries as a frozen
 /// synthetic-user prefix at `session_start` (resume reconciles in place). v1 has

@@ -112,11 +112,11 @@ impl DatalogHook {
     pub fn resolve_log_dir(working_dir: &Path, configured_dir: Option<&str>) -> PathBuf {
         let root = match configured_dir.filter(|value| !value.trim().is_empty()) {
             // `DatalogConfig::default` materializes this value into config.toml.
-            // Treat it as the semantic default so JEIKCODE_HOME keeps working.
-            None | Some("~/.jeikcode/datalog") => Config::config_dir().join("datalog"),
-            Some("~") => {
-                zap_config::util::real_home_dir().unwrap_or_else(|| PathBuf::from("."))
+            // Treat it as the semantic default so ZAP_HOME / JEIKCODE_HOME keeps working.
+            None | Some("~/.zap/datalog") | Some("~/.jeikcode/datalog") => {
+                Config::config_dir().join("datalog")
             }
+            Some("~") => zap_config::util::real_home_dir().unwrap_or_else(|| PathBuf::from(".")),
             Some(value) if value.starts_with("~/") => zap_config::util::real_home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(value.trim_start_matches("~/")),
@@ -662,8 +662,8 @@ fn project_slug(working_dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::message::Message;
     use tempfile::tempdir;
+    use zap_kernel::message::Message;
 
     #[test]
     fn disabled_config_does_not_create_a_hook() {

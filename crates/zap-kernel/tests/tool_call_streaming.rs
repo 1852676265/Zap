@@ -2,12 +2,12 @@
 //! forwarded to the driver as `AgentEvent::ToolCallStreaming` (live display), without
 //! disturbing the whole-`ToolCall` execution path.
 
+use std::sync::Arc;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::MockProvider;
 use zap_kernel::tool::ToolRegistry;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn tool_call_deltas_are_forwarded_as_streaming_events() {

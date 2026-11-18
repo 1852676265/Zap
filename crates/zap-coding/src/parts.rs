@@ -360,10 +360,7 @@ async fn prepare_with_plugin_hooks_reusing_lease(
         std::env::var("JEIKCODE_CODEINTEL_MODE").ok().as_deref(),
         None,
     );
-    zap_capabilities::codeintel::register_codeintel_tools_with_mode(
-        &mut registry,
-        &codeintel_mode,
-    );
+    zap_capabilities::codeintel::register_codeintel_tools_with_mode(&mut registry, &codeintel_mode);
     names.extend(
         zap_capabilities::codeintel::codeintel_tool_names()
             .iter()
@@ -766,9 +763,7 @@ async fn prepare_with_plugin_hooks_reusing_lease(
         Arc::clone(&bash_runtime),
     )));
     hooks.push(turn_execution_policy.clone());
-    hooks.push(Arc::new(
-        zap_capabilities::session::WriteStateHook::new(),
-    ));
+    hooks.push(Arc::new(zap_capabilities::session::WriteStateHook::new()));
     // Per-session code_explore wander meter: the tool middleware is registered in
     // `assemble`, and this lifecycle handle keeps the session-end cleanup.
     let code_tools_first = Arc::new(crate::code_tools_first::CodeToolsFirstHook::new(
@@ -804,6 +799,9 @@ async fn prepare_with_plugin_hooks_reusing_lease(
             Some(cc)
         }
     };
+    for hook in &cfg.extra_hooks {
+        hooks.push(Arc::clone(hook));
+    }
     // NOTE: the turn-level `TelemetryHook` is NOT built here. Its envelope fixes the
     // model + provider_host at construction, and a `/login` or `/model` swap re-runs
     // `assemble` ONLY (never `prepare`) — so building it here froze the prepare-time
@@ -821,7 +819,7 @@ async fn prepare_with_plugin_hooks_reusing_lease(
         publication_enabled: Arc::clone(&mcp_publication_enabled),
     };
 
-    Ok(CodingParts {
+    let mut parts = CodingParts {
         bash_runtime: Arc::clone(&bash_runtime),
         shared_cwd: std::sync::Arc::new(std::sync::RwLock::new(cfg.working_dir.clone())),
         plan_mode: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -868,7 +866,11 @@ async fn prepare_with_plugin_hooks_reusing_lease(
         subagent_provider,
         cc_external_hooks: cc_external,
         rate_limit_source: opts.rate_limit_source,
-    })
+    };
+    for tool in &cfg.extra_tools {
+        parts.register_extra_tool(Arc::clone(tool));
+    }
+    Ok(parts)
 }
 
 /// Load plugin-contributed hooks for every prepare/reprepare instead of freezing the startup
@@ -1164,9 +1166,7 @@ impl CodingParts {
         }
     }
 
-    pub(crate) async fn mcp_statuses(
-        &self,
-    ) -> Vec<(String, zap_capabilities::mcp::ServerStatus)> {
+    pub(crate) async fn mcp_statuses(&self) -> Vec<(String, zap_capabilities::mcp::ServerStatus)> {
         let mut statuses = Vec::new();
         if let Some(registry) = &self.mcp_registry {
             statuses.extend(registry.server_statuses().await);
@@ -1646,14 +1646,13 @@ pub fn assemble(
                     // (model name + pricing) matches.
                     if let Ok(resolved) = registry.resolve_model(Some(key)) {
                         let pricing = crate::resolve_resolved_pricing(&resolved);
-                        let mut recorder =
-                            zap_capabilities::session::DetachedUsageRecorder::new(
-                                b.manager.clone(),
-                                &b.id,
-                                key,
-                                &resolved.model,
-                                pricing,
-                            );
+                        let mut recorder = zap_capabilities::session::DetachedUsageRecorder::new(
+                            b.manager.clone(),
+                            &b.id,
+                            key,
+                            &resolved.model,
+                            pricing,
+                        );
                         if let Some(status) = parts.snapshot_persistence_status() {
                             recorder = recorder.with_persistence_status(status);
                         }
@@ -2389,8 +2388,7 @@ mod tests {
             input_schema: serde_json::json!({}),
             read_only: false,
         };
-        let adapter =
-            zap_capabilities::mcp::McpToolAdapter::new(registry.clone(), info).unwrap();
+        let adapter = zap_capabilities::mcp::McpToolAdapter::new(registry.clone(), info).unwrap();
         let alias = zap_kernel::tool::Tool::name(&adapter).to_string();
         parts.mcp_registry = Some(registry);
         parts.mcp_tool_names.write().unwrap().push(alias.clone());
@@ -2455,9 +2453,7 @@ mod tests {
         }
     }
 
-    fn session_store_error(
-        error: &io::Error,
-    ) -> &zap_capabilities::session::SessionStoreError {
+    fn session_store_error(error: &io::Error) -> &zap_capabilities::session::SessionStoreError {
         error
             .get_ref()
             .and_then(|source| {
@@ -3346,11 +3342,11 @@ mod tests {
     /// big tool result → preview+handle stored → read(path="artifact://...") retrieves full bytes.
     #[tokio::test]
     async fn artifact_wiring_store_middleware_and_read_roundtrip() {
+        use tokio_util::sync::CancellationToken;
         use zap_capabilities::tools::{ArtifactMiddleware, ArtifactStore, ReadFileTool};
         use zap_kernel::middleware::ToolMiddleware;
         use zap_kernel::tool::Tool as _;
         use zap_kernel::tool::{ToolContext, ToolResult};
-        use tokio_util::sync::CancellationToken;
 
         let artifacts_tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(ArtifactStore::new(artifacts_tmp.path()));

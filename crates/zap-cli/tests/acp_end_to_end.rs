@@ -46,12 +46,8 @@ impl CodingProviderFactory for StubProviderFactory {
 /// A dummy, non-routable engine config. The provider is injected, so none of
 /// these reach the network — `base_url` is never dialed.
 fn dummy_engine() -> EngineConfig {
-    let mut config = zap_coding::CodingAgentConfig::new(
-        "test-key",
-        "http://127.0.0.1:1",
-        "stub-model",
-        ".",
-    );
+    let mut config =
+        zap_coding::CodingAgentConfig::new("test-key", "http://127.0.0.1:1", "stub-model", ".");
     config.context_window = 200_000;
     config.chat_options.max_tokens = Some(8192);
     EngineConfig::from_coding_config(config)

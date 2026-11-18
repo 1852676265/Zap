@@ -2240,7 +2240,7 @@ mod tests {
         }
         // The isolated-home guard MUST outlive the WHOLE test: binding it inside the
         // `unsafe` block above would drop it at the block's end, and the test would then
-        // read the developer's real home (`~/.jeikcode/mcp.json` → real servers land in
+        // read the developer's real home (`~/.zap/mcp.json` → real servers land in
         // `Connecting` and the status assertion flakes).
         let _home = zap_config::test_util::IsolatedHome::at(store.path());
 

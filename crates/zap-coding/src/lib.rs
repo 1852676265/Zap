@@ -70,9 +70,6 @@ pub use config::{
 };
 pub use controllers::{GoalPhase, GoalProgress, GoalTerminal, LoopProgress};
 pub use init_prompt::INIT_PROMPT;
-/// The image type carried by [`UserInput`] / [`ImagePreprocessor`], re-exported
-/// so driver crates can implement the hook without naming `zap_kernel`.
-pub use zap_kernel::message::ImageContent;
 pub use parts::{
     assemble, prepare, prepare_with_plugin_hook_source, prepare_with_plugin_hooks,
     subagent_enabled_from_env, CodingParts, PrepareOptions, SessionBinding, SessionMode,
@@ -103,6 +100,9 @@ pub use session_runtime_registry::{
 pub use telemetry::{TelemetryHook, ToolTelemetryMiddleware};
 pub use todo::TodoHook;
 pub use vision::{run_vl_caption, should_skip, vl_model_display, PreprocessOutcome};
+/// The image type carried by [`UserInput`] / [`ImagePreprocessor`], re-exported
+/// so driver crates can implement the hook without naming `zap_kernel`.
+pub use zap_kernel::message::ImageContent;
 
 /// Re-export the CC external-hooks types so host adapters that resolve
 /// plugin-contributed hooks can name [`cc_hooks::HookConfig`] without a direct

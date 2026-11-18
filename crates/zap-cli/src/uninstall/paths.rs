@@ -8,8 +8,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Return the jeikcode data root (`$JEIKCODE_HOME` when set, or
-/// `~/.jeikcode/` by default). Routes through [`zap_config::config::Config::config_dir`]
+/// Return the jeikcode data root (`$ZAP_HOME` / `$JEIKCODE_HOME` when set, or
+/// `~/.zap/` by default). Routes through [`zap_config::config::Config::config_dir`]
 /// so install/setup/skill/plugin/uninstall all agree on a single root —
 /// previously this module looked at a separate `JEIKCODE_HOME_OVERRIDE`
 /// variable, which let users customise their data dir but then lose track

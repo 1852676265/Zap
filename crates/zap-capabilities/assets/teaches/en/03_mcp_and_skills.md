@@ -6,7 +6,7 @@
 
 ### 1.1 Configuration File Locations & Priority
 1. **Workspace Project-Level**: `<workspace>/.mcp.json` (Scoped strictly to the current project, version-control friendly).
-2. **User Global-Level**: `~/.jeikcode/mcp.json` (Shared globally, accessible by all projects).
+2. **User Global-Level**: `~/.zap/mcp.json` (Shared globally, accessible by all projects).
 3. **Priority**: For identical server names, project-level configuration overrides global-level configuration.
 
 ### 1.2 CLI Quick Management for MCP Tools
@@ -19,7 +19,7 @@ jeikcode mcp add playwright npx @playwright/mcp@latest
 # Add HTTP / SSE remote MCP server (supports headers and trust flag)
 jeikcode mcp add-http remote-api https://mcp.example.com/sse -H "Authorization: Bearer secret-token" --trust
 
-# Add to global ~/.jeikcode/mcp.json
+# Add to global ~/.zap/mcp.json
 jeikcode mcp add playwright npx -y @playwright/mcp@latest --global
 
 # List configured MCP servers
@@ -119,9 +119,9 @@ Skills allow injecting specialized engineering workflows into the Agent via Mark
 
 ### 2.1 Directory Layout & Priority
 Searched in order from highest to lowest precedence (higher priority overrides identical names):
-1. **Project Specific**: `<workspace>/.jeikcode/skills/<name>/SKILL.md` or `<workspace>/.skills/<name>/SKILL.md`
-2. **Global User**: `~/.jeikcode/skills/<name>/SKILL.md`
-3. **Plugin Marketplace**: `~/.jeikcode/plugins/marketplaces/...`
+1. **Project Specific**: `<workspace>/.zap/skills/<name>/SKILL.md` or `<workspace>/.skills/<name>/SKILL.md`
+2. **Global User**: `~/.zap/skills/<name>/SKILL.md`
+3. **Plugin Marketplace**: `~/.zap/plugins/marketplaces/...`
 
 ### 2.2 `SKILL.md` Standard Structure
 
@@ -156,6 +156,6 @@ description: Specialized in code review and architecture rule compliance. Activa
 
 ## 3. Plugins Management
 
-- Plugins root directory: `~/.jeikcode/plugins/`.
+- Plugins root directory: `~/.zap/plugins/`.
 - Enter `/plugin` in the TUI to interactively browse, install, and uninstall plugins.
 - After installing or updating plugins, invoke `zap_config(action="reload")` to apply changes immediately without restart.

@@ -1,14 +1,14 @@
 //! Reusable [`LifecycleHooks`] implementations (L1) — provider-agnostic.
 
 use async_trait::async_trait;
-use zap_kernel::hook::{LifecycleHooks, TurnCtx};
-use zap_kernel::message::Message;
-use zap_kernel::provider::ChatOptions;
-use zap_kernel::tool::ToolDef;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use zap_kernel::hook::{LifecycleHooks, TurnCtx};
+use zap_kernel::message::Message;
+use zap_kernel::provider::ChatOptions;
+use zap_kernel::tool::ToolDef;
 
 /// A provider-**agnostic** wire logger. It rides the kernel's hook seam, so a single
 /// instance logs the request/response for ANY provider or agent — not one adapter:
@@ -126,8 +126,8 @@ impl LifecycleHooks for WireLogHooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::ToolCall;
     use std::sync::Mutex;
+    use zap_kernel::tool::ToolCall;
 
     #[tokio::test]
     async fn logs_request_and_response_to_injected_sink() {

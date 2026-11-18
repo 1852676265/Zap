@@ -4,14 +4,14 @@
 //! worker subagents; synthetic reminders and continuations cannot clear it.
 
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use zap_capabilities::tools::{bash_invocations, BashInvocation};
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
 use zap_kernel::message::{Message, Role};
 use zap_kernel::middleware::{BeforeOutcome, ToolMiddleware};
 use zap_kernel::request::RequestCtx;
 use zap_kernel::tool::{Tool, ToolCall};
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
 
 const NO_BUILD: u8 = 1 << 0;
 const NO_TEST: u8 = 1 << 1;

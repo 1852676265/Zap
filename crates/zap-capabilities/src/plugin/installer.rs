@@ -444,9 +444,9 @@ pub fn resolve_plugin_marketplace(plugin_name: &str) -> Result<Vec<PluginMarketp
 /// Install a plugin from a given marketplace with the specified scope.
 ///
 /// For `User` scope, the plugin is installed under the global
-/// `~/.jeikcode/plugins/` root (the original behaviour). For `Project`
+/// `~/.zap/plugins/` root (the original behaviour). For `Project`
 /// and `Local` scopes, the plugin files are copied into the project's
-/// `.jeikcode/plugins/` or `.jeikcode/plugins/local/` directory so
+/// `.zap/plugins/` or `.zap/plugins/local/` directory so
 /// they are visible only within that project.
 pub fn install(
     plugin: &str,
@@ -565,7 +565,7 @@ pub fn install(
         }
         InstallScope::Project | InstallScope::Local => {
             // Project-level install: copy the plugin files into the project's
-            // .jeikcode/plugins/ directory and record in the project-level
+            // .zap/plugins/ directory and record in the project-level
             // installed_plugins.json.
             let working_dir =
                 std::env::current_dir().context("cannot determine current working directory")?;
@@ -705,7 +705,7 @@ pub fn ensure_plugin_installed(
 }
 
 /// Uninstall a plugin. For User scope, removes from the global plugins
-/// root. For Project/Local scope, removes from the project's .jeikcode/plugins/
+/// root. For Project/Local scope, removes from the project's .zap/plugins/
 /// directory.
 pub fn uninstall(plugin: &str, marketplace: &str, scope: InstallScope) -> Result<()> {
     let plugin_key = sanitize_name(plugin);
@@ -828,8 +828,8 @@ mod tests {
             .status()
             .unwrap();
         if let Some(m) = manifest {
-            std::fs::create_dir_all(repo.join(".jeikcode-plugin")).unwrap();
-            std::fs::write(repo.join(".jeikcode-plugin/marketplace.json"), m).unwrap();
+            std::fs::create_dir_all(repo.join(".zap-plugin")).unwrap();
+            std::fs::write(repo.join(".zap-plugin/marketplace.json"), m).unwrap();
         }
         std::fs::write(repo.join("README"), "x").unwrap();
         Command::new("git")
@@ -1012,14 +1012,14 @@ mod tests {
             .current_dir(&repo)
             .status()
             .unwrap();
-        std::fs::create_dir_all(repo.join(".jeikcode-plugin")).unwrap();
+        std::fs::create_dir_all(repo.join(".zap-plugin")).unwrap();
         let url = format!("file://{}", repo.display());
         let manifest = serde_json::json!({
             "name": "self_ref",
             "plugins": [{"name": "self_ref", "source": {"source": "url", "url": url}}],
         })
         .to_string();
-        std::fs::write(repo.join(".jeikcode-plugin/marketplace.json"), manifest).unwrap();
+        std::fs::write(repo.join(".zap-plugin/marketplace.json"), manifest).unwrap();
         std::fs::write(repo.join("README"), "x").unwrap();
         Command::new("git")
             .args(["add", "-A"])

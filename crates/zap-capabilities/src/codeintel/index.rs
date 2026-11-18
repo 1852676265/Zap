@@ -1113,6 +1113,7 @@ const SKIP_DIR_NAMES: &[&str] = &[
     "publish",
     "out",
     // WebUI user uploads: gitignored attachments, not project source.
+    ".zap_store",
     ".jeikcode_store",
 ];
 
@@ -1477,7 +1478,7 @@ fn collect_files_fallback(root: &Path) -> Vec<Walked> {
         .add_custom_ignore_filename(".codegraphignore")
         .add_custom_ignore_filename(".codegraignore");
 
-    // Add global ignore files if present (~/.jeikcode/.codegraphignore, ~/.jeikcode/.codegraignore)
+    // Add global ignore files if present (~/.zap/.codegraphignore, ~/.zap/.codegraignore)
     let global_config = crate::paths::config_dir();
     let global_ignore1 = global_config.join(".codegraphignore");
     if global_ignore1.is_file() {
@@ -1488,10 +1489,10 @@ fn collect_files_fallback(root: &Path) -> Vec<Walked> {
         builder.add_ignore(global_ignore2);
     }
 
-    // Also check .jeikcode/.codegraphignore inside project root
-    let project_jeikcode_ignore = root.join(".zap").join(".codegraphignore");
-    if project_jeikcode_ignore.is_file() {
-        builder.add_ignore(project_jeikcode_ignore);
+    // Also check .zap/.codegraphignore inside project root
+    let project_zap_ignore = root.join(".zap").join(".codegraphignore");
+    if project_zap_ignore.is_file() {
+        builder.add_ignore(project_zap_ignore);
     }
 
     for entry in builder
@@ -1582,7 +1583,7 @@ pub fn disk_cache_path(root: &Path) -> PathBuf {
     super::index_db::disk_cache_path_db(root)
 }
 
-/// True when `{root}/.jeikcode/codegraph/index.v1.db` exists and contains at
+/// True when `{root}/.zap/codegraph/index.v1.db` exists and contains at
 /// least one file unit. Empty or missing graphs must not be auto-created —
 /// the user runs `jeikcode init` for a first index.
 pub fn has_nonempty_codegraph(root: &Path) -> bool {
@@ -1881,10 +1882,16 @@ fn load_idf_stats_sqlite(root: &Path) -> Option<super::retrieval::IdfStats> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Delete leftover pre-SQLite snapshot files if a workspace still has them.
+/// Delete leftover pre-SQLite snapshot files and legacy `.jeikcode/codegraph` cache.
 fn cleanup_legacy_sidecars(root: &Path) {
     let root = super::canonical(root);
     for rel in [
+        ".zap/codegraph/units.v3.json",
+        ".zap/codegraph/units.v4.bin",
+        ".zap/codegraph/dirindex.v1.json",
+        ".zap/codegraph/stats.v1.json",
+        ".zap/codegraph/units.v3.json.tmp",
+        ".zap/codegraph/units.v4.bin.tmp",
         ".jeikcode/codegraph/units.v3.json",
         ".jeikcode/codegraph/units.v4.bin",
         ".jeikcode/codegraph/dirindex.v1.json",
@@ -1894,6 +1901,12 @@ fn cleanup_legacy_sidecars(root: &Path) {
     ] {
         let _ = std::fs::remove_file(root.join(rel));
     }
+    let legacy_codegraph = root.join(".jeikcode/codegraph");
+    if legacy_codegraph.is_dir() {
+        let _ = std::fs::remove_dir_all(&legacy_codegraph);
+    }
+    // Remove `.jeikcode` only if it is completely empty (preserves any user rules/glossary).
+    let _ = std::fs::remove_dir(root.join(".jeikcode"));
 }
 
 fn save_disk_cache(
@@ -3252,7 +3265,7 @@ impl CodeIndex {
     /// Cached graph lookup with no progress callbacks (tests / internal).
     ///
     /// Query-time: incrementally refreshes an **existing** non-empty
-    /// `.jeikcode/codegraph` index. Does **not** create a first index — that
+    /// `.zap/codegraph` index. Does **not** create a first index — that
     /// requires [`init_workspace_index`] / `jeikcode init`.
     pub fn get(&self, root: &Path) -> Arc<CodeGraph> {
         self.reconcile_workspace(root, None, &|_| {}, ReparseBudget::Query)
@@ -3382,7 +3395,7 @@ impl CodeIndex {
     /// only dirty/new files are re-parsed, then the graph is recomposed if needed.
     ///
     /// Cold start path: if memory is empty, load
-    /// [`.jeikcode/codegraph/index.v1.db`](super::index_db::DISK_CACHE_REL_DB)
+    /// [`.zap/codegraph/index.v1.db`](super::index_db::DISK_CACHE_REL_DB)
     /// written by `jeikcode init`.
     pub fn get_with_progress(&self, root: &Path, on_progress: &dyn Fn(&str)) -> Arc<CodeGraph> {
         self.reconcile_workspace(root, None, on_progress, ReparseBudget::Query)

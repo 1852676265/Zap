@@ -55,7 +55,7 @@ pub struct RepoPollState {
     pub pr_head_shas: HashMap<u64, String>,
 }
 
-/// 全局轮询状态存储模型 (`~/.jeikcode/git-poll-state.json`)
+/// 全局轮询状态存储模型 (`~/.zap/git-poll-state.json`)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitPollStateStore {
     #[serde(default)]

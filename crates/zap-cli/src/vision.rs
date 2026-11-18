@@ -9,13 +9,13 @@
 // Restores the TUI's VL image recognition that was dropped when the legacy
 // `jeikcode-bridge` (which did this in its turn handler) was retired.
 
+use std::sync::Arc;
 use zap_coding::vision::{run_vl_caption, should_skip, vl_model_display, PreprocessOutcome};
 use zap_coding::{
     derive_tier_config, CodingAgentConfig, CodingProviderFactory, ImageContent, ImagePreprocessor,
     UserInput, VisionNotice,
 };
 use zap_config::config::Config;
-use std::sync::Arc;
 
 /// VL preprocessing for the local TUI runtime. Carries the provider factory and
 /// a base agent config so it can build a one-off VL provider from

@@ -252,8 +252,7 @@ impl PluginManager {
     fn reload(&mut self) {
         self.marketplaces =
             zap_capabilities::plugin::marketplace::list_marketplaces().unwrap_or_default();
-        self.installed =
-            zap_capabilities::plugin::installer::list_installed().unwrap_or_default();
+        self.installed = zap_capabilities::plugin::installer::list_installed().unwrap_or_default();
         let n = self.current_len();
         if n == 0 {
             self.selected = 0;
@@ -314,17 +313,14 @@ impl PluginManager {
                     description = p.description.clone();
 
                     // If it is an inline plugin, we can try to read its actual plugin.json for more accurate / updated details
-                    if let zap_capabilities::plugin::PluginSource::Inline(ref path) = p.source
-                    {
+                    if let zap_capabilities::plugin::PluginSource::Inline(ref path) = p.source {
                         let normalized = path.trim_start_matches("./");
                         let dir = if normalized.is_empty() {
                             mp_dir.clone()
                         } else {
                             mp_dir.join(normalized)
                         };
-                        if let Ok(manifest) =
-                            zap_capabilities::plugin::load_plugin_manifest(&dir)
-                        {
+                        if let Ok(manifest) = zap_capabilities::plugin::load_plugin_manifest(&dir) {
                             if manifest.version.is_some() {
                                 version = manifest.version;
                             }
@@ -339,18 +335,14 @@ impl PluginManager {
             // 2. Fall back to loading from mp_dir/plugin (or mp_dir itself) if not found in marketplace manifest
             if version.is_none() && description.is_none() {
                 let plugin_dir = mp_dir.join(plugin);
-                if let Ok(manifest) =
-                    zap_capabilities::plugin::load_plugin_manifest(&plugin_dir)
-                {
+                if let Ok(manifest) = zap_capabilities::plugin::load_plugin_manifest(&plugin_dir) {
                     if manifest.version.is_some() || manifest.description.is_some() {
                         version = manifest.version;
                         description = manifest.description;
                     }
                 }
                 if version.is_none() && description.is_none() {
-                    if let Ok(manifest) =
-                        zap_capabilities::plugin::load_plugin_manifest(&mp_dir)
-                    {
+                    if let Ok(manifest) = zap_capabilities::plugin::load_plugin_manifest(&mp_dir) {
                         version = manifest.version;
                         description = manifest.description;
                     }
@@ -385,9 +377,7 @@ impl PluginManager {
                 .find(|i| i.plugin == plugin && i.marketplace == mp && i.scope == *scope)
             {
                 let plugin_dir = root.join(&info.plugin_dir);
-                if let Ok(manifest) =
-                    zap_capabilities::plugin::load_plugin_manifest(&plugin_dir)
-                {
+                if let Ok(manifest) = zap_capabilities::plugin::load_plugin_manifest(&plugin_dir) {
                     let version = manifest.version;
                     let description = manifest.description;
                     if version.is_some() || description.is_some() {
@@ -424,8 +414,7 @@ impl PluginManager {
             self.pending = Some(t(Msg::PluginMgrInstalling { plugin: &plugin }).into_owned());
         }
         tokio::task::spawn_blocking(move || {
-            let _ =
-                zap_capabilities::plugin::installer::uninstall(&plugin, &mp, scope.clone());
+            let _ = zap_capabilities::plugin::installer::uninstall(&plugin, &mp, scope.clone());
             let ev = match zap_capabilities::plugin::installer::install(&plugin, &mp, scope) {
                 Ok(info) => {
                     if is_update {
@@ -437,10 +426,14 @@ impl PluginManager {
                 Err(e) => {
                     if let Some(aie) = e
                         .downcast_ref::<zap_capabilities::plugin::installer::AlreadyInstalledError>(
-                    ) {
+                        )
+                    {
                         PluginJobEvent::PluginAlreadyInstalled { id: aie.id.clone() }
                     } else {
-                        PluginJobEvent::Failed { op: "install".into(), msg: format!("{:#}", e) }
+                        PluginJobEvent::Failed {
+                            op: "install".into(),
+                            msg: format!("{:#}", e),
+                        }
                     }
                 }
             };
@@ -553,11 +546,9 @@ impl PluginManager {
             .cloned()
             .collect();
         for i in installed_from_mp {
-            if let Err(e) = zap_capabilities::plugin::installer::uninstall(
-                &i.plugin,
-                &i.marketplace,
-                i.scope,
-            ) {
+            if let Err(e) =
+                zap_capabilities::plugin::installer::uninstall(&i.plugin, &i.marketplace, i.scope)
+            {
                 renderer.render(crate::render::UiLine::Error(format!(
                     "Failed to auto-uninstall plugin '{}': {:#}",
                     i.plugin, e
@@ -1597,7 +1588,9 @@ impl Modal for PluginManager {
 fn get_directory_modified_date(name: &str) -> String {
     if let Some(root) = zap_capabilities::plugin::marketplaces_root() {
         let dir = root.join(name);
-        let target = if dir.join(".jeikcode-plugin/marketplace.json").exists() {
+        let target = if dir.join(".zap-plugin/marketplace.json").exists() {
+            dir.join(".zap-plugin/marketplace.json")
+        } else if dir.join(".jeikcode-plugin/marketplace.json").exists() {
             dir.join(".jeikcode-plugin/marketplace.json")
         } else if dir.join(".git").exists() {
             dir.join(".git")

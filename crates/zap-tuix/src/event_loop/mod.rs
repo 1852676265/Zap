@@ -30,13 +30,13 @@ use std::time::Duration;
 use crate::session::{Session, SessionId};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use tokio::sync::{mpsc, watch};
+use ui_event::{UiAgentPhase as AgentPhase, UiEvent as AgentEvent};
 use zap_capabilities::tools::{is_shell_tool_name, is_todo_tool_name, todo_action_kind};
 use zap_coding::runtime::{CodingRuntimeEvent, CompactTrigger, CompactionCompletion};
 use zap_coding::CodingRuntimeHandle;
 use zap_config::config::Config;
 use zap_config::{ConfigCommit, ConfigRevision, ConfigSnapshot, ConfigStore};
-use tokio::sync::{mpsc, watch};
-use ui_event::{UiAgentPhase as AgentPhase, UiEvent as AgentEvent};
 
 use base64::Engine;
 use zap_kernel::message::ImageContent;
@@ -145,9 +145,7 @@ pub(crate) fn deactivate_runtime_provider_after_logout(
     let auth = AuthObservation::read();
     ctx.telemetry.set_account_id(auth.user_id.clone());
     let availability = ctx.runtime.ui_availability();
-    if availability == RuntimeUiAvailability::Starting
-        && provider_requires_zap_auth(&ctx.config)
-    {
+    if availability == RuntimeUiAvailability::Starting && provider_requires_zap_auth(&ctx.config) {
         // Reconcile again once startup settles; the provider may have been
         // assembled from credentials that disappeared during construction.
         ctx.observed_auth = None;
@@ -1529,9 +1527,7 @@ fn hold_submit_until_ready(
                 || (availability == RuntimeUiAvailability::AwaitingProvider
                     && matches!(
                         unavailable_reason,
-                        None | Some(
-                            zap_coding::ProviderUnavailableReason::AuthenticationRequired
-                        )
+                        None | Some(zap_coding::ProviderUnavailableReason::AuthenticationRequired)
                     ))))
 }
 
@@ -1596,12 +1592,11 @@ fn stop_reason_queue_action(reason: zap_kernel::event::StopReason) -> TypeAheadQ
 fn native_queue_action(event: &CodingRuntimeEvent) -> TypeAheadQueueAction {
     match event {
         CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::Completed {
-            reason,
-            ..
+            reason, ..
         }) => stop_reason_queue_action(*reason),
-        CodingRuntimeEvent::TurnFinished(
-            zap_coding::TurnCompletion::SnapshotUnavailable { .. },
-        )
+        CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::SnapshotUnavailable {
+            ..
+        })
         | CodingRuntimeEvent::RuntimeStopped(_) => TypeAheadQueueAction::Clear,
         _ => TypeAheadQueueAction::None,
     }
@@ -1644,9 +1639,9 @@ fn interrupt_queue_action(
             zap_coding::TurnCompletion::Completed { .. },
         )) => (TypeAheadQueueAction::DrainOne, false),
         bg_runtime::RuntimeEventPayload::Native(
-            CodingRuntimeEvent::TurnFinished(
-                zap_coding::TurnCompletion::SnapshotUnavailable { .. },
-            )
+            CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::SnapshotUnavailable {
+                ..
+            })
             | CodingRuntimeEvent::RuntimeStopped(_),
         ) => (TypeAheadQueueAction::Clear, false),
         _ if matches!(base, TypeAheadQueueAction::Clear) => (TypeAheadQueueAction::None, true),
@@ -1776,9 +1771,9 @@ mod submit_hold_tests {
             zap_coding::TurnCompletion::Completed {
                 turn_id: 1,
                 reason,
-                snapshot: std::sync::Arc::new(zap_kernel::message::SessionSnapshot::new(
-                    Vec::new(),
-                )),
+                snapshot: std::sync::Arc::new(
+                    zap_kernel::message::SessionSnapshot::new(Vec::new()),
+                ),
                 stats: Default::default(),
             },
         ))
@@ -1812,17 +1807,16 @@ mod submit_hold_tests {
             TypeAheadQueueAction::Clear
         );
 
-        let snapshot_unavailable =
-            bg_runtime::RuntimeEventPayload::Native(CodingRuntimeEvent::TurnFinished(
-                zap_coding::TurnCompletion::SnapshotUnavailable {
-                    turn_id: 1,
-                    reason: zap_kernel::event::StopReason::Stopped,
-                    error: zap_coding::RuntimeSnapshotError {
-                        message: "snapshot failed".into(),
-                    },
-                    stats: Default::default(),
+        let snapshot_unavailable = bg_runtime::RuntimeEventPayload::Native(
+            CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::SnapshotUnavailable {
+                turn_id: 1,
+                reason: zap_kernel::event::StopReason::Stopped,
+                error: zap_coding::RuntimeSnapshotError {
+                    message: "snapshot failed".into(),
                 },
-            ));
+                stats: Default::default(),
+            }),
+        );
         assert_eq!(
             type_ahead_queue_action(&snapshot_unavailable),
             TypeAheadQueueAction::Clear
@@ -2003,17 +1997,16 @@ mod submit_hold_tests {
 
     #[test]
     fn snapshot_and_runtime_stop_fail_closed_even_if_snapshot_reason_is_stopped() {
-        let snapshot_unavailable =
-            bg_runtime::RuntimeEventPayload::Native(CodingRuntimeEvent::TurnFinished(
-                zap_coding::TurnCompletion::SnapshotUnavailable {
-                    turn_id: 1,
-                    reason: zap_kernel::event::StopReason::Stopped,
-                    error: zap_coding::RuntimeSnapshotError {
-                        message: "snapshot failed".into(),
-                    },
-                    stats: Default::default(),
+        let snapshot_unavailable = bg_runtime::RuntimeEventPayload::Native(
+            CodingRuntimeEvent::TurnFinished(zap_coding::TurnCompletion::SnapshotUnavailable {
+                turn_id: 1,
+                reason: zap_kernel::event::StopReason::Stopped,
+                error: zap_coding::RuntimeSnapshotError {
+                    message: "snapshot failed".into(),
                 },
-            ));
+                stats: Default::default(),
+            }),
+        );
         assert_eq!(
             fixed_interval_loop_action(&snapshot_unavailable),
             FixedIntervalLoopAction::Clear
@@ -2169,9 +2162,7 @@ mod submit_hold_tests {
     #[test]
     fn startup_not_configured_event_does_not_pollute_scrollback() {
         assert_eq!(
-            provider_unavailable_announcement(
-                zap_coding::ProviderUnavailableReason::NotConfigured
-            ),
+            provider_unavailable_announcement(zap_coding::ProviderUnavailableReason::NotConfigured),
             None
         );
         assert!(provider_unavailable_announcement(
@@ -2417,10 +2408,7 @@ impl ReadyRuntimeControl {
         ));
     }
 
-    fn enqueue(
-        &self,
-        request: ReadyRuntimeRequest,
-    ) -> Result<(), zap_coding::RuntimeUnavailable> {
+    fn enqueue(&self, request: ReadyRuntimeRequest) -> Result<(), zap_coding::RuntimeUnavailable> {
         if self.handle.is_stopped() {
             return Err(zap_coding::RuntimeUnavailable);
         }
@@ -2682,9 +2670,7 @@ impl DeferredRuntimeControl {
 
     fn provider_unavailable_reason(&self) -> Option<zap_coding::ProviderUnavailableReason> {
         match &*self.state.borrow() {
-            zap_coding::DeferredRuntimeState::Ready(handle) => {
-                handle.provider_unavailable_reason()
-            }
+            zap_coding::DeferredRuntimeState::Ready(handle) => handle.provider_unavailable_reason(),
             zap_coding::DeferredRuntimeState::Starting
             | zap_coding::DeferredRuntimeState::Failed(_) => None,
         }
@@ -2726,9 +2712,7 @@ impl DeferredRuntimeControl {
             return matches!(command, zap_coding::DriverCommand::Shutdown);
         }
         match &*self.state.borrow() {
-            zap_coding::DeferredRuntimeState::Starting => {
-                command_allowed_while_starting(command)
-            }
+            zap_coding::DeferredRuntimeState::Starting => command_allowed_while_starting(command),
             zap_coding::DeferredRuntimeState::Ready(handle) => handle.accepts(command),
             zap_coding::DeferredRuntimeState::Failed(_) => {
                 matches!(command, zap_coding::DriverCommand::Shutdown)
@@ -2802,9 +2786,9 @@ impl RuntimeControl {
                 ready.handle.status().generation,
             )),
             Self::Deferred(deferred) => match &*deferred.state.borrow() {
-                zap_coding::DeferredRuntimeState::Ready(handle) => Some(
-                    zap_coding::RuntimeGeneration(handle.status().generation),
-                ),
+                zap_coding::DeferredRuntimeState::Ready(handle) => {
+                    Some(zap_coding::RuntimeGeneration(handle.status().generation))
+                }
                 zap_coding::DeferredRuntimeState::Starting
                 | zap_coding::DeferredRuntimeState::Failed(_) => None,
             },
@@ -2897,10 +2881,7 @@ impl RuntimeControl {
         });
     }
 
-    pub fn compact(
-        &self,
-        focus: Option<String>,
-    ) -> Result<(), zap_coding::RuntimeUnavailable> {
+    pub fn compact(&self, focus: Option<String>) -> Result<(), zap_coding::RuntimeUnavailable> {
         match self {
             Self::Ready(ready) => ready.enqueue(ReadyRuntimeRequest::Compact(focus)),
             Self::Deferred(deferred) if deferred.normal_operation_allowed() => {
@@ -2935,9 +2916,7 @@ impl RuntimeControl {
             Self::Ready(_) => self.dispatch(command),
             Self::Deferred(deferred) => match &*deferred.state.borrow() {
                 zap_coding::DeferredRuntimeState::Starting => deferred.send(command),
-                zap_coding::DeferredRuntimeState::Ready(handle)
-                    if handle.accepts(&command) =>
-                {
+                zap_coding::DeferredRuntimeState::Ready(handle) if handle.accepts(&command) => {
                     deferred.send(command)
                 }
                 zap_coding::DeferredRuntimeState::Ready(_)
@@ -3255,12 +3234,10 @@ impl zap_daemon::live_hub::LiveRuntimeControl for RuntimeControl {
                     phase: zap_coding::RuntimePhase::Reconfiguring,
                 },
                 zap_coding::DeferredRuntimeState::Ready(handle) => handle.status(),
-                zap_coding::DeferredRuntimeState::Failed(_) => {
-                    zap_coding::RuntimeStatus {
-                        generation: 0,
-                        phase: zap_coding::RuntimePhase::Failed,
-                    }
-                }
+                zap_coding::DeferredRuntimeState::Failed(_) => zap_coding::RuntimeStatus {
+                    generation: 0,
+                    phase: zap_coding::RuntimePhase::Failed,
+                },
             },
         }
     }
@@ -3317,6 +3294,7 @@ mod local_restore_scope_tests {
         bg_runtime, bg_runtime::RuntimeId, complete_mcp_reload_notice,
         request_context_stats_render, RuntimeControl, RuntimeUiAvailability,
     };
+    use tokio::sync::{mpsc, watch};
     use zap_coding::runtime::{
         coding_runtime_control_channel, noop_agent_handle, spawn_runtime_owner,
         CodingRuntimeControl,
@@ -3325,7 +3303,6 @@ mod local_restore_scope_tests {
         CodingAgentConfig, DeferredRuntimeState, DriverCommand, ProviderUnavailableReason,
         UserInput,
     };
-    use tokio::sync::{mpsc, watch};
 
     #[tokio::test]
     async fn ready_runtime_preserves_undo_before_later_submit() {
@@ -3773,8 +3750,7 @@ pub struct LoopCtx {
     /// without extra plumbing. Used by the slash-command palette to
     /// surface user-invocable skills, and by the dispatcher to build a
     /// `use_skill(<name>)` request for `/skill_name [args]`.
-    pub skill_registry:
-        std::sync::Arc<std::sync::RwLock<zap_capabilities::skills::SkillRegistry>>,
+    pub skill_registry: std::sync::Arc<std::sync::RwLock<zap_capabilities::skills::SkillRegistry>>,
     /// Snapshot of the terminal's rendering capabilities. Probed once at
     /// startup in `lib.rs`; threaded into `App::new` so `UiState` knows
     /// whether to use Unicode or ASCII fallbacks for the spinner glyph
@@ -5818,8 +5794,7 @@ mod menu_tests {
         let reg = CommandRegistry::builtin();
         let custom = UserCommandRegistry::empty();
         let with_none = build_menu_items("/", 0, &reg, &custom, None, None).unwrap();
-        let empty_skills =
-            std::sync::RwLock::new(zap_capabilities::skills::SkillRegistry::new());
+        let empty_skills = std::sync::RwLock::new(zap_capabilities::skills::SkillRegistry::new());
         let with_empty =
             build_menu_items("/", 0, &reg, &custom, Some(&empty_skills), None).unwrap();
         assert_eq!(
@@ -9346,8 +9321,7 @@ fn should_deactivate_for_missing_auth(
     config: &Config,
     runtime_availability: RuntimeUiAvailability,
 ) -> bool {
-    provider_requires_zap_auth(config)
-        && runtime_availability == RuntimeUiAvailability::Available
+    provider_requires_zap_auth(config) && runtime_availability == RuntimeUiAvailability::Available
 }
 
 /// Thinking / reasoning knobs that live on the *current* model and are
@@ -10347,10 +10321,7 @@ mod external_config_tests {
         let mut pending = Some(observation.clone());
 
         assert_eq!(
-            current_provider_projection(
-                pending.as_ref(),
-                Some(zap_coding::RuntimeGeneration(5)),
-            ),
+            current_provider_projection(pending.as_ref(), Some(zap_coding::RuntimeGeneration(5)),),
             Some(observation.clone()),
         );
         finish_provider_projection_attempt(
@@ -11909,8 +11880,7 @@ fn handle_idle_key(
     if app.state.goal_condition.is_some() {
         let is_ctrl_c = is_ctrl_letter(code, modifiers, 'c');
         let is_bare_esc = code == KeyCode::Esc && app.buf.text.is_empty();
-        let should_pause =
-            is_bare_esc && app.state.goal_phase == zap_coding::GoalPhase::Pursuing;
+        let should_pause = is_bare_esc && app.state.goal_phase == zap_coding::GoalPhase::Pursuing;
         if is_ctrl_c || should_pause {
             let has_active_turn = ctx.runtime.has_active_turn();
             let sent = if is_ctrl_c {
@@ -12127,8 +12097,8 @@ fn handle_idle_key(
                         // `/skills ` so backspace still recovers.
                         renderer.render(UiLine::CommandOutput(
                             "  \u{24d8} No user-invocable skills installed yet.\n    \
-                            \u{2022} Drop SKILL.md into ~/.jeikcode/skills/<name>/ \n      \
-                              (Windows: %USERPROFILE%\\.jeikcode\\skills\\<name>\\)\n    \
+                            \u{2022} Drop SKILL.md into ~/.zap/skills/<name>/ \n      \
+                              (Windows: %USERPROFILE%\\.zap\\skills\\<name>\\)\n    \
                             \u{2022} Or install a plugin that ships skills via /plugin install <git-url>\n\n"
                                 .into(),
                         ));
@@ -12822,9 +12792,9 @@ fn handle_idle_key(
                         } else {
                             app.state.on_submit_rejected();
                             let message = match unavailable_reason {
-                                Some(
-                                    zap_coding::ProviderUnavailableReason::UnsupportedBuild,
-                                ) => crate::i18n::Msg::CmdProviderUnsupportedBuild,
+                                Some(zap_coding::ProviderUnavailableReason::UnsupportedBuild) => {
+                                    crate::i18n::Msg::CmdProviderUnsupportedBuild
+                                }
                                 Some(zap_coding::ProviderUnavailableReason::NotConfigured) => {
                                     crate::i18n::Msg::CmdNoActiveProvider
                                 }
@@ -13123,9 +13093,9 @@ pub(crate) fn set_agent_mode(
         .dispatch(zap_coding::DriverCommand::SetMode(runtime_mode(mode)))
         .ok();
     zap_daemon::live_set_mode(mode); // daemon ApprovalMode == core Mode
-                                          // The footer persistently shows the current mode, so a scrollback feedback line
-                                          // is redundant in the interactive renderer — and it spams on rapid Tab / Shift+Tab
-                                          // cycling. Emit it ONLY in plain mode (pipe / CI), which has no persistent footer.
+                                     // The footer persistently shows the current mode, so a scrollback feedback line
+                                     // is redundant in the interactive renderer — and it spams on rapid Tab / Shift+Tab
+                                     // cycling. Emit it ONLY in plain mode (pipe / CI), which has no persistent footer.
     if ctx.is_plain_renderer {
         let msg = match mode {
             crate::state::AgentMode::Auto => {
@@ -13566,8 +13536,7 @@ pub(crate) fn reload_plugins(ctx: &mut LoopCtx) -> (usize, Vec<String>) {
         warnings = reload_skill_registry(&mut guard, &ctx.working_dir);
         loaded = guard.all().count();
     }
-    ctx.custom_commands =
-        zap_capabilities::commands::UserCommandRegistry::load(&ctx.working_dir);
+    ctx.custom_commands = zap_capabilities::commands::UserCommandRegistry::load(&ctx.working_dir);
     // Hook executor lives on the agent loop. Send a one-shot rebuild signal
     // so plugin-contributed hooks (especially UserPromptSubmit) fire on the
     // next user message rather than waiting for /cd or restart.
@@ -15069,13 +15038,10 @@ fn deliver_user_input_null(ctx: &mut LoopCtx, id: u64) {
             crate::tuix_trace!("LIVE", "null user-input response failed: {error:?}");
         }
     } else {
-        if let Err(error) = ctx
-            .runtime
-            .dispatch(zap_coding::DriverCommand::Respond {
-                id,
-                value: serde_json::Value::Null,
-            })
-        {
+        if let Err(error) = ctx.runtime.dispatch(zap_coding::DriverCommand::Respond {
+            id,
+            value: serde_json::Value::Null,
+        }) {
             crate::tuix_trace!("LIVE", "null user-input response failed: {error:?}");
         }
     }
@@ -17280,8 +17246,8 @@ mod approval_retract_tests {
 fn notify_stop_reason(
     reason: ui_event::UiTurnStopReason,
 ) -> zap_capabilities::notify::NotifyStopReason {
-    use zap_capabilities::notify::NotifyStopReason as N;
     use ui_event::UiTurnStopReason as T;
+    use zap_capabilities::notify::NotifyStopReason as N;
     match reason {
         T::Natural => N::Natural,
         T::Cancelled => N::Cancelled,
@@ -17408,8 +17374,7 @@ fn streams_tool_output_by_default(
 }
 
 fn ephemeral_tool_activity<'a>(tool_display: Option<&str>, chunk: &'a str) -> Option<&'a str> {
-    let activity =
-        chunk.strip_prefix(zap_capabilities::tools::task::SUBAGENT_ACTIVITY_MARKER)?;
+    let activity = chunk.strip_prefix(zap_capabilities::tools::task::SUBAGENT_ACTIVITY_MARKER)?;
     let supported = tool_display.is_some_and(|display| {
         display == display_tool_name("task") || display == display_tool_name("code_review")
     });
@@ -17906,8 +17871,8 @@ mod ctrl_o_hint_gating_tests {
 }
 
 fn kernel_stop_reason(reason: zap_kernel::event::StopReason) -> ui_event::UiTurnStopReason {
-    use zap_kernel::event::StopReason as Kernel;
     use ui_event::UiTurnStopReason as Core;
+    use zap_kernel::event::StopReason as Kernel;
     match reason {
         Kernel::Stopped => Core::Natural,
         Kernel::MaxRounds | Kernel::MaxContinuations => Core::TurnLimit,
@@ -18616,9 +18581,10 @@ fn handle_runtime_event(
                             return;
                         }
                     };
-                    let snapshot = request.snapshot.as_deref().cloned().unwrap_or_else(|| {
-                        zap_kernel::message::SessionSnapshot::new(Vec::new())
-                    });
+                    let snapshot =
+                        request.snapshot.as_deref().cloned().unwrap_or_else(|| {
+                            zap_kernel::message::SessionSnapshot::new(Vec::new())
+                        });
                     handle_agent_event(
                         AgentEvent::ApprovalNeeded {
                             tool_name: approval.tool.clone(),
@@ -19781,8 +19747,9 @@ fn commit_native_session_changed(
 
     commit_working_dir_projection(ctx, working_dir);
     ctx.current_session_id = Some(session_id.clone());
-    ctx.current_session_project_bucket =
-        Some(zap_capabilities::session::SessionManager::project_hash(&ctx.working_dir));
+    ctx.current_session_project_bucket = Some(
+        zap_capabilities::session::SessionManager::project_hash(&ctx.working_dir),
+    );
     ctx.loop_ctrl = None;
     state.loop_label = None;
     state.loop_round = 0;
@@ -19983,8 +19950,7 @@ fn handle_rewind_success(
 ) {
     let restored_conversation = matches!(
         result.scope,
-        zap_coding::RewindScope::Conversation
-            | zap_coding::RewindScope::ConversationAndCode
+        zap_coding::RewindScope::Conversation | zap_coding::RewindScope::ConversationAndCode
     );
     if restored_conversation {
         let new_len = result.snapshot.messages.len();
@@ -20011,10 +19977,9 @@ fn handle_rewind_success(
             crate::i18n::Locale::ZhCn | crate::i18n::Locale::ZhTw,
             zap_coding::RewindScope::Conversation,
         ) => "对话",
-        (
-            crate::i18n::Locale::ZhCn | crate::i18n::Locale::ZhTw,
-            zap_coding::RewindScope::Code,
-        ) => "代码",
+        (crate::i18n::Locale::ZhCn | crate::i18n::Locale::ZhTw, zap_coding::RewindScope::Code) => {
+            "代码"
+        }
         (
             crate::i18n::Locale::ZhCn | crate::i18n::Locale::ZhTw,
             zap_coding::RewindScope::ConversationAndCode,
@@ -20377,8 +20342,7 @@ mod coding_runtime_event_tests {
                 CodingRuntimeEvent::CompactionFinished {
                     completion: CompactionCompletion::Interrupted {
                         trigger: CompactTrigger::Manual { focus: None },
-                        reason:
-                            zap_coding::runtime::CompactionInterruption::RuntimeReconfigured,
+                        reason: zap_coding::runtime::CompactionInterruption::RuntimeReconfigured,
                     },
                 },
                 &mut state,
@@ -20565,9 +20529,7 @@ mod coding_runtime_event_tests {
                 CodingRuntimeEvent::CompactionFinished {
                     completion: CompactionCompletion::Failed {
                         trigger: CompactTrigger::Manual { focus: None },
-                        error: zap_kernel::checkpoint::CompactionCheckpointError::new(
-                            "disk full",
-                        ),
+                        error: zap_kernel::checkpoint::CompactionCheckpointError::new("disk full"),
                     },
                 },
                 &mut state,
@@ -21904,9 +21866,9 @@ fn handle_agent_event(
                     renderer.render(UiLine::CommandOutput(format!("（手机端执行 {display}）")));
                     renderer.render(UiLine::CommandOutput(txt.clone()));
                     renderer.flush();
-                    if let Err(error) = zap_daemon::native_live::publish_command_output(
-                        format!("{display}\n{txt}"),
-                    ) {
+                    if let Err(error) =
+                        zap_daemon::native_live::publish_command_output(format!("{display}\n{txt}"))
+                    {
                         renderer.render(UiLine::Error(format!(
                             "Remote command output synchronization failed: {error:?}"
                         )));
@@ -21914,12 +21876,10 @@ fn handle_agent_event(
                     }
                 }
                 None => {
-                    if let Err(error) =
-                        zap_daemon::native_live::publish_command_output(format!(
-                            "{display}\n  该命令需要在桌面端执行（手机端仅支持 \
+                    if let Err(error) = zap_daemon::native_live::publish_command_output(format!(
+                        "{display}\n  该命令需要在桌面端执行（手机端仅支持 \
                              /status /cost /whoami /diff）"
-                        ))
-                    {
+                    )) {
                         renderer.render(UiLine::Error(format!(
                             "Remote command rejection synchronization failed: {error:?}"
                         )));
@@ -22157,8 +22117,7 @@ fn handle_agent_event(
                 // Whether the badge was ALREADY a live Pursuing goal before this
                 // update — captured before we overwrite goal_phase below. `goal_phase`
                 // defaults to Pursuing with no condition, so require goal_condition too.
-                let entering_from_pursuing = state.goal_phase
-                    == zap_coding::GoalPhase::Pursuing
+                let entering_from_pursuing = state.goal_phase == zap_coding::GoalPhase::Pursuing
                     && state.goal_condition.is_some();
                 // Pursuing: update live badge state.
                 state.goal_condition = Some(condition);

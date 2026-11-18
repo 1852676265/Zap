@@ -812,8 +812,8 @@ mod tests {
     // ── FakeScheduler — records install/uninstall calls ───────────────────────
 
     use crate::schedule_os::{InstallState, OsScheduler};
-    use zap_config::schedule::ScheduleTask;
     use std::sync::{Mutex, OnceLock};
+    use zap_config::schedule::ScheduleTask;
 
     /// Global lock to serialize tests that mutate JEIKCODE_HOME / the schedule store.
     fn store_lock() -> &'static Mutex<()> {

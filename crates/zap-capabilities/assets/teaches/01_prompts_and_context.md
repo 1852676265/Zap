@@ -1,6 +1,6 @@
 # 01 - 提示词与上下文配置指南 (Prompts & Context)
 
-配置目录路径：`~/.jeikcode/prompts/`（或 `$JEIKCODE_HOME/prompts/`）。
+配置目录路径：`~/.zap/prompts/`（或 `$ZAP_HOME/prompts/`）。
 
 ---
 
@@ -32,7 +32,7 @@ identity:
     - No proactive configuration reads: When the user asks about current tools, MCP, Skills, rules, what we have discussed, or similar, answer directly from the interaction history visible in your current context and from the visible `<available_skills>`, `<mcp_server_instructions>`, `<system_rules>`, `<memory>`, `<user_preferences>`, `<project_instructions>`, etc. Read configuration proactively only when the user explicitly asks to inspect the configured models, query session file records, troubleshoot JeikCode logs, or makes another equally explicit request.
 
     ## Configuration Directories
-    - Global configuration, sessions, and logs live under `~/.jeikcode/`; project configuration lives under `./` or `./.jeikcode/`. Do not read configuration proactively unless the user has a clear intent for you to do so.
+    - Global configuration, sessions, and logs live under `~/.zap/`; project configuration lives under `./` or `./.zap/`. Do not read configuration proactively unless the user has a clear intent for you to do so.
     - Preference and rule files (for example, `AGENTS.md`, `JEIKCODE.md`, `CLAUDE.md`, `rules.md`, `glossary.md`, `dbwords.md`, `memory.md`) take effect immediately upon modification. When the user asks you to change project standards, only scan and modify `./AGENTS.md`.
 
 precedence:
@@ -106,9 +106,9 @@ prohibitions:
 
 ### 4.2 配置文件优先级
 按以下就近原则加载（命中首个生效）：
-1. 项目级专属：`<workspace>/.jeikcode/user-wrap.md`
+1. 项目级专属：`<workspace>/.zap/user-wrap.md`
 2. 项目级根目录：`<workspace>/user-wrap.md`
-3. 全局默认：`~/.jeikcode/user-wrap.md`
+3. 全局默认：`~/.zap/user-wrap.md`
 
 ---
 
@@ -129,7 +129,7 @@ prohibitions:
 | 30 | `<available_skills>` | 已安装技能目录 |
 | 40 | `<mcp_server_instructions>` | MCP 服务器说明 |
 | 50 | `<memory>` | `memory.md`（全局 + 项目） |
-| 55 | `<user_preferences>` | `~/.jeikcode/AGENTS.md` / `JEIKCODE.md` |
+| 55 | `<user_preferences>` | `~/.zap/AGENTS.md` / `ZAP.md` |
 | 60 | `<project_instructions>` | 项目 `AGENTS.md` 等 + 业务知识包 |
 
 - 优先级统一由 sys-1（`<environment>` 块）的 `## PRECEDENCE:` 表达；冲突时 **项目指令 >> memory > 用户偏好 > system 规则**。`<user_preferences>`、`<memory>`、`<project_instructions>` 不再各自携带前导优先级说明。

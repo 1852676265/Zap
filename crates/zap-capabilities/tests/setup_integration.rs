@@ -2,13 +2,13 @@
 //! End-to-end integration tests for `setup::run`.
 //!
 //! 这些测试需要把 `Config::config_dir()` 重定向到 tempdir，确保不污染真实的
-//! `~/.jeikcode/`。重定向现在是**线程级** home 覆盖（不再写进程 env）：
+//! `~/.zap/`。重定向现在是**线程级** home 覆盖（不再写进程 env）：
 //! 测试之间不再共享/互改同一个 home，也不再依赖“env 全局”带来的串行假设。
 //! （保留 `#[serial]` 是因为 setup 状态与项目目录仍有共享面。）
 
-use zap_capabilities::setup::{self, RunOptions};
 use serial_test::serial;
 use std::path::Path;
+use zap_capabilities::setup::{self, RunOptions};
 
 #[ctor::ctor]
 fn _isolate_jeikcode_home() {

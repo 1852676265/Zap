@@ -79,11 +79,16 @@ export function createTimelineFollow(
     return false;
   };
   const wheel = (event: WheelEvent) => {
-    if (event.defaultPrevented || canConsumeScroll(event.target, event.deltaY)) return;
+    if (event.defaultPrevented) return;
+    // Fast-path: non-upward delta or already-paused reader never triggers pause(),
+    // avoiding ancestor getComputedStyle/scrollHeight walks on every wheel tick.
+    if (!(event.deltaY < 0) || !following.current || !element || element.scrollTop <= 0) {
+      writtenTop = null;
+      return;
+    }
+    if (canConsumeScroll(event.target, event.deltaY)) return;
     writtenTop = null;
-    // Only explicit upward intent suspends. Downward intent alone does not
-    // resume: a subsequent downward position change must reach near-bottom.
-    if (element && element.scrollTop > 0 && event.deltaY < 0) pause();
+    pause();
   };
   const pointer = () => { writtenTop = null; };
   const key = (event: KeyboardEvent) => {
@@ -120,7 +125,7 @@ export function createTimelineFollow(
     upwardIntentSuspended = false;
     if (!next) return;
     lastTop = next.scrollTop;
-    next.addEventListener('scroll', scroll);
+    next.addEventListener('scroll', scroll, { passive: true });
     next.addEventListener('wheel', wheel, { passive: true });
     next.addEventListener('pointerdown', pointer, { passive: true });
     next.addEventListener('keydown', key);

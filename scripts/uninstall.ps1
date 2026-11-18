@@ -4,7 +4,7 @@
 #
 # Flags (pass via param):
 #   -Yes              skip prompts; use defaults (G1=yes, G2=no, G3=yes)
-#   -Purge            delete everything including %USERPROFILE%\.jeikcode
+#   -Purge            delete everything including %USERPROFILE%\.zap
 #   -KeepData         only delete binary + PATH entry
 #   -DryRun           print plan, do nothing
 #   -PrintManifest    emit manifest used for parity tests, exit
@@ -37,12 +37,18 @@ if ($Purge -and $KeepData) { Write-Error "-Purge conflicts with -KeepData"; exit
 $InstallDir = if ($env:JEIKCODE_PREFIX) { $env:JEIKCODE_PREFIX } elseif (Test-Path (Join-Path $env:LOCALAPPDATA "JeikCode")) { Join-Path $env:LOCALAPPDATA "JeikCode" } else { Join-Path $env:LOCALAPPDATA "JeikCode" }
 $Binary = Join-Path $InstallDir "jeikcode.exe"
 
-$DataDir = if ($env:JEIKCODE_HOME) { $env:JEIKCODE_HOME } else { Join-Path $env:USERPROFILE ".jeikcode" }
+$DataDir = if ($env:ZAP_HOME) { $env:ZAP_HOME } elseif ($env:JEIKCODE_HOME) { $env:JEIKCODE_HOME } else {
+    $zapDir = Join-Path $env:USERPROFILE ".zap"
+    if (Test-Path $zapDir) { $zapDir } else {
+        $legacyDir = Join-Path $env:USERPROFILE ".jeikcode"
+        if (Test-Path $legacyDir) { $legacyDir } else { $zapDir }
+    }
+}
 
 # plan
 Write-Host "Will remove (Group 1):"
 if (Test-Path $Binary) { Write-Host "  $Binary" }
-foreach ($f in @("jeikcode.exe.bak",".jeikcode.rolling",".jeikcode.download",".jeikcode.writable-probe")) {
+foreach ($f in @("jeikcode.exe.bak",".zap.rolling",".zap.download",".zap.writable-probe",".jeikcode.rolling",".jeikcode.download",".jeikcode.writable-probe")) {
     $p = Join-Path $InstallDir $f
     if (Test-Path $p) { Write-Host "  $p" }
 }

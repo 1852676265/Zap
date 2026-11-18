@@ -132,9 +132,7 @@ pub fn run_startup_hooks(config: &Config) -> Vec<PluginJobEvent> {
     {
         events.extend(maybe_install_default_skills());
     }
-    if config.plugin.auto_update_marketplaces
-        && !zap_config::config::offline::is_offline_active()
-    {
+    if config.plugin.auto_update_marketplaces && !zap_config::config::offline::is_offline_active() {
         events.extend(refresh_installed_marketplaces());
     }
     events
@@ -225,7 +223,7 @@ pub fn purge_legacy_brand_plugins() {
 }
 
 fn bootstrap_marker_path() -> std::path::PathBuf {
-    // Lives directly under `~/.jeikcode/` (the canonical config dir),
+    // Lives directly under `~/.zap/` (the canonical config dir),
     // not nested under `plugins/` — it's a per-user run-state flag,
     // not a plugin asset. Same neighbourhood as
     // `.telemetry_notice_shown`.
@@ -484,7 +482,7 @@ mod tests {
 
     #[test]
     fn marker_path_uses_versioned_filename() {
-        // We don't assert the exact `~/.jeikcode/...` location (depends
+        // We don't assert the exact `~/.zap/...` location (depends
         // on $HOME / env), but the suffix should be the versioned
         // marker name so future bootstrap-v2 introductions don't
         // accidentally overwrite v1's marker.

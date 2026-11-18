@@ -779,10 +779,8 @@ pub(crate) fn replay_session(
         }
         match m.role {
             Role::User if is_real_user_message(m) => {
-                let shown = zap_capabilities::session::user_text_for_display(
-                    &session.working_dir,
-                    &m.text,
-                );
+                let shown =
+                    zap_capabilities::session::user_text_for_display(&session.working_dir, &m.text);
                 if !shown.is_empty() {
                     renderer.render(UiLine::User(shown));
                 }
@@ -792,8 +790,7 @@ pub(crate) fn replay_session(
             // requested tool call — identical to the old `Text` /
             // `AssistantWithToolCalls` split.
             Role::Assistant => {
-                if m.internal_origin.as_deref()
-                    == Some(zap_kernel::message::TURN_DIAGNOSTIC_ORIGIN)
+                if m.internal_origin.as_deref() == Some(zap_kernel::message::TURN_DIAGNOSTIC_ORIGIN)
                 {
                     if !m.text.is_empty() {
                         renderer.render(UiLine::Error(m.text.clone()));
@@ -861,8 +858,7 @@ pub(crate) fn replay_session(
                             // suppressed — a bad one falls through to a normal tool row so its
                             // error still shows.
                             if zap_capabilities::tools::is_todo_tool_name(&tc.name)
-                                && zap_capabilities::tools::todo::parse_todos(&tc.arguments)
-                                    .is_ok()
+                                && zap_capabilities::tools::todo::parse_todos(&tc.arguments).is_ok()
                             {
                                 if !tc.id.is_empty() {
                                     todowrite_call_ids.insert(tc.id.clone());

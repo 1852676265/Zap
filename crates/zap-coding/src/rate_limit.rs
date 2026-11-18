@@ -219,8 +219,8 @@ impl LifecycleHooks for RateLimitHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::hook::{LifecycleHooks, RateLimitDecision, RateLimitHint};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use zap_kernel::hook::{LifecycleHooks, RateLimitDecision, RateLimitHint};
 
     #[derive(Debug)]
     struct FakeWindowSource {

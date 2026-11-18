@@ -151,9 +151,7 @@ pub fn first_exchange_text_in(messages: &[Message], working_dir: &Path) -> Optio
                 && !message.synthetic
                 && !zap_capabilities::reminder::is_system_reminder(&message.text)
         })
-        .map(|message| {
-            zap_capabilities::session::user_text_for_display(working_dir, &message.text)
-        })
+        .map(|message| zap_capabilities::session::user_text_for_display(working_dir, &message.text))
         .next()
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())?;

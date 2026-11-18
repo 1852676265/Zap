@@ -13,11 +13,11 @@
 //!    - If total lines > 1500, informs how many lines remain and instructs reading the remainder via offset/limit.
 
 use async_trait::async_trait;
-use zap_kernel::hook::LifecycleHooks;
-use zap_kernel::message::Conversation;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+use zap_kernel::hook::LifecycleHooks;
+use zap_kernel::message::Conversation;
 
 const DEFAULT_READ_LIMIT: usize = 1500;
 const MAX_LINE_LEN: usize = 2000;

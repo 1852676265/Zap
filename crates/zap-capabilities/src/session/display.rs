@@ -17,10 +17,10 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use zap_kernel::event::StopReason;
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
 use zap_kernel::message::{Conversation, Message, Role};
-use serde::{Deserialize, Serialize};
 
 use super::manager::SessionManager;
 use super::{SessionResult, SessionStoreError};

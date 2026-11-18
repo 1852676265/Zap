@@ -25,7 +25,7 @@ pub fn stable_project_hash(path: &Path) -> String {
 
 /// Resolve the invoking user's real home dir, sudo-aware: under `sudo`, `$HOME`
 /// points at root, so consult `SUDO_USER` via `getpwnam` first (avoids creating a
-/// root-owned `~/.jeikcode`). Falls back to `dirs::home_dir()`.
+/// root-owned `~/.zap`). Falls back to `dirs::home_dir()`.
 pub fn real_home_dir() -> Option<PathBuf> {
     if let Ok(sudo_user) = std::env::var("SUDO_USER") {
         if let Some(home) = get_user_home(&sudo_user) {

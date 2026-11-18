@@ -18,12 +18,12 @@
 //! receives EXACTLY the stored history — no ephemeral tail to confuse the prefix
 //! relation. (The ephemeral-projection-not-stored property is claim 8's job.)
 
+use std::sync::Arc;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::message::{Message, Role};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{DangerousBashTool, EchoTool, RecordingProvider};
 use zap_kernel::tool::{ToolCall, ToolDef, ToolRegistry};
-use std::sync::Arc;
 
 const PERSONA: &str = "you are a neutral test agent";
 

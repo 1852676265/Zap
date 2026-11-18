@@ -14,12 +14,12 @@ use crate::request::RequestCtx;
 use crate::stream::{StreamEvent, TokenUsage};
 use crate::tool::{MountedTools, ProgressSink, ToolCall, ToolContext, ToolResult};
 use futures::StreamExt;
-use zap_config::i18n;
 use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use zap_config::i18n;
 
 /// Default kernel cap on a single tool result's `content` byte length.
 ///

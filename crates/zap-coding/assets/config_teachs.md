@@ -1,17 +1,17 @@
 # JeikCode 配置文件（config.toml）Agent 指南与配置教程
 
 > **目标受众**：AI Agent / 自动化配置脚本 / 开发者。
-> **文档用途**：当用户请求配置模型、添加 Provider、配置代理或调整运行时参数时，Agent 必须严格依据本文档中的真实代码 Schema、内置预设库与协议规范，安全且精准地读取或修改 `~/.jeikcode/config.toml`。
+> **文档用途**：当用户请求配置模型、添加 Provider、配置代理或调整运行时参数时，Agent 必须严格依据本文档中的真实代码 Schema、内置预设库与协议规范，安全且精准地读取或修改 `~/.zap/config.toml`。
 
 ---
 
 ## 1. 配置文件定位与核心语法约束
 
 ### 1.1 文件路径
-- **默认全局配置路径**：`~/.jeikcode/config.toml`
-  - Windows: `%USERPROFILE%\.jeikcode\config.toml`（例如 `C:\Users\<username>\.jeikcode\config.toml`）
-  - Linux / macOS: `~/.jeikcode/config.toml`（例如 `/home/<username>/.jeikcode/config.toml`）
-- **环境变量覆盖**：若设置了 `JEIKCODE_HOME`，优先读取 `$JEIKCODE_HOME/config.toml`。
+- **默认全局配置路径**：`~/.zap/config.toml`
+  - Windows: `%USERPROFILE%\.zap\config.toml`（例如 `C:\Users\<username>\.zap\config.toml`）
+  - Linux / macOS: `~/.zap/config.toml`（例如 `/home/<username>/.zap/config.toml`）
+- **环境变量覆盖**：若设置了 `ZAP_HOME`（或 `JEIKCODE_HOME`），优先读取对应目录下的 `config.toml`。
 
 ### 1.2 TOML 顶层键关键规则（⚠️ 极度重要）
 1. **顶层标量必须置于最前**：
@@ -267,7 +267,7 @@ mode = "follow_system"          # "follow_system" | "default_proxy" | "no_proxy"
 # =============================================================================
 [datalog]
 enabled = true
-dir = "~/.jeikcode/datalog"
+dir = "~/.zap/datalog"
 
 # =============================================================================
 # 终端 UI [ui]

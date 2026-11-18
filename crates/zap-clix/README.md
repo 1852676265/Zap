@@ -15,7 +15,7 @@ jeikcodex review [diff 来源] [provider] [system prompt] [输出] [调优]
 
 ## 1. Provider 凭据
 
-解析优先级:**命令行 flag > 环境变量(`JEIKCODE_*`)> `~/.jeikcode/config.toml`**。
+解析优先级:**命令行 flag > 环境变量(`JEIKCODE_*`)> `~/.zap/config.toml`**。
 
 ```bash
 # A) 零配置 —— 用 config.toml 的 default_provider
@@ -223,7 +223,7 @@ Reviewing 120 changed line(s) with deepseek-chat …
 --diff-file <path|->    从文件或 stdin 读取 diff
 --repo <dir>            仓库根目录(默认 .)
 --provider <name>       config.toml 的 provider 条目(覆盖 default_provider)
---config <path>         配置文件(默认 ~/.jeikcode/config.toml)
+--config <path>         配置文件(默认 ~/.zap/config.toml)
 --model / --api-key / --base-url   provider 覆盖项
 --system-prompt <text>            全量覆盖 persona
 --system-prompt-file <path|->     从文件/stdin 全量覆盖 persona

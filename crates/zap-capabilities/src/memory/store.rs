@@ -17,7 +17,7 @@ pub struct MemoryStore {
 }
 
 /// Resolve the project-scope memory file. `override_dir` = the value of
-/// `JEIKCODE_PROJECT_MEMORY_DIR` (None/empty → default ".jeikcode"). A relative value
+/// `ZAP_PROJECT_MEMORY_DIR` / `JEIKCODE_PROJECT_MEMORY_DIR` (None/empty → default ".zap"). A relative value
 /// nests under `project_root`; an absolute value is used as-is (std `Path::join`
 /// semantics). `memory.md` is appended in either case.
 fn project_memory_path(project_root: &Path, override_dir: Option<&str>) -> PathBuf {
@@ -37,9 +37,11 @@ impl MemoryStore {
         Self::new(dir.join("memory.md"))
     }
 
-    /// Project-scope store. Honors `JEIKCODE_PROJECT_MEMORY_DIR`; defaults to `.jeikcode`.
+    /// Project-scope store. Honors `ZAP_PROJECT_MEMORY_DIR` / `JEIKCODE_PROJECT_MEMORY_DIR`; defaults to `.zap`.
     pub fn project(project_root: &Path) -> Self {
-        let override_dir = std::env::var("JEIKCODE_PROJECT_MEMORY_DIR").ok();
+        let override_dir = std::env::var("ZAP_PROJECT_MEMORY_DIR")
+            .or_else(|_| std::env::var("JEIKCODE_PROJECT_MEMORY_DIR"))
+            .ok();
         Self::new(project_memory_path(project_root, override_dir.as_deref()))
     }
 
@@ -271,11 +273,11 @@ mod tests {
         // Default (unset/empty) is byte-identical to today's hardcoded path.
         assert_eq!(
             super::project_memory_path(root, None),
-            Path::new("/proj/.jeikcode/memory.md")
+            Path::new("/proj/.zap/memory.md")
         );
         assert_eq!(
             super::project_memory_path(root, Some("")),
-            Path::new("/proj/.jeikcode/memory.md")
+            Path::new("/proj/.zap/memory.md")
         );
         // Relative override nests under project_root.
         assert_eq!(

@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use zap_config::i18n::{t, ConfigSyncChange, Msg};
 use std::io::{self, Write};
+use zap_config::i18n::{t, ConfigSyncChange, Msg};
 
 pub use zap_coding::config_sync::*;
 

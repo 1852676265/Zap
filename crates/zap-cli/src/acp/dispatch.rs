@@ -12,13 +12,13 @@ use agent_client_protocol::schema::v1::{
     SessionNotification,
 };
 use agent_client_protocol::{Client, ConnectionTo, Responder};
+use tokio::sync::Mutex;
 use zap_coding::{
     CodingProviderFactory, CodingRuntime, CodingRuntimeEvent, CodingRuntimeEvents,
     CodingRuntimeHandle, TurnCompletion, UserInput,
 };
 use zap_kernel::event::{AgentEvent, StopReason};
 use zap_kernel::message::ImageContent;
-use tokio::sync::Mutex;
 
 use crate::acp::engine::EngineConfig;
 

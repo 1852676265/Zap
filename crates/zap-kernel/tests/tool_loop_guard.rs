@@ -11,14 +11,14 @@
 //! with a result before the turn terminates, keeping provider history valid.
 
 use async_trait::async_trait;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use zap_kernel::agent::{Agent, AgentHandle, ToolLoopPolicy};
 use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{DeferredSteerProvider, RecordingProvider};
 use zap_kernel::tool::{Tool, ToolCall, ToolContext, ToolRegistry, ToolResult};
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const OUTER_GUARD: Duration = Duration::from_secs(5);
 

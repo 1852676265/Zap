@@ -1,13 +1,13 @@
 //! e2e: the SessionContextHook block (env + project instructions + git snapshot) actually
 //! reaches the provider as a leading system message when a coding agent is assembled.
 
+use serial_test::serial;
+use std::sync::Arc;
 use zap_coding::{build_coding_agent_with, CodingAgentConfig};
 use zap_kernel::agent::AutoRespond;
 use zap_kernel::message::Role;
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::RecordingProvider;
-use serial_test::serial;
-use std::sync::Arc;
 
 #[ctor::ctor]
 fn _isolate_jeikcode_home() {

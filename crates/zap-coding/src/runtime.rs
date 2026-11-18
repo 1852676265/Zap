@@ -10,6 +10,7 @@ use std::io;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
+use tokio::sync::{mpsc, oneshot, watch};
 use zap_capabilities::session::snapshot::SnapshotPersistenceStatus;
 use zap_capabilities::session::{
     DisplayAnchor, PendingPermission, PresentationEntry, RewindPoint, RewindTransactionReceipt,
@@ -27,7 +28,6 @@ use zap_kernel::message::{
     SessionSnapshot,
 };
 use zap_kernel::provider::LlmProvider;
-use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::controllers::{
     classify_followup, evaluate_goal, goal_cap_stop_note, goal_continuation_message,
@@ -4405,6 +4405,9 @@ fn spawn_runtime_owner_with_optional_agent(
                         preserve_sessionless_snapshot(&mut runtime, &stop_report);
 
                         let old_config = runtime.config.clone();
+                        if next.extra_system_append.is_none() {
+                            next.extra_system_append = old_config.extra_system_append.clone();
+                        }
                         match assemble(&mut runtime.parts, &next, candidate_provider) {
                             Ok(candidate) => {
                                 if let Some(config) = refresh_routing {
@@ -6676,22 +6679,20 @@ fn resolve_reprepare_input(
             } else {
                 runtime.config.working_dir.join(directory)
             };
-            let canonical =
-                zap_capabilities::pathnorm::canonicalize(&target).map_err(|e| {
-                    RuntimeError::InvalidWorkingDirectory(format!(
-                        "cannot change directory to {}: {e}",
-                        target.display()
-                    ))
-                })?;
+            let canonical = zap_capabilities::pathnorm::canonicalize(&target).map_err(|e| {
+                RuntimeError::InvalidWorkingDirectory(format!(
+                    "cannot change directory to {}: {e}",
+                    target.display()
+                ))
+            })?;
             if !canonical.is_dir() {
                 return Err(RuntimeError::InvalidWorkingDirectory(format!(
                     "working directory is not a directory: {}",
                     canonical.display()
                 )));
             }
-            let current =
-                zap_capabilities::pathnorm::canonicalize(&runtime.config.working_dir)
-                    .unwrap_or_else(|_| runtime.config.working_dir.clone());
+            let current = zap_capabilities::pathnorm::canonicalize(&runtime.config.working_dir)
+                .unwrap_or_else(|_| runtime.config.working_dir.clone());
             if zap_capabilities::pathnorm::path_case_key(&canonical)
                 == zap_capabilities::pathnorm::path_case_key(&current)
             {
@@ -7939,9 +7940,7 @@ mod tests {
                     "login required".into(),
                 ))
             } else {
-                Ok(Arc::new(zap_kernel::testkit::MockProvider::new(
-                    vec![],
-                )))
+                Ok(Arc::new(zap_kernel::testkit::MockProvider::new(vec![])))
             }
         }
     }
@@ -7960,9 +7959,7 @@ mod tests {
                     base_url: config.base_url.clone(),
                 })
             } else {
-                Ok(Arc::new(zap_kernel::testkit::MockProvider::new(
-                    vec![],
-                )))
+                Ok(Arc::new(zap_kernel::testkit::MockProvider::new(vec![])))
             }
         }
     }
@@ -8038,9 +8035,7 @@ mod tests {
             _session_id: Option<&str>,
         ) -> Result<Arc<dyn LlmProvider>, crate::ProviderBuildError> {
             if self.builds.fetch_add(1, Ordering::AcqRel) == 0 {
-                return Ok(Arc::new(zap_kernel::testkit::MockProvider::new(
-                    vec![],
-                )));
+                return Ok(Arc::new(zap_kernel::testkit::MockProvider::new(vec![])));
             }
             std::fs::remove_file(&self.presentation_path).map_err(|error| {
                 crate::ProviderBuildError::Adapter(format!(
@@ -8134,9 +8129,7 @@ mod tests {
             _session_id: Option<&str>,
         ) -> Result<Arc<dyn LlmProvider>, crate::ProviderBuildError> {
             self.builds.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(zap_kernel::testkit::MockProvider::new(
-                Vec::new(),
-            )))
+            Ok(Arc::new(zap_kernel::testkit::MockProvider::new(Vec::new())))
         }
     }
 
@@ -8256,9 +8249,7 @@ mod tests {
                     .as_ref()
                     .and_then(|cell| cell.get());
             }
-            Ok(Arc::new(zap_kernel::testkit::MockProvider::new(
-                Vec::new(),
-            )))
+            Ok(Arc::new(zap_kernel::testkit::MockProvider::new(Vec::new())))
         }
     }
 
@@ -9457,9 +9448,7 @@ mod tests {
         kernel_events
             .send(AgentEvent::CompactionFailed {
                 trigger,
-                error: zap_kernel::checkpoint::CompactionCheckpointError::new(
-                    "checkpoint failed",
-                ),
+                error: zap_kernel::checkpoint::CompactionCheckpointError::new("checkpoint failed"),
             })
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -13778,9 +13767,7 @@ mod tests {
     #[serial_test::serial(jeikcode_home)]
     async fn native_undo_rollback_merges_concurrent_sidecar_updates() {
         use zap_capabilities::session::presentation::PRESENTATION_VERSION;
-        use zap_capabilities::session::{
-            ImportInfo, ImportKind, PresentationRole, SessionManager,
-        };
+        use zap_capabilities::session::{ImportInfo, ImportKind, PresentationRole, SessionManager};
 
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();

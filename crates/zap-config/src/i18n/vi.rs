@@ -679,7 +679,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::HelpCustomNone =>
             "    (không có)\n\n".into(),
         Msg::HelpCustomCreateHint =>
-            "  Tạo tại: ~/.jeikcode/commands/<name>.md hoặc .jeikcode/commands/<name>.md\n".into(),
+            "  Tạo tại: ~/.zap/commands/<name>.md hoặc .zap/commands/<name>.md\n".into(),
         Msg::HelpSourceGlobal => "toàn cục".into(),
         Msg::HelpSourceProject => "dự án".into(),
 
@@ -790,11 +790,11 @@ Msg::PluginMgrInstallingLabel => "Đang cài…".into(),
         Msg::PluginMgrRemoveMarketplaceNo => "Không, giữ lại".into(),
         Msg::PluginMgrRemoveMarketplaceHint => "↑/↓ chọn · ⏎ xác nhận · esc hủy".into(),
         Msg::PluginScopeUser => "Cài cho bạn (phạm vi người dùng)".into(),
-        Msg::PluginScopeUserDesc => "~/.jeikcode/plugins — mọi dự án".into(),
+        Msg::PluginScopeUserDesc => "~/.zap/plugins — mọi dự án".into(),
         Msg::PluginScopeProject => "Cài cho mọi cộng tác viên (phạm vi dự án)".into(),
-        Msg::PluginScopeProjectDesc => ".jeikcode/plugins — chia sẻ qua git".into(),
+        Msg::PluginScopeProjectDesc => ".zap/plugins — chia sẻ qua git".into(),
         Msg::PluginScopeLocal => "Cài cho bạn, chỉ trong kho mã này (phạm vi cục bộ)".into(),
-        Msg::PluginScopeLocalDesc => ".jeikcode/plugins/local — không commit".into(),
+        Msg::PluginScopeLocalDesc => ".zap/plugins/local — không commit".into(),
         Msg::PluginScopeHint => "↑↓ Chọn phạm vi · Enter xác nhận · Esc quay lại".into(),
         Msg::PluginScopeUserShort => "người dùng".into(),
         Msg::PluginScopeProjectShort => "dự án".into(),
@@ -1034,7 +1034,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::CompactMarkStub { saved } =>
             format!("Đã gấp đầu ra công cụ · tiết kiệm ~{} tok", saved).into(),
         Msg::GoalHelp =>
-            "  /goal — tự làm việc nhiều vòng để đạt điều kiện đã nêu.\n  Cách dùng:\n    /goal <condition>     đặt mục tiêu mới; tác tử lặp đến khi bộ đánh giá xác nhận đạt\n    /goal                 xem trạng thái mục tiêu hiện tại\n    /goal status          như trên\n    /goal clear           dừng mục tiêu (bí danh: stop, off, reset, none, cancel)\n    /goal help            trợ giúp này\n  Lưu ý:\n    - Mô hình nhanh đánh giá từng vòng; cấu hình bằng [providers] và\n      evaluator_provider trong ~/.jeikcode/config.toml.\n    - Không có giới hạn vòng/thời gian tích hợp — ghi ngân sách ngay trong\n      điều kiện (ví dụ \"hoặc dừng sau 20 lượt\"). /goal của CC cũng hoạt động như vậy.\n    - Esc / Ctrl+C dừng mục tiêu bất cứ lúc nào.\n".into(),
+            "  /goal — tự làm việc nhiều vòng để đạt điều kiện đã nêu.\n  Cách dùng:\n    /goal <condition>     đặt mục tiêu mới; tác tử lặp đến khi bộ đánh giá xác nhận đạt\n    /goal                 xem trạng thái mục tiêu hiện tại\n    /goal status          như trên\n    /goal clear           dừng mục tiêu (bí danh: stop, off, reset, none, cancel)\n    /goal help            trợ giúp này\n  Lưu ý:\n    - Mô hình nhanh đánh giá từng vòng; cấu hình bằng [providers] và\n      evaluator_provider trong ~/.zap/config.toml.\n    - Không có giới hạn vòng/thời gian tích hợp — ghi ngân sách ngay trong\n      điều kiện (ví dụ \"hoặc dừng sau 20 lượt\"). /goal của CC cũng hoạt động như vậy.\n    - Esc / Ctrl+C dừng mục tiêu bất cứ lúc nào.\n".into(),
         Msg::GoalStatus { condition, round, mins, secs } =>
             format!("  ◎ Mục tiêu: {}\n  Vòng: {}\n  Đã qua: {} phút {} giây\n", condition, round, mins, secs).into(),
         Msg::GoalNoActive =>
@@ -1150,7 +1150,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::CliAboutTelemetry => "Điều khiển đo lường".into(),
         Msg::CliAboutPlugin => "Quản lý tiện ích kỹ năng/lệnh".into(),
         Msg::CliAboutUninstall => "Gỡ JeikCode. Không tham số thì hỏi có giữ cấu hình hay không. `simple` chỉ gỡ chương trình. `all` gỡ toàn bộ. Hướng dẫn: https://jeikcode.top/guide/updates.html".into(),
-        Msg::CliAboutSetup => "Cài tệp mẫu (skills/commands/hooks/MCP) vào ~/.jeikcode/".into(),
+        Msg::CliAboutSetup => "Cài tệp mẫu (skills/commands/hooks/MCP) vào ~/.zap/".into(),
         Msg::CliAboutHooks => "Quản lý hook (liệt kê, thử, bật/tắt)".into(),
         Msg::CliAboutHooksList => "Liệt kê mọi hook đã tải cùng trạng thái".into(),
         Msg::CliAboutHooksTest => "Thử hook cụ thể theo tên".into(),
@@ -1191,8 +1191,8 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::CliHelpPortWebui => "Cổng (mặc định: 13457)".into(),
         Msg::CliHelpHost => "Địa chỉ liên kết (mặc định: 127.0.0.1)".into(),
         Msg::CliHelpUninstallYes => "Bỏ qua hỏi đáp; dùng quyết định mặc định theo nhóm".into(),
-        Msg::CliHelpUninstallPurge => "Xóa hoàn toàn ~/.jeikcode/".into(),
-        Msg::CliHelpUninstallKeepData => "Giữ nguyên toàn bộ ~/.jeikcode/".into(),
+        Msg::CliHelpUninstallPurge => "Xóa hoàn toàn ~/.zap/".into(),
+        Msg::CliHelpUninstallKeepData => "Giữ nguyên toàn bộ ~/.zap/".into(),
         Msg::CliHelpUninstallDryRun => "In kế hoạch; không thực hiện".into(),
         Msg::CliAboutUninstallSimple => "Chỉ gỡ chương trình và mục PATH. Giữ cấu hình người dùng. Không hỏi.".into(),
         Msg::CliAboutUninstallAll => "Gỡ chương trình, mục PATH và toàn bộ cấu hình người dùng. Không hỏi.".into(),
@@ -1224,7 +1224,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::UninstallGroupBinary => "[1] Chương trình và mục PATH".into(),
         Msg::UninstallGroupCredentials => "[2] Thông tin đăng nhập và cấu hình chung".into(),
         Msg::UninstallGroupState => "[3] Trạng thái cục bộ và phần mở rộng".into(),
-        Msg::CliHelpMcpGlobal => "Ghi ~/.jeikcode/mcp.json thay vì <dir>/.mcp.json".into(),
+        Msg::CliHelpMcpGlobal => "Ghi ~/.zap/mcp.json thay vì <dir>/.mcp.json".into(),
         Msg::CliHelpMcpDir => "Thư mục cho .mcp.json của dự án".into(),
         Msg::CliHelpMcpName => "Khóa máy chủ".into(),
         Msg::CliHelpHooksTestName => "Tên hook để thử".into(),

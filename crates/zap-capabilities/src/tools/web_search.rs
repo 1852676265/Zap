@@ -12,10 +12,10 @@
 
 use super::{err, ok};
 use async_trait::async_trait;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 fn web_request_secs() -> u64 {
     super::tool_timeouts().web_request_secs
@@ -578,8 +578,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(offline_verdict)]
     async fn test_web_search_denied_in_offline_mode() {
-        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
         use tokio_util::sync::CancellationToken;
+        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
 
         struct ResetGuard;
         impl Drop for ResetGuard {

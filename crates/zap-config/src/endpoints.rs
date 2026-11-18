@@ -76,7 +76,8 @@ const HOSTED_CODINGPLAN_LLM_BASE_URL: &str = "";
 const HOSTED_UPDATE_MANIFEST_URL: &str =
     "https://github.com/1852676265/JeikCode/releases/latest/download/latest.json";
 #[allow(dead_code)]
-const HOSTED_UPDATE_DOWNLOAD_BASE: &str = "https://github.com/1852676265/JeikCode/releases/download";
+const HOSTED_UPDATE_DOWNLOAD_BASE: &str =
+    "https://github.com/1852676265/JeikCode/releases/download";
 #[allow(dead_code)]
 const HOSTED_DESKTOP_DOWNLOAD_URL: &str = "https://github.com/1852676265/JeikCode/releases";
 const HOSTED_RELAY_URL: &str = "";
@@ -498,7 +499,7 @@ pub fn get_current_update_source() -> UpdateSourceInfo {
     }
 }
 
-/// Set and persist a custom update source into `~/.jeikcode/config.toml`.
+/// Set and persist a custom update source into `~/.zap/config.toml`.
 pub fn set_custom_update_source(input: &str) -> anyhow::Result<(String, String)> {
     let (manifest_url, download_base) = parse_custom_update_source(input)?;
     crate::store::ConfigStore::default_store().update(|cfg| {
@@ -509,7 +510,7 @@ pub fn set_custom_update_source(input: &str) -> anyhow::Result<(String, String)>
     Ok((manifest_url, download_base))
 }
 
-/// Reset update source in `~/.jeikcode/config.toml` back to official default.
+/// Reset update source in `~/.zap/config.toml` back to official default.
 pub fn reset_update_source() -> anyhow::Result<()> {
     crate::store::ConfigStore::default_store().update(|cfg| {
         cfg.update_manifest_url = None;

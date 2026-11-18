@@ -6,7 +6,7 @@
 //!   jeikcodex review [--base <ref>] [--staged] [--repo <dir>] [--model <m>] [--json]
 //!
 //! Provider creds resolve in precedence order: CLI flags > env (JEIKCODE_API_KEY /
-//! JEIKCODE_BASE_URL / JEIKCODE_MODEL) > `~/.jeikcode/config.toml`. From the config file
+//! JEIKCODE_BASE_URL / JEIKCODE_MODEL) > `~/.zap/config.toml`. From the config file
 //! it reads the `[providers.<name>]` table named by `default_provider` (or `--provider`);
 //! an `api_key` of the form `$VAR` is expanded from the environment. `api_key` is optional
 //! (some gateways need none).
@@ -16,15 +16,15 @@ mod tel;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use zap_review::{
     build_review_agent_with_cancel, shared_review_deadline, Finding, ReviewAgentConfig,
 };
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "jeikcodex", about = "JeikCode standalone CLI (new stack)")]
@@ -75,7 +75,7 @@ struct ReviewArgs {
     /// config's `default_provider`).
     #[arg(long)]
     provider: Option<String>,
-    /// Config file path (default: ~/.jeikcode/config.toml).
+    /// Config file path (default: ~/.zap/config.toml).
     #[arg(long)]
     config: Option<PathBuf>,
     /// Disable anonymous usage telemetry for this invocation.
@@ -242,10 +242,8 @@ async fn review(args: ReviewArgs) -> Result<()> {
             changed_files = zap_review::changed_files_from_diff(&diff);
             // Language rules matched against the changed files.
             if !args.no_rules {
-                let section = zap_review::render_rules_section(
-                    &changed_files,
-                    args.rules_dir.as_deref(),
-                );
+                let section =
+                    zap_review::render_rules_section(&changed_files, args.rules_dir.as_deref());
                 if !section.is_empty() {
                     // Observability: confirm on stderr that rules actually got injected
                     // (the composed system prompt is not otherwise visible to callers).
@@ -729,7 +727,7 @@ pub(crate) fn expand_env(value: &str) -> String {
     }
 }
 
-/// A `[providers.<name>]` entry in `~/.jeikcode/config.toml`. All fields optional so a
+/// A `[providers.<name>]` entry in `~/.zap/config.toml`. All fields optional so a
 /// partial/foreign config still parses (extra keys like `type` are ignored).
 #[derive(Deserialize, Clone, Default)]
 pub(crate) struct ProviderEntry {
@@ -780,7 +778,7 @@ fn select_config(fc: &FileConfig, provider: Option<&str>) -> ConfigSelection {
     }
 }
 
-/// `~/.jeikcode/config.toml` — the unified derivation (env → legacy → real home),
+/// `~/.zap/config.toml` — the unified derivation (env → legacy → real home),
 /// so clix never reads a different config file than the main app.
 fn default_config_path() -> Option<PathBuf> {
     Some(zap_config::Config::default_path())
@@ -1599,10 +1597,7 @@ base_url = "https://openrouter.ai/api/v1"
         .unwrap();
         let selected = select_config(&fc, None);
 
-        assert_eq!(
-            selected.language,
-            Some(zap_config::locale::Locale::ZhCn)
-        );
+        assert_eq!(selected.language, Some(zap_config::locale::Locale::ZhCn));
         assert!(selected.provider.is_some());
     }
 
@@ -1615,10 +1610,7 @@ base_url = "https://openrouter.ai/api/v1"
         let selected = load_config_selection(Some(&path), None).unwrap();
 
         assert!(selected.provider.is_none());
-        assert_eq!(
-            selected.language,
-            Some(zap_config::locale::Locale::ZhCn)
-        );
+        assert_eq!(selected.language, Some(zap_config::locale::Locale::ZhCn));
     }
 
     #[test]

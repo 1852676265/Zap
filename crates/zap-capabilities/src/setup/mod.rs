@@ -68,7 +68,7 @@ pub fn run(opts: RunOptions) -> SetupResult<SetupReport> {
     // Install directory-style skills (e.g., jeikcode-automation-recommender/).
     install_directory_skills_from_seeds(&cache_dir, &mut summary, opts.force);
 
-    // Append .gitignore marker for .jeikcode/local/.
+    // Append .gitignore marker for .zap/local/.
     if let Err(e) = txn.append_gitignore(&opts.project_root) {
         tracing::warn!("failed to append .gitignore: {e}");
     }
@@ -113,7 +113,7 @@ fn install_directory_skills_from_seeds(
     let seeds_skills = cache_dir.join("skills");
     // Target path must match SkillRegistry::reload's scan path: a single
     // unified config dir (Config::config_dir()) that resolves to
-    // JEIKCODE_HOME when set, else $HOME/.jeikcode.
+    // ZAP_HOME / JEIKCODE_HOME when set, else $HOME/.zap.
     let target_skills = zap_config::config::Config::config_dir().join("skills");
 
     let entries = match std::fs::read_dir(&seeds_skills) {

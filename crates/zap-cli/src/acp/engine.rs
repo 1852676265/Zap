@@ -89,17 +89,13 @@ mod tests {
             &self,
             _config: &CodingAgentConfig,
             session_id: Option<&str>,
-        ) -> Result<
-            Arc<dyn zap_kernel::provider::LlmProvider>,
-            zap_coding::ProviderBuildError,
-        > {
+        ) -> Result<Arc<dyn zap_kernel::provider::LlmProvider>, zap_coding::ProviderBuildError>
+        {
             self.session_ids
                 .lock()
                 .unwrap()
                 .push(session_id.map(str::to_owned));
-            Ok(Arc::new(zap_kernel::testkit::MockProvider::new(
-                Vec::new(),
-            )))
+            Ok(Arc::new(zap_kernel::testkit::MockProvider::new(Vec::new())))
         }
     }
 
@@ -130,8 +126,7 @@ mod tests {
         original.skip_tls_verify = true;
         original.user_agent = Some("custom-agent/1".into());
         original.reasoning_history = Some("preserve".into());
-        original.chat_options.reasoning_effort =
-            Some(zap_kernel::provider::ReasoningEffort::High);
+        original.chat_options.reasoning_effort = Some(zap_kernel::provider::ReasoningEffort::High);
         original.thinking_enabled = Some(true);
         original.thinking_type = Some("enabled".into());
         original.thinking_keep = Some("all".into());

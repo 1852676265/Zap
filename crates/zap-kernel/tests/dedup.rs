@@ -24,13 +24,13 @@
 //! canonicalised recursively first, so whitespace and object-key ordering do not
 //! create distinct logical calls; array order and malformed input remain distinct.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::message::{Message, Role};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{CountingTool, EchoTool, RecordingProvider};
 use zap_kernel::tool::{ToolCall, ToolRegistry};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 fn tool_call(id: &str, name: &str, args: &str) -> ToolCall {
     ToolCall {
@@ -41,10 +41,7 @@ fn tool_call(id: &str, name: &str, args: &str) -> ToolCall {
 }
 
 /// Collect every AgentEvent up to (and including) the first TurnComplete.
-async fn drive_collect(
-    handle: &mut zap_kernel::agent::AgentHandle,
-    text: &str,
-) -> Vec<AgentEvent> {
+async fn drive_collect(handle: &mut zap_kernel::agent::AgentHandle, text: &str) -> Vec<AgentEvent> {
     handle
         .commands
         .send(AgentCommand::SendMessage {

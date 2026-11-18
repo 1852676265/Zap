@@ -6,7 +6,7 @@
 //! L2-normalized and used directly as the "semantic embedding": every
 //! dimension aligns with a human-meaningful semantic axis, so cosine
 //! similarity between a Chinese query and English code is meaningful without
-//! any LLM. Roots can be extended by an optional `.jeikcode/concepts.toml`
+//! any LLM. Roots can be extended by an optional `.zap/concepts.toml`
 //! (same `中文词 = en1, en2` syntax as the thesaurus).
 
 use std::collections::HashSet;

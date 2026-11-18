@@ -7,6 +7,7 @@
 //! integration tests prove the configured options reach the provider UNCHANGED,
 //! and that the default is a neutral request when none is configured.
 
+use std::sync::Arc;
 use zap_kernel::agent::{Agent, AgentHandle};
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
@@ -15,7 +16,6 @@ use zap_kernel::provider::{ChatOptions, RateLimitRetryOwner, ReasoningEffort, To
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{EchoTool, RecordingProvider};
 use zap_kernel::tool::ToolRegistry;
-use std::sync::Arc;
 
 struct SpecificToolHook;
 

@@ -66,9 +66,15 @@ fn parse_scope(s: Option<&str>) -> InstallScope {
 fn get_plugin_storage_file(plugin_id: &str) -> PathBuf {
     let sanitized: String = plugin_id
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    
+
     let base = if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home)
     } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
@@ -76,7 +82,10 @@ fn get_plugin_storage_file(plugin_id: &str) -> PathBuf {
     } else {
         PathBuf::from(".")
     };
-    base.join(".zap").join("plugin-storage").join(sanitized).join("storage.json")
+    base.join(".zap")
+        .join("plugin-storage")
+        .join(sanitized)
+        .join("storage.json")
 }
 
 pub fn router() -> Router<AppState> {
@@ -84,16 +93,29 @@ pub fn router() -> Router<AppState> {
         .route("/api/plugins/installed", get(list_installed_handler))
         .route("/api/plugins/install", post(install_handler))
         .route("/api/plugins/uninstall", post(uninstall_handler))
-        .route("/api/plugins/marketplaces", get(list_marketplaces_handler).post(add_marketplace_handler))
-        .route("/api/plugins/marketplaces/update", post(update_marketplace_handler))
-        .route("/api/plugins/marketplaces/:name", delete(remove_marketplace_handler))
+        .route(
+            "/api/plugins/marketplaces",
+            get(list_marketplaces_handler).post(add_marketplace_handler),
+        )
+        .route(
+            "/api/plugins/marketplaces/update",
+            post(update_marketplace_handler),
+        )
+        .route(
+            "/api/plugins/marketplaces/:name",
+            delete(remove_marketplace_handler),
+        )
         .route("/api/plugins/storage/get", post(storage_get_handler))
         .route("/api/plugins/storage/set", post(storage_set_handler))
 }
 
 async fn list_installed_handler() -> impl IntoResponse {
     match installer::list_installed() {
-        Ok(plugins) => (StatusCode::OK, Json(json!({ "success": true, "plugins": plugins }))).into_response(),
+        Ok(plugins) => (
+            StatusCode::OK,
+            Json(json!({ "success": true, "plugins": plugins })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "success": false, "error": e.to_string() })),
@@ -107,7 +129,11 @@ async fn install_handler(Json(req): Json<InstallPluginRequest>) -> impl IntoResp
     let market = req.marketplace.as_deref().unwrap_or("");
 
     match installer::install(&req.plugin, market, scope) {
-        Ok(info) => (StatusCode::OK, Json(json!({ "success": true, "plugin": info }))).into_response(),
+        Ok(info) => (
+            StatusCode::OK,
+            Json(json!({ "success": true, "plugin": info })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "success": false, "error": e.to_string() })),
@@ -132,7 +158,11 @@ async fn uninstall_handler(Json(req): Json<UninstallPluginRequest>) -> impl Into
 
 async fn list_marketplaces_handler() -> impl IntoResponse {
     match marketplace::list_marketplaces() {
-        Ok(markets) => (StatusCode::OK, Json(json!({ "success": true, "marketplaces": markets }))).into_response(),
+        Ok(markets) => (
+            StatusCode::OK,
+            Json(json!({ "success": true, "marketplaces": markets })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "success": false, "error": e.to_string() })),
@@ -143,7 +173,11 @@ async fn list_marketplaces_handler() -> impl IntoResponse {
 
 async fn add_marketplace_handler(Json(req): Json<AddMarketplaceRequest>) -> impl IntoResponse {
     match marketplace::add_marketplace(&req.url) {
-        Ok(info) => (StatusCode::OK, Json(json!({ "success": true, "marketplace": info }))).into_response(),
+        Ok(info) => (
+            StatusCode::OK,
+            Json(json!({ "success": true, "marketplace": info })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "success": false, "error": e.to_string() })),
@@ -152,9 +186,15 @@ async fn add_marketplace_handler(Json(req): Json<AddMarketplaceRequest>) -> impl
     }
 }
 
-async fn update_marketplace_handler(Json(req): Json<UpdateMarketplaceRequest>) -> impl IntoResponse {
+async fn update_marketplace_handler(
+    Json(req): Json<UpdateMarketplaceRequest>,
+) -> impl IntoResponse {
     match marketplace::update_marketplace(&req.name) {
-        Ok(info) => (StatusCode::OK, Json(json!({ "success": true, "marketplace": info }))).into_response(),
+        Ok(info) => (
+            StatusCode::OK,
+            Json(json!({ "success": true, "marketplace": info })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "success": false, "error": e.to_string() })),
@@ -177,15 +217,27 @@ async fn remove_marketplace_handler(Path(name): Path<String>) -> impl IntoRespon
 async fn storage_get_handler(Json(req): Json<StorageGetRequest>) -> impl IntoResponse {
     let p = get_plugin_storage_file(&req.plugin_id);
     if !p.is_file() {
-        return (StatusCode::OK, Json(json!({ "success": true, "value": Value::Null }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(json!({ "success": true, "value": Value::Null })),
+        )
+            .into_response();
     }
     match std::fs::read_to_string(&p) {
         Ok(s) => match serde_json::from_str::<Value>(&s) {
             Ok(map) => {
                 let val = map.get(req.key.as_str()).cloned().unwrap_or(Value::Null);
-                (StatusCode::OK, Json(json!({ "success": true, "value": val }))).into_response()
+                (
+                    StatusCode::OK,
+                    Json(json!({ "success": true, "value": val })),
+                )
+                    .into_response()
             }
-            Err(_) => (StatusCode::OK, Json(json!({ "success": true, "value": Value::Null }))).into_response(),
+            Err(_) => (
+                StatusCode::OK,
+                Json(json!({ "success": true, "value": Value::Null })),
+            )
+                .into_response(),
         },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

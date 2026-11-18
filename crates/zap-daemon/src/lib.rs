@@ -15171,12 +15171,6 @@ pub(crate) async fn process_chat_request(
             &images,
         )
         .await;
-        let runtime_text = crate::neural_memory::append_dynamic_reminder_to_text(
-            &session_id,
-            &base_message,
-            &working_dir,
-            runtime_text,
-        );
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -17499,10 +17493,11 @@ fn load_fs_tree_gitignore(
     current_dir: &std::path::Path,
 ) -> ignore::gitignore::Gitignore {
     let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
-    // 兼容多种标准与项目级忽略文件：.gitignore, .ignore, .jeikcodeignore, .git/info/exclude
+    // 兼容多种标准与项目级忽略文件：.gitignore, .ignore, .zapignore, .git/info/exclude
     for name in [
         ".gitignore",
         ".ignore",
+        ".zapignore",
         ".jeikcodeignore",
         ".git/info/exclude",
     ] {
@@ -17516,7 +17511,7 @@ fn load_fs_tree_gitignore(
         let mut cur = root.to_path_buf();
         for component in rel.components() {
             cur.push(component);
-            for name in [".gitignore", ".ignore", ".jeikcodeignore"] {
+            for name in [".gitignore", ".ignore", ".zapignore", ".jeikcodeignore"] {
                 let p = cur.join(name);
                 if p.is_file() {
                     let _ = builder.add(&p);
@@ -17596,6 +17591,7 @@ async fn fs_tree(State(state): State<AppState>, Query(q): Query<FsTreeQuery>) ->
                         name == "target"
                             || name == "node_modules"
                             || name == "dist"
+                            || name == ".zap_store"
                             || name == ".jeikcode_store"
                             || name.starts_with('.')
                     }
@@ -20129,13 +20125,13 @@ struct CapItemResponse {
     dir: Option<String>,
     /// Skills only: TRUE when the project's skill-state file IS the global one
     /// (the active project is the user's home directory, so
-    /// `<project>/.jeikcode/skills.json` == `$JEIKCODE_HOME/skills.json`).
+    /// `<project>/.zap/skills.json` == `$ZAP_HOME/skills.json`).
     /// The WebUI hides the project toggle then — both scopes would edit one file.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     project_scope_shared: bool,
 }
 
-/// TRUE when `<working_dir>/.jeikcode/skills.json` resolves to the GLOBAL skills
+/// TRUE when `<working_dir>/.zap/skills.json` resolves to the GLOBAL skills
 /// file. Happens when the active project is the user's home directory.
 fn skills_project_scope_shared(working_dir: &std::path::Path) -> bool {
     use zap_capabilities::skills::controls;
@@ -21382,7 +21378,7 @@ mod user_command_tests {
     #[test]
     fn renders_configured_command_with_arguments() {
         let dir = tempfile::tempdir().unwrap();
-        let cmd_dir = dir.path().join(".jeikcode/commands");
+        let cmd_dir = dir.path().join(".zap/commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
         std::fs::write(
             cmd_dir.join("review.md"),

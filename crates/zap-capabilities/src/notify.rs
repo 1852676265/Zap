@@ -1784,12 +1784,12 @@ mod tests {
         assert!(script.contains("wmctrl"));
         assert_eq!(shell_single_quote("a b's"), "'a b'\\''s'");
         let line = macos_execute_line(
-            "/Users/A B/.jeikcode/notify-focus.sh",
+            "/Users/A B/.zap/notify-focus.sh",
             "jeikcode-focus:13457:0123456789abcdef0123456789abcdef:sess-1",
         );
         assert_eq!(
             line,
-            "'/Users/A B/.jeikcode/notify-focus.sh' focus 'jeikcode-focus:13457:0123456789abcdef0123456789abcdef:sess-1'"
+            "'/Users/A B/.zap/notify-focus.sh' focus 'jeikcode-focus:13457:0123456789abcdef0123456789abcdef:sess-1'"
         );
         let swift = macos_notifier_swift();
         assert!(swift.contains("jeikcode-focus:"));

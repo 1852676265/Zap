@@ -17,6 +17,9 @@
 //! Each test is wrapped in an OUTER `tokio::time::timeout` so a propagation FAILURE
 //! FAILS the test (with a clear message) rather than hanging the suite forever.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
@@ -24,9 +27,6 @@ use zap_kernel::testkit::{
     BlockUntilCancelTool, RecordingProvider, SubAgentTool, WorkingDirProbeTool,
 };
 use zap_kernel::tool::{ToolCall, ToolRegistry};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 
 /// Outer guard: far longer than any deterministic work here, short enough that a
 /// real propagation failure (a hang) fails the test promptly instead of stalling.

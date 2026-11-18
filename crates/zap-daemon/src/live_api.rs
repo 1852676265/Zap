@@ -935,6 +935,8 @@ pub(crate) fn chat_runtime_config(
         .or(config.tools.tool_output.terminal_max_bytes),
         tool_output_no_fold_tools: config.tools.tool_output.no_fold_tools.clone(),
         shared_mcp_registry: None,
+        extra_tools: Vec::new(),
+        extra_hooks: Vec::new(),
     }
 }
 
@@ -3283,15 +3285,11 @@ pub(crate) async fn live_message(
                             }
                             _ => {}
                         }
-                        let mut runtime_config = live_runtime_config(
+                        let runtime_config = live_runtime_config(
                             &reload_config,
                             requested,
                             &wd,
                             state.telemetry.clone(),
-                        );
-                        crate::neural_memory::apply_session_static_system_append(
-                            &mut runtime_config,
-                            Some(&session_id),
                         );
                         let next =
                             crate::kernel_runtime::coding_config_from_runtime(&runtime_config);
@@ -3333,12 +3331,6 @@ pub(crate) async fn live_message(
                     state.telemetry.clone(),
                 )
                 .await;
-                let runtime_text = crate::neural_memory::append_dynamic_reminder_to_text(
-                    &session_id,
-                    &req.message,
-                    &wd,
-                    runtime_text,
-                );
                 stash_vl_display_images(&wd, &session_id, &runtime_text, &original_images);
                 let (runtime_input, echo_input) =
                     split_live_inputs(req.message, original_images, runtime_text);
@@ -3422,15 +3414,11 @@ pub(crate) async fn live_message(
             &requested_provider,
             &requested_fingerprint,
         ) {
-            let mut runtime_config = chat_runtime_config(
+            let runtime_config = chat_runtime_config(
                 &config,
                 &requested_provider,
                 &join.binding.working_dir,
                 state.telemetry.clone(),
-            );
-            crate::neural_memory::apply_session_static_system_append(
-                &mut runtime_config,
-                Some(&join.binding.session_id),
             );
             let next = crate::kernel_runtime::coding_config_from_runtime(&runtime_config);
             if let Err(error) =
@@ -3466,12 +3454,6 @@ pub(crate) async fn live_message(
         state.telemetry.clone(),
     )
     .await;
-    let runtime_text = crate::neural_memory::append_dynamic_reminder_to_text(
-        &join.binding.session_id,
-        &req.message,
-        &join.binding.working_dir,
-        runtime_text,
-    );
     // VL preprocessing produced a caption ⇒ the runtime strips the image from the
     // conversation (it must never re-enter model context — see estimate_tokens). Stash the
     // originals in the display-only sidecar so a page refresh re-attaches the thumbnail.

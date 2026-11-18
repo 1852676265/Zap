@@ -11,10 +11,10 @@
 use super::bash_runtime::{legacy_bash_runtime_state, BashRuntimeState};
 use super::{err, ok};
 use async_trait::async_trait;
-use zap_kernel::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use zap_kernel::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 #[derive(Clone)]
 pub struct LongBashKeywordActionsTool {

@@ -20,12 +20,12 @@ use super::sign::RequestSigner;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use serde_json::{json, Map, Value};
+use std::time::Duration;
 use zap_kernel::message::{Message, Role};
 use zap_kernel::provider::{ChatOptions, LlmProvider, ReasoningEffort, ToolChoice};
 use zap_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
 use zap_kernel::tool::{ToolCall, ToolDef};
-use serde_json::{json, Map, Value};
-use std::time::Duration;
 
 /// Attribution stamped onto [`zap_kernel::message::ReasoningBlock::provider`]
 /// so a later Completions/Anthropic adapter will not echo this ciphertext.

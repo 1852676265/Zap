@@ -4,8 +4,8 @@
 //! Two markdown stores, the same files production uses (so old/new stacks share one
 //! memory, the same coexistence stance as [`crate::session`]; sole known divergence:
 //! under `sudo` without `$JEIKCODE_HOME` — see [`config_dir`]):
-//! - **global**: `$JEIKCODE_HOME/memory.md` (else `~/.jeikcode/memory.md`)
-//! - **project**: `<project_root>/.jeikcode/memory.md` (overridable via `JEIKCODE_PROJECT_MEMORY_DIR`)
+//! - **global**: `$ZAP_HOME/memory.md` (else `~/.zap/memory.md`)
+//! - **project**: `<project_root>/.zap/memory.md` (overridable via `ZAP_PROJECT_MEMORY_DIR` / `JEIKCODE_PROJECT_MEMORY_DIR`)
 //!
 //! Entries are plain `- ` bullet lines — human-editable, git-diffable. [`MemoryStore`]
 //! is the byte-compatible load/append/remove/merge engine (ported verbatim);

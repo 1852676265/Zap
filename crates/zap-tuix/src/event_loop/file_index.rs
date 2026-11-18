@@ -19,7 +19,7 @@ use ignore::WalkBuilder;
 /// inside. The general gitignore filter — which keeps `node_modules/`,
 /// `target/`, build output, etc. out of the popup — stays intact for
 /// everything else; only these names are force-indexed.
-const ALWAYS_INDEX_DIRS: &[&str] = &[".claude", ".jeikcode", ".agents"];
+const ALWAYS_INDEX_DIRS: &[&str] = &[".claude", ".zap", ".jeikcode", ".agents"];
 
 /// How long a completed full-tree index stays "fresh" before the next
 /// `filter()` call kicks a background re-walk. This is what lets files
@@ -726,7 +726,7 @@ mod tests {
                     depth: 1,
                 },
                 Entry {
-                    rel_path: ".jeikcode/".into(),
+                    rel_path: ".zap/".into(),
                     is_dir: true,
                     depth: 1,
                 },
@@ -880,7 +880,7 @@ mod tests {
         );
     }
 
-    // Feature: the well-known agent-config dirs (`.claude`, `.jeikcode`,
+    // Feature: the well-known agent-config dirs (`.claude`, `.zap`, `.jeikcode`,
     // `.agents`) must be `@`-indexable even when `.gitignore` excludes them,
     // so a project that gitignores `.claude` can still `@`-reference the
     // skills/commands inside. Other gitignored paths stay filtered out.

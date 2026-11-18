@@ -343,7 +343,7 @@ curl -N -X POST http://127.0.0.1:13456/chat \
 
 ```json
 {
-  "path": "/home/user/.jeikcode/config.toml",
+  "path": "/home/user/.zap/config.toml",
   "default_provider": "openai",
   "default_workdir": "/home/user/my-project",
   "providers": [
@@ -506,7 +506,7 @@ curl -N -X POST http://127.0.0.1:13456/chat \
 {
   "logged_in": true,
   "expired": false,
-  "auth_path": "/home/user/.jeikcode/auth.toml",
+  "auth_path": "/home/user/.zap/auth.toml",
   "user": {
     "username": "example_user",
     "email": "user@example.com"
@@ -614,7 +614,7 @@ curl -N -X POST http://127.0.0.1:13456/chat \
 
 #### `POST /mcp/reload`
 
-重新加载 MCP 配置（从 `~/.jeikcode/mcp.json`）。
+重新加载 MCP 配置（从 `~/.zap/mcp.json`）。
 
 **响应示例：**
 
@@ -707,7 +707,7 @@ zap-daemon/
 
 ## 配置文件
 
-daemon 使用以下配置文件（位于 `~/.jeikcode/` 目录）：
+daemon 使用以下配置文件（位于 `~/.zap/` 目录）：
 
 | 文件 | 说明 |
 |------|------|

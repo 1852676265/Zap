@@ -6339,9 +6339,7 @@ impl<W: Write + Send> RetainedRenderer<W> {
             // double-gap in screenshots). Use `remove` (not just 1)
             // so multi-row inflight spinners are fully covered.
             self.skip_body_scroll_count = self.skip_body_scroll_count.saturating_add(remove as u16);
-            if zap_capabilities::tools::is_shell_tool_name(&safe_name)
-                && !safe_detail.is_empty()
-            {
+            if zap_capabilities::tools::is_shell_tool_name(&safe_name) && !safe_detail.is_empty() {
                 // Live bash commit: produce the same `● Bash` + `  └ <cmd>` block as
                 // the static `UiLine::ToolCall` arm, via the shared helper.
                 self.push_bash_command_block(&safe_name, &safe_detail);

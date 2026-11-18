@@ -6,6 +6,8 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use zap_kernel::agent::{Agent, AgentHandle};
 use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use zap_kernel::hook::{LifecycleHooks, RateLimitDecision};
@@ -14,8 +16,6 @@ use zap_kernel::provider::{ChatOptions, LlmProvider};
 use zap_kernel::stream::{ProviderError, StreamEvent};
 use zap_kernel::testkit::ScriptedRateLimitHook;
 use zap_kernel::tool::{ToolDef, ToolRegistry};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 

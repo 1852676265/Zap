@@ -11,11 +11,11 @@
 //! to the embedder).
 
 use async_trait::async_trait;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use zap_kernel::middleware::{BeforeOutcome, ToolMiddleware};
 use zap_kernel::request::RequestCtx;
 use zap_kernel::tool::{Tool, ToolCall};
-use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
 /// JSON arg fields that carry a filesystem path across the review toolset
 /// (read/grep/glob/ast_grep). `paths` (ast_grep)

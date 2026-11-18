@@ -9,13 +9,13 @@
 use super::{err, ok};
 use async_trait::async_trait;
 use futures::StreamExt;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use reqwest::redirect::Policy;
 use serde::Deserialize;
 use serde_json::json;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use url::Url;
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024; // 2 MiB hard buffer cap
 const MAX_REDIRECTS: u8 = 5;
@@ -1509,8 +1509,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(offline_verdict)]
     async fn test_web_fetch_denied_in_offline_mode() {
-        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
         use tokio_util::sync::CancellationToken;
+        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
 
         struct ResetGuard;
         impl Drop for ResetGuard {

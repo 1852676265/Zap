@@ -15,6 +15,9 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader, Lines, Stdin};
 use zap_capabilities::memory::MemoryStore;
 use zap_capabilities::session::SessionManager;
 use zap_capabilities::tools::{ApprovalRequest, ApprovalResponse, APPROVAL_KIND};
@@ -24,9 +27,6 @@ use zap_coding::{
     StaticPluginHookSource, TurnCompletion, UserInput,
 };
 use zap_kernel::event::{AgentEvent, StopReason};
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader, Lines, Stdin};
 
 #[derive(Parser)]
 pub struct CodeArgs {
@@ -67,7 +67,7 @@ pub struct CodeArgs {
     /// Named `[providers.<name>]` config entry (overrides `default_provider`).
     #[arg(long)]
     pub provider: Option<String>,
-    /// Config file path (default: ~/.jeikcode/config.toml).
+    /// Config file path (default: ~/.zap/config.toml).
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// Disable anonymous usage telemetry for this invocation.

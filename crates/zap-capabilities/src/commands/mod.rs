@@ -6,12 +6,12 @@
 //!
 //! Commands are discovered in these locations (LOW→HIGH priority, later wins):
 //!
-//! 1. `$JEIKCODE_HOME/commands/`
+//! 1. `$ZAP_HOME/commands/`
 //! 2. `<home>/.claude/commands/`
 //! 3. `<home>/.agents/commands/`
 //! 4. `<project>/.claude/commands/`
 //! 5. `<project>/.agents/commands/`
-//! 6. `<project>/.jeikcode/commands/`
+//! 6. `<project>/.zap/commands/`
 //! 7. installed plugin `commands/` dirs (namespaced as `<plugin>:<name>`)
 //!
 //! Missing frontmatter / `name` falls back to the file stem; `argument-hint`
@@ -314,23 +314,23 @@ pub fn standard_command_dirs(home: &Path, project: &Path) -> Vec<PathBuf> {
     vec![
         home.join(".claude/commands"),
         home.join(".agents/commands"),
-        home.join(".jeikcode/commands"),
+        home.join(".zap/commands"),
         project.join(".claude/commands"),
         project.join(".agents/commands"),
-        project.join(".jeikcode/commands"),
+        project.join(".zap/commands"),
     ]
 }
 
-/// [`standard_command_dirs`] with the user-level `.jeikcode` root resolved from
-/// `JEIKCODE_HOME` when set (the same rebasing rule as skills). Other products'
+/// [`standard_command_dirs`] with the user-level `.zap` root resolved from
+/// `ZAP_HOME` / `JEIKCODE_HOME` when set (the same rebasing rule as skills). Other products'
 /// dirs (`.claude`, `.agents`) and project-relative dirs stay put.
 pub fn runtime_command_dirs(home: &Path, project: &Path) -> Vec<PathBuf> {
     let dirs = standard_command_dirs(home, project);
-    let jeikcode_home = zap_config::Config::config_dir();
-    let user_jeikcode = home.join(".jeikcode");
+    let zap_home = zap_config::Config::config_dir();
+    let user_zap = home.join(".zap");
     dirs.into_iter()
-        .map(|dir| match dir.strip_prefix(&user_jeikcode) {
-            Ok(rest) => jeikcode_home.join(rest),
+        .map(|dir| match dir.strip_prefix(&user_zap) {
+            Ok(rest) => zap_home.join(rest),
             Err(_) => dir,
         })
         .collect()
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn render_replaces_arguments() {
         let dir = tempfile::tempdir().unwrap();
-        let cmd_dir = dir.path().join(".jeikcode/commands");
+        let cmd_dir = dir.path().join(".zap/commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
         std::fs::write(
             cmd_dir.join("review.md"),
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn render_empty_args() {
         let dir = tempfile::tempdir().unwrap();
-        let cmd_dir = dir.path().join(".jeikcode/commands");
+        let cmd_dir = dir.path().join(".zap/commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
         std::fs::write(
             cmd_dir.join("test.md"),
@@ -503,7 +503,7 @@ mod tests {
         // 线程级 home（不再全局写 env）。
         let _home = zap_config::test_util::IsolatedHome::at(home.path());
         let dir = tempfile::tempdir().unwrap();
-        let cmd_dir = dir.path().join(".jeikcode/commands");
+        let cmd_dir = dir.path().join(".zap/commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
         std::fs::write(
             cmd_dir.join("zebra.md"),
@@ -530,10 +530,10 @@ mod tests {
             vec![
                 home.join(".claude/commands"),
                 home.join(".agents/commands"),
-                home.join(".jeikcode/commands"),
+                home.join(".zap/commands"),
                 project.join(".claude/commands"),
                 project.join(".agents/commands"),
-                project.join(".jeikcode/commands"),
+                project.join(".zap/commands"),
             ]
         );
     }
@@ -547,9 +547,9 @@ mod tests {
         let _home = zap_config::test_util::IsolatedHome::at(config_root.path());
         let dirs = runtime_command_dirs(home.path(), project.path());
         assert!(dirs.contains(&config_root.path().join("commands")));
-        assert!(!dirs.contains(&home.path().join(".jeikcode/commands")));
+        assert!(!dirs.contains(&home.path().join(".zap/commands")));
         assert!(dirs.contains(&home.path().join(".claude/commands")));
-        assert!(dirs.contains(&project.path().join(".jeikcode/commands")));
+        assert!(dirs.contains(&project.path().join(".zap/commands")));
     }
 
     #[test]

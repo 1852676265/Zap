@@ -6,7 +6,7 @@
 # 2) grep / glob 的默认敏感排除：include_ignored 不会包含；
 #    include_sensitive=true 经审批后可包含（Build 弹审核，Auto 自动继续）。
 # read / grep / glob 的显式敏感访问统一走 SensitivePathGate。
-# 生效范围：项目根 / 项目 .jeikcode / 用户配置目录（~/.jeikcode）。
+# 生效范围：项目根 / 项目 .zap / 用户配置目录（~/.zap）。
 # 噪声类规则（构建产物、依赖目录等）放在 .codegraphignore —— 两者分工，勿重复。
 # ------------------------------------------------------------------------------
 

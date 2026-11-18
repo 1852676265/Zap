@@ -2,12 +2,12 @@
 //! the same builder: a one-shot adapter (batch/CI shape) and a long-lived
 //! interactive handle (TUI/web/server shape).
 
+use std::sync::Arc;
 use zap_kernel::agent::{Agent, AgentBuilder, AutoRespond};
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{ApprovalMiddleware, EchoTool, MockProvider, RiskyWriteTool};
 use zap_kernel::tool::{ToolCall, ToolRegistry};
-use std::sync::Arc;
 
 // Fresh builder each call (MockProvider is stateful/consumed).
 fn make_builder() -> AgentBuilder {

@@ -84,14 +84,23 @@ if [ -z "$SYMLINK_BIN" ] && [ -L /usr/bin/jeikcode ] && [ "/usr/bin/jeikcode" !=
 fi
 BIN_DIR=$(dirname "$BIN" 2>/dev/null || echo "")
 
-DATA="${JEIKCODE_HOME:-$HOME/.jeikcode}"
+DATA="${ZAP_HOME:-${JEIKCODE_HOME:-}}"
+if [ -z "$DATA" ]; then
+    if [ -d "$HOME/.zap" ]; then
+        DATA="$HOME/.zap"
+    elif [ -d "$HOME/.jeikcode" ]; then
+        DATA="$HOME/.jeikcode"
+    else
+        DATA="$HOME/.zap"
+    fi
+fi
 
 # ---- plan ----
 echo "Will remove (Group 1):"
 [ -n "$BIN" ] && echo "  $BIN"
 [ -n "$SYMLINK_BIN" ] && echo "  $SYMLINK_BIN (symlink)"
 if [ -n "$BIN_DIR" ]; then
-    for f in jeikcode.bak .jeikcode.rolling .jeikcode.download .jeikcode.writable-probe; do
+    for f in jeikcode.bak .zap.rolling .zap.download .zap.writable-probe .jeikcode.rolling .jeikcode.download .jeikcode.writable-probe; do
         [ -e "$BIN_DIR/$f" ] && echo "  $BIN_DIR/$f"
     done
 fi
@@ -152,14 +161,14 @@ rmdir "$DATA" 2>/dev/null || true
 for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile" "/etc/profile"; do
     [ -e "$rc" ] || continue
     if grep -q "Added by JeikCode installer" "$rc"; then
-        cp "$rc" "$rc.jeikcode-uninstall.bak"
+        cp "$rc" "$rc.zap-uninstall.bak"
         # Delete the comment line + the next non-blank line if it's an export PATH line.
         awk '
             /^# Added by JeikCode installer$/ { skip=1; next }
             skip == 1 && /^export PATH=/ { skip=0; next }
             skip == 1 && /^[[:space:]]*$/ { next }
             { skip=0; print }
-        ' "$rc.jeikcode-uninstall.bak" > "$rc.tmp"
+        ' "$rc.zap-uninstall.bak" > "$rc.tmp"
         if [ -w "$rc" ]; then
             mv "$rc.tmp" "$rc"
         elif command -v sudo >/dev/null 2>&1; then
@@ -167,7 +176,7 @@ for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile" "/etc/profile"; do
         else
             rm -f "$rc.tmp"
         fi
-        echo "edited $rc (backup: $rc.jeikcode-uninstall.bak)"
+        echo "edited $rc (backup: $rc.zap-uninstall.bak)"
     fi
 done
 
@@ -185,11 +194,17 @@ if [ -n "$BIN" ] && [ -e "$BIN" ]; then
     BIN_DIR=$(dirname "$BIN")
     if [ -w "$BIN" ] && [ -w "$BIN_DIR" ]; then
         rm -f "$BIN" "$BIN_DIR/jeikcode.bak" \
+              "$BIN_DIR/.zap.rolling" \
+              "$BIN_DIR/.zap.download" \
+              "$BIN_DIR/.zap.writable-probe" \
               "$BIN_DIR/.jeikcode.rolling" \
               "$BIN_DIR/.jeikcode.download" \
               "$BIN_DIR/.jeikcode.writable-probe"
     else
         sudo rm -f "$BIN" "$BIN_DIR/jeikcode.bak" \
+              "$BIN_DIR/.zap.rolling" \
+              "$BIN_DIR/.zap.download" \
+              "$BIN_DIR/.zap.writable-probe" \
               "$BIN_DIR/.jeikcode.rolling" \
               "$BIN_DIR/.jeikcode.download" \
               "$BIN_DIR/.jeikcode.writable-probe"

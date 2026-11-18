@@ -14,10 +14,10 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
-use zap_capabilities::tools::USER_UPLOAD_STORE_DIR;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
+use zap_capabilities::tools::USER_UPLOAD_STORE_DIR;
 
 const GITIGNORE_BLOCK: &str = "\n# Zap user uploads (not project source)\n.zap_store/\n";
 const MAX_NAME_CHARS: usize = 180;
@@ -210,7 +210,7 @@ fn save_uploads(
 }
 
 /// Keep a single path segment. Drop separators, reserved Windows chars, and
-/// control bytes so the write stays inside `.jeikcode_store`.
+/// control bytes so the write stays inside `.zap_store`.
 pub fn sanitize_upload_filename(raw: &str) -> String {
     let base = Path::new(raw)
         .file_name()
@@ -259,7 +259,7 @@ pub fn unique_dest_path(dir: &Path, filename: &str) -> PathBuf {
     dir.join(format!("{stem}_{}", uuid::Uuid::new_v4()))
 }
 
-/// Keep `.jeikcode_store/` out of git:
+/// Keep `.zap_store/` out of git:
 /// - existing `.gitignore` → append the entry once
 /// - git repo with no `.gitignore` → create one so `git status` stays clean
 /// - not a git repo → leave the tree alone
@@ -286,10 +286,7 @@ pub fn ensure_gitignore_store_entry(cwd: &Path) -> std::io::Result<()> {
 fn gitignore_has_store_entry(content: &str) -> bool {
     content.lines().any(|l| {
         let l = l.trim();
-        l == ".zap_store"
-            || l == ".zap_store/"
-            || l == "**/.zap_store"
-            || l == "**/.zap_store/"
+        l == ".zap_store" || l == ".zap_store/" || l == "**/.zap_store" || l == "**/.zap_store/"
     })
 }
 
@@ -374,7 +371,7 @@ mod tests {
         let cwd = d.path().to_string_lossy().into_owned();
         save_uploads(&cwd, vec![("a.txt".into(), b"x".to_vec())]).unwrap();
         assert!(!d.path().join(".gitignore").exists());
-        assert!(d.path().join(".jeikcode_store/a.txt").is_file());
+        assert!(d.path().join(".zap_store/a.txt").is_file());
     }
 
     #[test]
@@ -384,7 +381,7 @@ mod tests {
         let cwd = d.path().to_string_lossy().into_owned();
         save_uploads(&cwd, vec![("a.txt".into(), b"x".to_vec())]).unwrap();
         let gi = std::fs::read_to_string(d.path().join(".gitignore")).unwrap();
-        assert!(gi.contains(".jeikcode_store/"));
+        assert!(gi.contains(".zap_store/"));
     }
 
     #[test]

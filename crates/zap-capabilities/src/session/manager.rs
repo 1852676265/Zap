@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Barrier;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use zap_kernel::message::{Conversation, Message, Role, SessionSnapshot, SNAPSHOT_VERSION};
 use serde::{de::IgnoredAny, Deserialize, Serialize};
+use zap_kernel::message::{Conversation, Message, Role, SessionSnapshot, SNAPSHOT_VERSION};
 
 use super::presentation::{
     DisplayAnchor, PresentationEntry, PresentationFile, PresentationRole, MAX_PRESENTATION_BYTES,
@@ -2195,9 +2195,8 @@ impl SessionManager {
         if let Some(count) = target_message_count {
             let keep = count.min(source.snapshot.messages.len());
             source.snapshot.messages.truncate(keep);
-            let (turn_c, req_c) = zap_kernel::message::SessionSnapshot::derive_counters(
-                &source.snapshot.messages,
-            );
+            let (turn_c, req_c) =
+                zap_kernel::message::SessionSnapshot::derive_counters(&source.snapshot.messages);
             source.snapshot.turn_counter = turn_c;
             source.snapshot.request_counter = req_c;
             source.snapshot.cache_epoch = source.snapshot.cache_epoch.saturating_add(1);
@@ -4806,8 +4805,8 @@ mod tests {
         MAX_PRESENTATION_BYTES, PRESENTATION_VERSION,
     };
     use super::*;
-    use zap_kernel::message::Message;
     use std::collections::BTreeSet;
+    use zap_kernel::message::Message;
 
     fn snap(texts: &[&str]) -> SessionSnapshot {
         SessionSnapshot::new(texts.iter().map(|t| Message::user(*t)).collect())

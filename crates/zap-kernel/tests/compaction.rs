@@ -15,6 +15,7 @@
 //!   * a committed compaction opens a NEW cache epoch while preserving the
 //!     byte-identical system prefix.
 
+use std::sync::{Arc, Mutex};
 use zap_kernel::checkpoint::{CompactionCheckpoint, CompactionCheckpointError};
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::message::{Role, SessionSnapshot};
@@ -24,7 +25,6 @@ use zap_kernel::testkit::{
     SummarizeOldestStrategy,
 };
 use zap_kernel::tool::ToolRegistry;
-use std::sync::{Arc, Mutex};
 
 const PERSONA: &str = "you are a neutral test agent";
 
@@ -738,9 +738,7 @@ async fn replaceability_two_strategies_differ() {
         ]
     }
 
-    async fn run(
-        strategy: Arc<dyn zap_kernel::message::CompactionStrategy>,
-    ) -> SessionSnapshot {
+    async fn run(strategy: Arc<dyn zap_kernel::message::CompactionStrategy>) -> SessionSnapshot {
         let provider =
             Arc::new(RecordingProvider::new(build_history_turns()).with_ctx_window(1000));
         let mut handle = zap_kernel::agent::Agent::builder()

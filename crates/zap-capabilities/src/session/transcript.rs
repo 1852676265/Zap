@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use zap_kernel::event::StopReason;
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
 use zap_kernel::message::{Conversation, Message, Role};
-use serde::{Deserialize, Serialize};
 
 use super::{now_ms, snapshot::SnapshotPersistenceStatus, SessionManager, SessionResult};
 

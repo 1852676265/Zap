@@ -52,19 +52,40 @@ pub async fn try_serve_plugin_asset(path: &str) -> Option<Response> {
     // 构建候选根目录列表（跨平台支持用户主目录、自定义目录与本地工作区）
     let mut candidate_roots = Vec::new();
     if let Some(home) = zap_config::util::real_home_dir() {
-        candidate_roots.push(home.join(".zap").join("plugins").join(plugin_id).join("dist"));
-        candidate_roots.push(home.join(".zap").join("plugins").join(plugin_id).join("web"));
+        candidate_roots.push(
+            home.join(".zap")
+                .join("plugins")
+                .join(plugin_id)
+                .join("dist"),
+        );
+        candidate_roots.push(
+            home.join(".zap")
+                .join("plugins")
+                .join(plugin_id)
+                .join("web"),
+        );
         candidate_roots.push(home.join(".zap").join("plugins").join(plugin_id));
-        candidate_roots.push(home.join(".jeikcode").join("plugins").join(plugin_id).join("dist"));
+        candidate_roots.push(
+            home.join(".jeikcode")
+                .join("plugins")
+                .join(plugin_id)
+                .join("dist"),
+        );
         candidate_roots.push(home.join(".jeikcode").join("plugins").join(plugin_id));
     }
     if let Ok(custom_dir) = std::env::var("ZAP_PLUGINS_DIR") {
-        candidate_roots.push(std::path::PathBuf::from(&custom_dir).join(plugin_id).join("dist"));
+        candidate_roots.push(
+            std::path::PathBuf::from(&custom_dir)
+                .join(plugin_id)
+                .join("dist"),
+        );
         candidate_roots.push(std::path::PathBuf::from(&custom_dir).join(plugin_id));
     }
     #[cfg(windows)]
     {
-        candidate_roots.push(std::path::PathBuf::from(format!("D:/Projects/{plugin_id}/dist")));
+        candidate_roots.push(std::path::PathBuf::from(format!(
+            "D:/Projects/{plugin_id}/dist"
+        )));
         candidate_roots.push(std::path::PathBuf::from(format!("D:/Projects/{plugin_id}")));
     }
 
@@ -127,7 +148,13 @@ pub async fn try_serve_plugin_asset(path: &str) -> Option<Response> {
     }
 
     // 严禁 fallback 到 Zap 的 index.html！对插件路径严格返回 404
-    Some((StatusCode::NOT_FOUND, format!("plugin '{plugin_id}' asset '{clean_subpath}' not found")).into_response())
+    Some(
+        (
+            StatusCode::NOT_FOUND,
+            format!("plugin '{plugin_id}' asset '{clean_subpath}' not found"),
+        )
+            .into_response(),
+    )
 }
 
 // 嵌入式 webui 静态资源服务。

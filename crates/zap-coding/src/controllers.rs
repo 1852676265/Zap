@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use zap_kernel::message::{Message, Role};
-use zap_kernel::provider::{ChatOptions, LlmProvider, ToolChoice};
-use zap_kernel::stream::{StreamEvent, TokenUsage};
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
+use zap_kernel::message::{Message, Role};
+use zap_kernel::provider::{ChatOptions, LlmProvider, ToolChoice};
+use zap_kernel::stream::{StreamEvent, TokenUsage};
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 pub(crate) const MAX_UNPRODUCTIVE: u32 = 5;
 const EVALUATOR_TIMEOUT: Duration = Duration::from_secs(30);

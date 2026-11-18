@@ -229,13 +229,12 @@ mod tests {
 
     #[test]
     fn tool_batch_payload_is_kernel_native() {
-        let calls: Vec<zap_kernel::event::ToolBatchCall> =
-            vec![zap_kernel::event::ToolBatchCall {
-                id: "call-1".into(),
-                name: "read_file".into(),
-                arguments: "{}".into(),
-                parallel_safe: true,
-            }];
+        let calls: Vec<zap_kernel::event::ToolBatchCall> = vec![zap_kernel::event::ToolBatchCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+            parallel_safe: true,
+        }];
 
         let event = UiEvent::ToolBatchStarted {
             batch_id: "batch-1".into(),

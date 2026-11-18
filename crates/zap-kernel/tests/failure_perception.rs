@@ -15,6 +15,8 @@
 //!       spinning forever with no model agency to stop it.
 
 use async_trait::async_trait;
+use std::sync::Arc;
+use std::time::Duration;
 use zap_kernel::agent::{Agent, AutoRespond};
 use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use zap_kernel::hook::LifecycleHooks;
@@ -24,8 +26,6 @@ use zap_kernel::request::RequestCtx;
 use zap_kernel::stream::{ProviderError, StreamEvent};
 use zap_kernel::testkit::{AlwaysStopProvider, EchoTool, MockProvider, ScriptedProvider};
 use zap_kernel::tool::{Tool, ToolCall, ToolRegistry};
-use std::sync::Arc;
-use std::time::Duration;
 
 const OUTER_GUARD: Duration = Duration::from_secs(5);
 

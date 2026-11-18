@@ -24,9 +24,9 @@ use async_trait::async_trait;
 use zap_kernel::hook::LifecycleHooks;
 use zap_kernel::message::Conversation;
 // `Message`/`Role` are exercised only by the `#[cfg(test)]` cases below (via `use super::*`).
+use std::path::PathBuf;
 #[cfg(test)]
 use zap_kernel::message::{Message, Role};
-use std::path::PathBuf;
 
 /// Header for the GLOBAL tier block: cross-project user preferences.
 pub const USER_PREFERENCES_HEADER: &str = super::instructions::USER_PREFERENCES_HEADER;
@@ -51,8 +51,8 @@ pub const CLIENT_SYSTEM_HEADER: &str = "# CLIENT SYSTEM INSTRUCTIONS";
 
 pub struct SessionContextHook {
     working_dir: PathBuf,
-    /// Config root (`~/.jeikcode`) for the GLOBAL instructions tier. Defaults to
-    /// [`crate::paths::config_dir`]; the env honors `$JEIKCODE_HOME` there.
+    /// Config root (`~/.zap`) for the GLOBAL instructions tier. Defaults to
+    /// [`crate::paths::config_dir`]; the env honors `$ZAP_HOME` / `$JEIKCODE_HOME` there.
     home: PathBuf,
     /// Optional client system prompt (e.g. from OpenAI/Anthropic `messages[].role=system`).
     /// Appended after project instructions + knowledge packs.
@@ -464,9 +464,9 @@ mod tests {
     #[tokio::test]
     async fn turn_start_hot_reloads_agents_and_glossary() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(d.path().join(".jeikcode")).unwrap();
+        std::fs::create_dir_all(d.path().join(".zap")).unwrap();
         std::fs::write(d.path().join("AGENTS.md"), "rule-v1").unwrap();
-        std::fs::write(d.path().join(".jeikcode/glossary.md"), "term-v1").unwrap();
+        std::fs::write(d.path().join(".zap/glossary.md"), "term-v1").unwrap();
         let hook = SessionContextHook::with_home(d.path(), d.path().join("nohome"));
 
         let mut convo = Conversation::new();
@@ -480,7 +480,7 @@ mod tests {
 
         // Mid-session edits on disk.
         std::fs::write(d.path().join("AGENTS.md"), "rule-v2-hot").unwrap();
-        std::fs::write(d.path().join(".jeikcode/glossary.md"), "term-v2-hot").unwrap();
+        std::fs::write(d.path().join(".zap/glossary.md"), "term-v2-hot").unwrap();
         convo.push(Message::user("next turn"));
         hook.turn_start(&mut convo).await;
 

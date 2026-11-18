@@ -2,13 +2,13 @@
 //! message — i.e. the agent threads `images` through `process_send_message` into the
 //! conversation (regression guard for the input-side multimodal path).
 
+use std::sync::Arc;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::message::{ImageContent, Role};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::RecordingProvider;
 use zap_kernel::tool::{Tool, ToolCall, ToolContext, ToolRegistry, ToolResult};
-use std::sync::Arc;
 
 #[tokio::test]
 async fn send_message_images_reach_the_provider_on_the_user_message() {

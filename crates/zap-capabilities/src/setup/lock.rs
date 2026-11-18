@@ -3,10 +3,10 @@
 //! where flock alone is unreliable.
 //!
 //! Acquire order:
-//! 1. Read `.jeikcode/.setup.lock.sentinel` if present. If recorded PID is alive **and**
+//! 1. Read `.zap/.setup.lock.sentinel` if present. If recorded PID is alive **and**
 //!    its start_time matches, return [`LockError::Held`] (unless `force = true`).
 //!    Stale sentinel is removed.
-//! 2. `try_lock_exclusive` on `.jeikcode/.setup.lock` — second rail.
+//! 2. `try_lock_exclusive` on `.zap/.setup.lock` — second rail.
 //! 3. Write a fresh sentinel JSON with current PID, start_time, host, version.
 //!
 //! Drop releases both rails (unlock fs2, rm sentinel) but keeps the `.setup.lock`
@@ -39,7 +39,7 @@ pub enum LockError {
 #[derive(Debug)]
 pub struct SetupLock {
     fd: File,
-    /// Path to the project's `.jeikcode/.setup.lock` file. Kept around for
+    /// Path to the project's `.zap/.setup.lock` file. Kept around for
     /// diagnostics and future callers (e.g. error messages, force-cleanup CLI).
     #[allow(dead_code)]
     pub(super) lock_path: PathBuf,
@@ -55,7 +55,7 @@ struct Sentinel {
 }
 
 fn lock_dir(project_root: &Path) -> PathBuf {
-    project_root.join(".jeikcode")
+    project_root.join(".zap")
 }
 
 fn current_pid() -> u32 {

@@ -2,7 +2,7 @@
 //!
 //! Pack `assets/setup-seeds/` into `OUT_DIR/setup-seeds.tar.zst` so the
 //! `setup` capability's `seeds.rs` can `include_bytes!` it. The packed
-//! archive is extracted at first run to `~/.jeikcode/seeds-cache/<binary-sha>/`.
+//! archive is extracted at first run to `~/.zap/seeds-cache/<binary-sha>/`.
 //!
 //! (Moved here from `jeikcode-core/build.rs` alongside the `setup` module.)
 

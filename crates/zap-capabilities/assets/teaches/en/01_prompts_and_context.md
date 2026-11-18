@@ -1,6 +1,6 @@
 # 01 - Prompts and Context Configuration Guide (Prompts & Context)
 
-Configuration directory path: `~/.jeikcode/prompts/` (or `$JEIKCODE_HOME/prompts/`).
+Configuration directory path: `~/.zap/prompts/` (or `$ZAP_HOME/prompts/`).
 
 ---
 
@@ -32,7 +32,7 @@ identity:
     - No proactive configuration reads: When the user asks about current tools, MCP, Skills, rules, what we have discussed, or similar, answer directly from the interaction history visible in your current context and from the visible `<available_skills>`, `<mcp_server_instructions>`, `<system_rules>`, `<memory>`, `<user_preferences>`, `<project_instructions>`, etc. Read configuration proactively only when the user explicitly asks to inspect the configured models, query session file records, troubleshoot JeikCode logs, or makes another equally explicit request.
 
     ## Configuration Directories
-    - Global configuration, sessions, and logs live under `~/.jeikcode/`; project configuration lives under `./` or `./.jeikcode/`. Do not read configuration proactively unless the user has a clear intent for you to do so.
+    - Global configuration, sessions, and logs live under `~/.zap/`; project configuration lives under `./` or `./.zap/`. Do not read configuration proactively unless the user has a clear intent for you to do so.
     - Preference and rule files (for example, `AGENTS.md`, `JEIKCODE.md`, `CLAUDE.md`, `rules.md`, `glossary.md`, `dbwords.md`, `memory.md`) take effect immediately upon modification. When the user asks you to change project standards, only scan and modify `./AGENTS.md`.
 
 precedence:
@@ -106,9 +106,9 @@ Please answer in English, strictly following software engineering best practices
 
 ### 4.2 File Priority
 Loaded by nearest scope (first hit takes effect):
-1. Project-specific: `<workspace>/.jeikcode/user-wrap.md`
+1. Project-specific: `<workspace>/.zap/user-wrap.md`
 2. Project root: `<workspace>/user-wrap.md`
-3. Global default: `~/.jeikcode/user-wrap.md`
+3. Global default: `~/.zap/user-wrap.md`
 
 ---
 
@@ -129,7 +129,7 @@ The global / project instructions, plus memory, skills, and MCP, are each inject
 | 30 | `<available_skills>` | Installed skill catalog |
 | 40 | `<mcp_server_instructions>` | MCP server instructions |
 | 50 | `<memory>` | `memory.md` (global + project) |
-| 55 | `<user_preferences>` | `~/.jeikcode/AGENTS.md` / `JEIKCODE.md` |
+| 55 | `<user_preferences>` | `~/.zap/AGENTS.md` / `ZAP.md` |
 | 60 | `<project_instructions>` | Project `AGENTS.md` etc. + domain knowledge packs |
 
 - Precedence is owned by sys-1 (`<environment>` block) via `## PRECEDENCE:`; on conflict **project instructions >> memory > user preferences > system rules**. `<user_preferences>`, `<memory>`, and `<project_instructions>` no longer carry their own leading precedence note.

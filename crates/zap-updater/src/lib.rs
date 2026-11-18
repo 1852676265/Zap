@@ -10,9 +10,9 @@
 //!    mismatch — we never touch the live binary until verification
 //!    passes.
 //! 6. Three-way swap to replace the live binary:
-//!    a. `jeikcode` → `.jeikcode.rolling`  (Windows allows renaming a running exe)
-//!    b. new binary → `jeikcode`            (install the upgrade)
-//!    c. best-effort: remove old `.bak`, then `.jeikcode.rolling` → `.bak`
+//!    a. `zap` → `.zap.rolling`  (Windows allows renaming a running exe)
+//!    b. new binary → `zap`      (install the upgrade)
+//!    c. best-effort: remove old `.bak`, then `.zap.rolling` → `.bak`
 //!
 //!    Steps a–b are the critical path; step c is best-effort. If the old
 //!    `.bak` is locked (AV scanner, still-running process, read-only
@@ -101,9 +101,7 @@ pub fn detect_system_proxy() -> Option<String> {
 /// otherwise leave reqwest's env-based proxy detection intact and mount explicit system proxy.
 pub fn apply_proxy_policy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     zap_config::proxy::ensure_runtime_initialized();
-    if std::env::var(zap_config::proxy::MODE_ENV)
-        .ok()
-        .as_deref()
+    if std::env::var(zap_config::proxy::MODE_ENV).ok().as_deref()
         == Some(zap_config::proxy::ProxyMode::NoProxy.as_str())
     {
         builder.no_proxy()
@@ -361,12 +359,12 @@ pub fn normalize_live_exe_path(exe: PathBuf) -> PathBuf {
         return exe;
     };
     let lower = name.to_ascii_lowercase();
-    if lower == ".zap.rolling" || lower == ".jeikcode.rolling" || lower == "zap.rolling" || lower == "jeikcode.rolling" {
-        return exe.with_file_name(if cfg!(windows) {
-            "zap.exe"
-        } else {
-            "zap"
-        });
+    if lower == ".zap.rolling"
+        || lower == ".jeikcode.rolling"
+        || lower == "zap.rolling"
+        || lower == "jeikcode.rolling"
+    {
+        return exe.with_file_name(if cfg!(windows) { "zap.exe" } else { "zap" });
     }
     if lower.ends_with(".bak") {
         let trimmed = &name[..name.len() - 4];
@@ -416,10 +414,7 @@ pub fn cleanup_legacy_dropper_file(running: &Path) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if is_legacy_dropper_filename(name) && !same_exe(&path, running) {
                         let _ = std::fs::remove_file(&path);
                     }
@@ -581,15 +576,15 @@ pub fn backup_path(exe: &Path) -> PathBuf {
 /// also so it's easy to identify-and-clean if a crash orphans it.
 fn download_path(exe: &Path) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
-    dir.join(".jeikcode.download")
+    dir.join(".zap.download")
 }
 
 /// Same-dir temp used during a three-way rollback swap. Also reused by the
-/// Windows uninstaller (jeikcode-cli) to rename the live exe out of the way
+/// Windows uninstaller (zap-cli) to rename the live exe out of the way
 /// before deleting the install dir, hence `pub` rather than `pub(crate)`.
 pub fn rolling_path(exe: &Path) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
-    dir.join(".jeikcode.rolling")
+    dir.join(".zap.rolling")
 }
 
 /// Return `Ok(())` iff we can create a file alongside `exe`.
@@ -603,7 +598,7 @@ pub fn ensure_writable(exe: &Path) -> Result<()> {
     let dir = exe
         .parent()
         .ok_or_else(|| anyhow!("executable has no parent directory: {}", exe.display()))?;
-    let probe = dir.join(".jeikcode.writable-probe");
+    let probe = dir.join(".zap.writable-probe");
     match std::fs::File::create(&probe) {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);
@@ -1891,7 +1886,7 @@ fn write_system_file_with_sudo_fallback(target: &Path, content: &str) -> bool {
         return true;
     }
     let tmp = std::env::temp_dir().join(format!(
-        ".jeikcode-svc-{}-{}",
+        ".zap-svc-{}-{}",
         std::process::id(),
         target
             .file_name()
@@ -2094,19 +2089,29 @@ pub fn sync_host_service_on_restart(
         LaunchMode::WindowsLogon | LaunchMode::Foreground => {
             // Foreground 仅用于兼容早期未写入 JEIKCODE_HOST_SERVICE 标记的登录自启项：
             // 同一端口不可能同时被两个进程监听，端口精确命中即视为同一服务。
-            let dir = zap_config::util::real_home_dir()?
-                .join(".jeikcode")
-                .join("services");
+            let home = zap_config::util::real_home_dir()?;
+            let is_cmd = |n: &str| {
+                let lower = n.to_ascii_lowercase();
+                (lower.starts_with("zap-") || lower.starts_with("jeikcode-"))
+                    && lower.ends_with(".cmd")
+            };
+            let marker_cmd = marker.map(|m| format!("{m}.cmd"));
             let path = locate_service_file(
-                &dir,
-                marker.map(|m| format!("{m}.cmd")),
+                &home.join(".zap").join("services"),
+                marker_cmd.clone(),
                 None,
-                |n| {
-                    let lower = n.to_ascii_lowercase();
-                    lower.starts_with("jeikcode-") && lower.ends_with(".cmd")
-                },
+                is_cmd,
                 old_port,
-            )?;
+            )
+            .or_else(|| {
+                locate_service_file(
+                    &home.join(".jeikcode").join("services"),
+                    marker_cmd,
+                    None,
+                    is_cmd,
+                    old_port,
+                )
+            })?;
             let content = std::fs::read_to_string(&path).ok()?;
             let updated =
                 rewrite_windows_cmd_content(&content, new_host, new_port, new_token, no_token);
@@ -2578,7 +2583,7 @@ where
         match rename(from, to) {
             Ok(()) => return Ok(()),
             // Cross-device: the staged binary lives under the user profile
-            // (e.g. C:\Users\…\.jeikcode\staged\) while the running exe may be
+            // (e.g. C:\Users\…\.zap\staged\) while the running exe may be
             // on another drive (H:\…). `rename` across volumes can NEVER
             // succeed (ERROR_NOT_SAME_DEVICE / EXDEV), so don't waste the retry
             // budget — copy the bytes across and drop the source instead.
@@ -2610,7 +2615,7 @@ fn is_cross_device_error(e: &std::io::Error) -> bool {
 /// even if `to` is currently being executed as a running Linux/Windows process.
 ///
 /// Steps:
-/// 1. Copy `from` to a temporary sibling file in `to`'s directory (`.jeikcode.tmp-<pid>-<nanos>`).
+/// 1. Copy `from` to a temporary sibling file in `to`'s directory (`.zap.tmp-<pid>-<nanos>`).
 /// 2. On Unix, ensure the temporary file has 0o755 executable permissions.
 /// 3. Atomically rename the temporary file over `to` using `robust_rename`.
 ///    On Unix, `rename(2)` replaces the directory entry (dentry) while existing
@@ -2623,7 +2628,7 @@ pub fn atomic_copy_replace(from: &Path, to: &Path) -> std::io::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    let tmp_dest = parent.join(format!(".jeikcode.tmp-{}-{}", std::process::id(), nanos));
+    let tmp_dest = parent.join(format!(".zap.tmp-{}-{}", std::process::id(), nanos));
 
     // Ensure clean state before copy
     let _ = std::fs::remove_file(&tmp_dest);
@@ -2928,8 +2933,8 @@ fn purge_legacy_brand_plugins_on_upgrade() {
 //
 // Flow:
 //   session N      : prepare_deferred_upgrade()
-//                    → download to ~/.jeikcode/staged/<filename>
-//                    → write ~/.jeikcode/staged/pending.json
+//                    → download to ~/.zap/staged/<filename>
+//                    → write ~/.zap/staged/pending.json
 //                    → (UI surfaces "⟲ vX.Y.Z pending")
 //   session N exit : no special work; staged files survive any exit path
 //                    (graceful, SIGHUP on terminal close, SIGKILL, power
@@ -2947,7 +2952,7 @@ fn purge_legacy_brand_plugins_on_upgrade() {
 /// giving up. Prevents a corrupted download from turning into a boot loop.
 const MAX_APPLY_ATTEMPTS: u32 = 3;
 
-/// Pointer record stored at `~/.jeikcode/staged/pending.json`. Describes
+/// Pointer record stored at `~/.zap/staged/pending.json`. Describes
 /// a downloaded binary that hasn't yet been promoted to live. Lifecycle:
 /// written by `prepare_deferred_upgrade`, read (and deleted on success /
 /// incremented on failure) by `apply_pending_upgrade`.
@@ -2981,7 +2986,7 @@ pub struct AppliedUpgrade {
     pub exe: PathBuf,
 }
 
-/// `~/.jeikcode/staged/` (or equivalent on Windows). Created on demand by
+/// `~/.zap/staged/` (or equivalent on Windows). Created on demand by
 /// `prepare_deferred_upgrade`; safe to treat as possibly-missing at read
 /// time. Kept under the same root as `history` / `recent_dirs` so nothing
 /// new appears in `$HOME`.
@@ -3222,8 +3227,8 @@ pub fn apply_pending_upgrade() -> Result<Option<AppliedUpgrade>> {
 /// one continuous "session" from their perspective.
 ///
 /// **Important on Windows:** After `replace_binary` renames the running exe
-/// (e.g. `jeikcode.exe` → `.jeikcode.rolling`), `std::env::current_exe()`
-/// may return the *renamed* path (`.jeikcode.rolling`) instead of the
+/// (e.g. `zap.exe` → `.zap.rolling`), `std::env::current_exe()`
+/// may return the *renamed* path (`.zap.rolling`) instead of the
 /// original one (`jeikcode.exe`). This is because `GetModuleFileNameW`
 /// tracks the on-disk filename. If `override_exe` is provided, it is used
 /// instead of `current_exe()` — callers should capture the exe path
@@ -3732,7 +3737,7 @@ mod tests {
     fn replace_binary_renames_live_to_bak_via_three_way_swap() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = tmp.path().join("zap");
-        let new = tmp.path().join(".jeikcode.download");
+        let new = tmp.path().join(".zap.download");
         std::fs::write(&exe, b"OLD").unwrap();
         std::fs::write(&new, b"NEW").unwrap();
 
@@ -3751,7 +3756,7 @@ mod tests {
     fn replace_binary_overwrites_stale_bak() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = tmp.path().join("zap");
-        let new = tmp.path().join(".jeikcode.download");
+        let new = tmp.path().join(".zap.download");
         let bak = backup_path(&exe);
         std::fs::write(&exe, b"V2").unwrap();
         std::fs::write(&new, b"V3").unwrap();
@@ -3826,7 +3831,7 @@ mod tests {
 
     #[test]
     fn robust_rename_falls_back_to_copy_on_cross_device() {
-        // The reported bug: staged binary under the user profile (C:\…\.jeikcode
+        // The reported bug: staged binary under the user profile (C:\…\.zap
         // \staged\) vs a running exe on another drive (H:\). `rename` fails with
         // ERROR_NOT_SAME_DEVICE; robust_rename must transparently copy instead of
         // burning its retry budget on a deterministic failure.
@@ -3869,7 +3874,7 @@ mod tests {
     fn replace_binary_cleans_leftover_rolling() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = tmp.path().join("zap");
-        let new = tmp.path().join(".jeikcode.download");
+        let new = tmp.path().join(".zap.download");
         let rolling = rolling_path(&exe);
         std::fs::write(&exe, b"OLD").unwrap();
         std::fs::write(&new, b"NEW").unwrap();
@@ -3892,7 +3897,7 @@ mod tests {
         // three-way swap completes successfully regardless.)
         let tmp = tempfile::tempdir().unwrap();
         let exe = tmp.path().join("zap");
-        let new = tmp.path().join(".jeikcode.download");
+        let new = tmp.path().join(".zap.download");
         let bak = backup_path(&exe);
         let rolling = rolling_path(&exe);
         std::fs::write(&exe, b"V2").unwrap();
@@ -3922,7 +3927,7 @@ mod tests {
         std::fs::write(&bak, b"OLD").unwrap();
 
         // Manual three-way swap mirroring run_rollback's body.
-        let rolling = tmp.path().join(".jeikcode.rolling");
+        let rolling = tmp.path().join(".zap.rolling");
         std::fs::rename(&exe, &rolling).unwrap();
         std::fs::rename(&bak, &exe).unwrap();
         std::fs::rename(&rolling, &bak).unwrap();
@@ -4389,11 +4394,11 @@ mod tests {
     #[test]
     fn live_exe_path_strips_windows_swap_suffixes() {
         let dir = std::path::Path::new("/opt/jc");
-        let expected = if cfg!(windows) {
-            "zap.exe"
-        } else {
-            "zap"
-        };
+        let expected = if cfg!(windows) { "zap.exe" } else { "zap" };
+        assert_eq!(
+            normalize_live_exe_path(dir.join(".zap.rolling")),
+            dir.join(expected)
+        );
         assert_eq!(
             normalize_live_exe_path(dir.join(".jeikcode.rolling")),
             dir.join(expected)
@@ -4402,10 +4407,7 @@ mod tests {
             normalize_live_exe_path(dir.join("jeikcode.exe.bak")),
             dir.join("zap.exe")
         );
-        assert_eq!(
-            normalize_live_exe_path(dir.join("zap")),
-            dir.join("zap")
-        );
+        assert_eq!(normalize_live_exe_path(dir.join("zap")), dir.join("zap"));
     }
 
     #[test]
@@ -4510,9 +4512,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(offline_verdict)]
     async fn manifest_fetch_retries_transient_5xx() {
-        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
+        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
 
         seed_offline_verdict(OfflineMode::Off, None);
         let server = MockServer::start().await;
@@ -4541,9 +4543,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(offline_verdict)]
     async fn manifest_fetch_does_not_retry_client_errors() {
-        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
+        use zap_config::config::offline::{seed_offline_verdict, OfflineMode};
 
         seed_offline_verdict(OfflineMode::Off, None);
         let server = MockServer::start().await;

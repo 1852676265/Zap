@@ -1861,12 +1861,16 @@ export function Chat({
   // the session id would let the first A's late active-check/cancel result
   // mutate the replacement A view.
   const sessionGenerationRef = useRef(0);
+  const timelineScopeGenRef = useRef(0);
   const renderedSessionIdRef = useRef(sessionId);
   if (renderedSessionIdRef.current !== sessionId) {
     // Advance during render, before a passive effect can abort the old reader.
     // An accepted first-turn `done` pre-binds activeIdRef to its new id, so that
     // normal null -> canonical-id prop update does not invalidate its own tail.
-    if (activeIdRef.current !== sessionId) sessionGenerationRef.current += 1;
+    if (activeIdRef.current !== sessionId) {
+      sessionGenerationRef.current += 1;
+      timelineScopeGenRef.current += 1;
+    }
     assignedNewSessionIdRef.current = null;
     renderedSessionIdRef.current = sessionId;
   }
@@ -2150,7 +2154,10 @@ export function Chat({
                 return;
               }
 
-              const isCurrentView = activeIdRef.current === loadId;
+              const isCurrentView =
+                activeIdRef.current === loadId &&
+                (renderedSessionIdRef.current === loadId ||
+                  (renderedSessionIdRef.current === null && assignedNewSessionIdRef.current === loadId));
               if (isCurrentView) {
                 if (event.type === 'text' || event.type === 'reasoning') {
                   ensureAssistantBubbleForWatch();
@@ -2538,7 +2545,10 @@ export function Chat({
           return;
         }
 
-        const isCurrentView = activeIdRef.current === loadId;
+        const isCurrentView =
+          activeIdRef.current === loadId &&
+          (renderedSessionIdRef.current === loadId ||
+            (renderedSessionIdRef.current === null && assignedNewSessionIdRef.current === loadId));
         if (!isCurrentView) {
           // 核心对标：会话在后台运行时，总线推流绝不丢弃，实时反哺进会话专属缓存 messageCacheRef！
           applyEventToSessionCache(loadId, event);
@@ -3079,9 +3089,13 @@ export function Chat({
         // Schedule the cached history after layout without overriding reader intent.
         pinTimelineToBottom(1200);
       } else {
-        const localActive = sessionId && (localTurnSessionsRef.current.has(sessionId) || backgroundRunningSessionsRef.current.has(sessionId));
-        if (localActive && messagesRef.current.length > 0) {
-          // 当前轮次正在活跃生成中且画布已有提问，坚决保留当前画布，绝不抹成 []
+        const isSameCanvasNewTurn =
+          !prevId &&
+          !!sessionId &&
+          assignedNewSessionIdRef.current === sessionId &&
+          (localTurnSessionsRef.current.has(sessionId) || backgroundRunningSessionsRef.current.has(sessionId));
+        if (isSameCanvasNewTurn && messagesRef.current.length > 0) {
+          // 仅当本空白画布刚创建该新会话且正在活跃生成时保留画布；跨会话切换必须清空，杜绝残留上一会话对话
         } else {
           messagesRef.current = [];
           setMessages([]);
@@ -4840,36 +4854,66 @@ export function Chat({
     activeTurnIdRef.current = id;
     setActiveTurnIdState(id);
   }
-  function syncTurnNavFromScroll() {
+  const turnNavScrollRafRef = useRef<number | null>(null);
+  function syncTurnNavFromScrollNow() {
     if (Date.now() < turnNavPinUntilRef.current) return;
     const root = scrollRef.current;
     const items = turnNavItemsRef.current;
     if (!root || items.length === 0) return;
     const rootRect = root.getBoundingClientRect();
+    const scrollTop = root.scrollTop;
+    const clientHeight = root.clientHeight;
+    const scrollHeight = root.scrollHeight;
+
+    // 一次性收集当前 DOM 中的锚点节点，避免每个 item 重复 querySelector / querySelectorAll 造成同步布局抖动
+    const navMap = new Map<string, HTMLElement>();
+    const taggedNodes = root.querySelectorAll<HTMLElement>('[data-turn-nav]');
+    for (let i = 0; i < taggedNodes.length; i++) {
+      const node = taggedNodes[i]!;
+      const key = node.dataset.turnNav;
+      if (key) navMap.set(key, node);
+      if (node.id && !navMap.has(node.id)) navMap.set(node.id, node);
+    }
+    let fallbackBubbles: Array<{ el: HTMLElement; text: string }> | null = null;
+
     const next = resolveActiveTurnId(
       items,
       (id) => {
-        let el = root.querySelector(`[data-turn-nav="${id}"]`);
-        if (!el) el = root.querySelector(`#${id}`);
+        let el: HTMLElement | null | undefined = navMap.get(id);
+        if (!el) el = root.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
         if (!el) {
           const item = items.find((it) => it.id === id);
           if (item && item.text) {
             const clean = item.text.slice(0, 15).toLowerCase();
-            const bubbles = root.querySelectorAll('.user-message-wrapper');
-            for (const bubble of bubbles) {
-              if (bubble.textContent?.toLowerCase().includes(clean)) {
-                el = bubble;
+            if (!fallbackBubbles) {
+              const rawBubbles = root.querySelectorAll<HTMLElement>('.user-message-wrapper');
+              fallbackBubbles = [];
+              for (let i = 0; i < rawBubbles.length; i++) {
+                const b = rawBubbles[i]!;
+                fallbackBubbles.push({ el: b, text: (b.textContent || '').toLowerCase() });
+              }
+            }
+            for (let i = 0; i < fallbackBubbles.length; i++) {
+              if (fallbackBubbles[i]!.text.includes(clean)) {
+                el = fallbackBubbles[i]!.el;
                 break;
               }
             }
           }
         }
         if (!el) return undefined;
-        return el.getBoundingClientRect().top - rootRect.top + root.scrollTop;
+        return el.getBoundingClientRect().top - rootRect.top + scrollTop;
       },
-      { scrollTop: root.scrollTop, clientHeight: root.clientHeight, scrollHeight: root.scrollHeight },
+      { scrollTop, clientHeight, scrollHeight },
     );
     if (next && next !== activeTurnIdRef.current) setActiveTurnId(next);
+  }
+  function syncTurnNavFromScroll() {
+    if (turnNavScrollRafRef.current != null) return;
+    turnNavScrollRafRef.current = window.requestAnimationFrame(() => {
+      turnNavScrollRafRef.current = null;
+      syncTurnNavFromScrollNow();
+    });
   }
   function rememberTurnOutline(text: string, index: number, ordinal: number) {
     const clean = stripSteerEnvelopeForDisplay(stripInjectedRemindersForDisplay(text));
@@ -5222,9 +5266,18 @@ export function Chat({
     }
   }
   // 提问导航取消与滚动同步由主 session-switch effect 维护大纲生命周期。
-  useEffect(() => () => cancelTurnNavScroll(), []);
+  useEffect(
+    () => () => {
+      cancelTurnNavScroll();
+      if (turnNavScrollRafRef.current != null) {
+        window.cancelAnimationFrame(turnNavScrollRafRef.current);
+        turnNavScrollRafRef.current = null;
+      }
+    },
+    [],
+  );
   useEffect(() => {
-    const id = requestAnimationFrame(() => syncTurnNavFromScroll());
+    const id = requestAnimationFrame(() => syncTurnNavFromScrollNow());
     return () => cancelAnimationFrame(id);
   }, [turnNavItems]);
 
@@ -5716,7 +5769,7 @@ export function Chat({
     setMessages((prev) => {
       const next = paintAssistantNotice(prev, text, messageId);
       messagesRef.current = next;
-      const currentSid = liveSessionIdRef.current ?? sessionId ?? activeIdRef.current;
+      const currentSid = activeIdRef.current ?? sessionId;
       if (currentSid) {
         messageCacheRef.current.set(currentSid, next);
       }
@@ -5740,7 +5793,7 @@ export function Chat({
         next = [...prev, { role: 'assistant', parts: [{ kind: 'rate_limited', text }] }];
       }
       messagesRef.current = next;
-      const currentSid = liveSessionIdRef.current ?? sessionId ?? activeIdRef.current;
+      const currentSid = activeIdRef.current ?? sessionId;
       if (currentSid) {
         messageCacheRef.current.set(currentSid, next);
       }
@@ -6163,12 +6216,20 @@ export function Chat({
   const canvasCacheTimerRef = useRef<number | null>(null);
   function scheduleCanvasCacheSave() {
     if (canvasCacheTimerRef.current != null) return;
+    const scheduledSid = activeIdRef.current ?? sessionId;
+    const scheduledGen = sessionGenerationRef.current;
+    if (!scheduledSid) return;
     canvasCacheTimerRef.current = window.setTimeout(() => {
       canvasCacheTimerRef.current = null;
-      const target = activeIdRef.current ?? sessionId;
-      if (!target) return;
+      const currentTarget = activeIdRef.current ?? renderedSessionIdRef.current;
+      if (
+        sessionGenerationRef.current !== scheduledGen ||
+        currentTarget !== scheduledSid
+      ) {
+        return;
+      }
       const hash =
-        projectHashBySessionRef.current.get(target) ??
+        projectHashBySessionRef.current.get(scheduledSid) ??
         activeSession?.project_hash ??
         viewedProjectHashRef.current ??
         '';
@@ -6176,12 +6237,12 @@ export function Chat({
       const outline =
         turnOutlineRef.current.length > 0
           ? turnOutlineRef.current
-          : turnOutlineBySessionRef.current.get(target) ?? [];
+          : turnOutlineBySessionRef.current.get(scheduledSid) ?? [];
       void saveSessionCache(
         hash,
-        target,
+        scheduledSid,
         messagesRef.current,
-        todosForSessionCache(target),
+        todosForSessionCache(scheduledSid),
         undefined,
         outline,
         tokensAuthoritativeRef.current,
@@ -6204,6 +6265,14 @@ export function Chat({
     const observerOnly = opts?.observerOnly === true;
     const requireReplayDedup = opts?.requireReplayDedup === true;
     const eventSessionId = opts?.sourceSessionId ?? activeIdRef.current;
+    if (
+      opts?.sourceSessionId &&
+      activeIdRef.current &&
+      opts.sourceSessionId !== activeIdRef.current
+    ) {
+      applyEventToSessionCache(opts.sourceSessionId, event);
+      return;
+    }
     switch (event.type) {
       case 'runtime_info':
         setProvider(event.provider);
@@ -6314,7 +6383,7 @@ export function Chat({
           const next = bindUserMessageIdentity(prev, event.message_id);
           if (next === prev) return prev;
           messagesRef.current = next;
-          const currentSid = liveSessionIdRef.current ?? sessionId ?? activeIdRef.current;
+          const currentSid = activeIdRef.current ?? sessionId;
           if (currentSid) messageCacheRef.current.set(currentSid, next);
           return next;
         });
@@ -7357,28 +7426,37 @@ export function Chat({
 
       const ack = await postChatPrompt(body, controller.signal);
       const effectiveSid = ack.session_id || boundSessionId || turnOwnerSid;
+      const stillOnRequestView =
+        sessionGenerationRef.current === requestGeneration &&
+        (!activeIdRef.current ||
+          activeIdRef.current === boundSessionId ||
+          activeIdRef.current === effectiveSid);
       if (effectiveSid) {
         boundSessionId = effectiveSid;
-        if (!activeIdRef.current) assignedNewSessionIdRef.current = effectiveSid;
-        activeIdRef.current = effectiveSid;
-        loadedForRef.current = effectiveSid;
         localTurnSessionsRef.current.add(effectiveSid);
-        messageCacheRef.current.set(effectiveSid, messagesRef.current);
-        onSessionId(effectiveSid);
         onLiveRunningChange?.(effectiveSid, true);
+        if (stillOnRequestView) {
+          if (!activeIdRef.current) assignedNewSessionIdRef.current = effectiveSid;
+          activeIdRef.current = effectiveSid;
+          loadedForRef.current = effectiveSid;
+          messageCacheRef.current.set(effectiveSid, messagesRef.current);
+          onSessionId(effectiveSid);
+        } else {
+          backgroundRunningSessionsRef.current.add(effectiveSid);
+          ensureBackgroundFinishWatch();
+        }
       }
-      if (!sessionId || acceptedWithoutSession) {
+      if (stillOnRequestView && (!sessionId || acceptedWithoutSession)) {
         acceptedWithoutSession = false;
         if (boundSessionId) onAccepted?.(boundSessionId);
       }
       // 单事件总线架构：提问由后端承认（202 Accepted）并自动发布至广播总线，
       // 前端统一由 watchChatSession 接收全量实时事件与回放，彻底杜绝双流竞态。
       const currentProjectHash =
-        activeSession?.project_hash ||
-        viewedProjectHashRef.current ||
         (effectiveSid ? projectHashBySessionRef.current.get(effectiveSid) : undefined) ||
+        (stillOnRequestView ? activeSession?.project_hash || viewedProjectHashRef.current : undefined) ||
         '';
-      if (effectiveSid) {
+      if (effectiveSid && stillOnRequestView) {
         startDetachedHistoryPoll(currentProjectHash, effectiveSid, sessionGenerationRef.current);
       }
     } catch (err: unknown) {
@@ -8710,7 +8788,12 @@ export function Chat({
     if (files && files.length) void addLocalFiles(files);
   }
 
-  const lastIdx = messages.length - 1;
+  // 切换会话的首帧（useEffect 尚未提交前）直接从目标会话缓存投影，杜绝旧会话 messages 在切换帧闪现残留
+  const isPendingSessionSwitch = sessionId !== activeIdRef.current;
+  const effectiveMessages = isPendingSessionSwitch
+    ? (sessionId ? (messageCacheRef.current.get(sessionId) ?? []) : [])
+    : messages;
+  const lastIdx = effectiveMessages.length - 1;
 
   // 会话内搜索: Cmd/Ctrl+F 呼出浮动搜索框,Esc/× 关闭;输入关键词改变字符背景并高亮,
   // Enter/Shift+Enter(或 ↑/↓)在匹配消息间跳转并滚动定位(反查定位)。关闭态
@@ -8719,8 +8802,62 @@ export function Chat({
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const searchTrim = search.trim().toLowerCase();
-  // 不过滤时间线，而是展示完整消息流
-  const visibleMessages = useMemo(() => messages.map((m, origIdx) => ({ msg: m, origIdx })), [messages]);
+  // 预计算每个回合的复制与思考聚合文本，基于 effectiveMessages 缓存，避免滚动或计时器跳秒重算
+  const { turnLastTexts, turnAllTexts, turnReasoningMap } = useMemo(() => {
+    const lastMap = new Map<number, string>();
+    const allMap = new Map<number, string>();
+    const reasoningMap = new Map<number, string>();
+    let start = -1;
+    let textParts: string[] = [];
+    let fallbackParts: string[] = [];
+    let reasoningParts: string[] = [];
+    for (let i = 0; i < effectiveMessages.length; i++) {
+      if (effectiveMessages[i].role === 'assistant') {
+        if (start < 0) start = i;
+        for (const p of effectiveMessages[i].parts) {
+          if (p.kind === 'text' && p.text.trim()) {
+            textParts.push(p.text);
+          } else if (p.kind === 'reasoning' && p.text.trim()) {
+            reasoningParts.push(p.text.trim());
+          }
+        }
+        const raw = messageFullText(effectiveMessages[i]);
+        if (raw) fallbackParts.push(raw);
+      } else if (effectiveMessages[i].role === 'user') {
+        if (start >= 0) {
+          const targetList = textParts.length > 0 ? textParts : fallbackParts;
+          const lastText = targetList.length > 0 ? targetList[targetList.length - 1] : '';
+          const allText = targetList.join('\n\n');
+          const allReasoning = reasoningParts.join('\n\n---\n\n');
+          for (let j = start; j < i; j++) {
+            lastMap.set(j, lastText);
+            allMap.set(j, allText);
+            reasoningMap.set(j, allReasoning);
+          }
+          start = -1;
+          textParts = [];
+          fallbackParts = [];
+          reasoningParts = [];
+        }
+      }
+    }
+    if (start >= 0) {
+      const targetList = textParts.length > 0 ? textParts : fallbackParts;
+      const lastText = targetList.length > 0 ? targetList[targetList.length - 1] : '';
+      const allText = targetList.join('\n\n');
+      const allReasoning = reasoningParts.join('\n\n---\n\n');
+      for (let j = start; j < effectiveMessages.length; j++) {
+        lastMap.set(j, lastText);
+        allMap.set(j, allText);
+        reasoningMap.set(j, allReasoning);
+      }
+    }
+    return { turnLastTexts: lastMap, turnAllTexts: allMap, turnReasoningMap: reasoningMap };
+  }, [effectiveMessages]);
+  const visibleMessages = useMemo(
+    () => effectiveMessages.map((m, origIdx) => ({ msg: m, origIdx })),
+    [effectiveMessages],
+  );
   const lastVisibleIdx = visibleMessages.length - 1;
   // 全量内容搜索：涵盖用户提问、深度思考、正文文本、工具输入输出、通知错误等纯对话内所有元素
   function messageSearchableFullText(m: Message): string {
@@ -8746,13 +8883,13 @@ export function Chat({
   const matchPositions = useMemo(() => {
     if (!searchOpen || !searchTrim) return [];
     const positions: number[] = [];
-    messages.forEach((m, idx) => {
+    effectiveMessages.forEach((m, idx) => {
       if (messageSearchableFullText(m).includes(searchTrim)) {
         positions.push(idx);
       }
     });
     return positions;
-  }, [messages, searchTrim, searchOpen]);
+  }, [effectiveMessages, searchTrim, searchOpen]);
   // 匹配消息 origIdx → DOM 节点,供 ↑/↓/Enter 滚动定位。每次渲染重填。
   const matchRefs = useRef<Record<number, HTMLElement | null>>({});
   const [matchIdx, setMatchIdxState] = useState(0);
@@ -9745,14 +9882,14 @@ export function Chat({
             ref={attachTimeline}
             onScroll={syncTurnNavFromScroll}
           >
-        <div class="timeline-inner">
-        {messages.length === 0 && !historyHint && !restoring && loading && (
+        <div class="timeline-inner" key={`tl-${timelineScopeGenRef.current}`}>
+        {effectiveMessages.length === 0 && !historyHint && !restoring && loading && (
           <div class="messages-empty messages-loading" role="status" aria-live="polite">
             <span class="codex-shimmer-status">{t('chat.loadingOlder')}</span>
           </div>
         )}
 
-        {messages.length === 0 && historyHint && (
+        {effectiveMessages.length === 0 && historyHint && (
           <div class="messages-empty">
             <div>
               {historyHint}
@@ -9761,7 +9898,7 @@ export function Chat({
           </div>
         )}
 
-        {messages.length > 0 && historyHint && (
+        {effectiveMessages.length > 0 && historyHint && (
           <div class="history-banner" role="status">
             {historyHint}
           </div>
@@ -9783,72 +9920,12 @@ export function Chat({
         )}
 
         {(() => {
-          // Pre-compute per-turn text for assistant messages: collect all text
-          // from consecutive assistant messages between two user messages, so
-          // the copy button can copy the entire LLM turn (not just one chunk).
-          // system messages are transparent — they don't end an assistant turn.
-          const turnTexts = new Map<number, string>();
-          // 计算每个回合的文本（区分最后回答与全部正文），供复制按钮使用。
-          const turnLastTexts = new Map<number, string>();
-          const turnAllTexts = new Map<number, string>();
-          const turnReasoningMap = new Map<number, string>();
-          {
-            let start = -1;
-            let textParts: string[] = [];
-            let fallbackParts: string[] = [];
-            let reasoningParts: string[] = [];
-            for (let i = 0; i < messages.length; i++) {
-              if (messages[i].role === 'assistant') {
-                if (start < 0) start = i;
-                for (const p of messages[i].parts) {
-                  if (p.kind === 'text' && p.text.trim()) {
-                    textParts.push(p.text);
-                  } else if (p.kind === 'reasoning' && p.text.trim()) {
-                    reasoningParts.push(p.text.trim());
-                  }
-                }
-                const raw = messageFullText(messages[i]);
-                if (raw) fallbackParts.push(raw);
-              } else if (messages[i].role === 'user') {
-                // Only a user message ends the current assistant turn.
-                if (start >= 0) {
-                  const targetList = textParts.length > 0 ? textParts : fallbackParts;
-                  const lastText = targetList.length > 0 ? targetList[targetList.length - 1] : '';
-                  const allText = targetList.join('\n\n');
-                  const allReasoning = reasoningParts.join('\n\n---\n\n');
-                  for (let j = start; j < i; j++) {
-                    turnLastTexts.set(j, lastText);
-                    turnAllTexts.set(j, allText);
-                    turnReasoningMap.set(j, allReasoning);
-                  }
-                  start = -1;
-                  textParts = [];
-                  fallbackParts = [];
-                  reasoningParts = [];
-                }
-              }
-              // role === 'system': transparent — do not flush the turn.
-            }
-            // Flush the last turn
-            if (start >= 0) {
-              const targetList = textParts.length > 0 ? textParts : fallbackParts;
-              const lastText = targetList.length > 0 ? targetList[targetList.length - 1] : '';
-              const allText = targetList.join('\n\n');
-              const allReasoning = reasoningParts.join('\n\n---\n\n');
-              for (let j = start; j < messages.length; j++) {
-                turnLastTexts.set(j, lastText);
-                turnAllTexts.set(j, allText);
-                turnReasoningMap.set(j, allReasoning);
-              }
-            }
-          }
-
           // Helper: skip system messages when looking for the "next role".
           // Needed so a trailing system notice doesn't hide the copy button
           // on the real last AI reply of the turn.
           function nextNonSystemRole(from: number): string | undefined {
-            for (let k = from; k < messages.length; k++) {
-              if (messages[k].role !== 'system') return messages[k].role;
+            for (let k = from; k < effectiveMessages.length; k++) {
+              if (effectiveMessages[k].role !== 'system') return effectiveMessages[k].role;
             }
             return undefined;
           }
@@ -9938,7 +10015,7 @@ export function Chat({
             // 因为这两者是基于完整 messages 序列算的。
             const nextRole = nextNonSystemRole(origIdx + 1);
             const isLastInTurn = nextRole === 'user' || nextRole === undefined;
-            const userTs = precedingUserTs(messages, origIdx);
+            const userTs = precedingUserTs(effectiveMessages, origIdx);
             // Live bubble: wall-clock from this turn's user send → now.
             // Intermediate tool results / thinking must not restart the clock.
             const liveFromUser =
@@ -10573,11 +10650,42 @@ function AssistantMessageView({
   ) : null;
 
   const effectiveReasoning = isLastInTurn ? (turnReasoning || '') : '';
+  const hasAnswerText = msg.parts.some((p) => p.kind === 'text' && p.text.trim().length > 0);
+  const hasPendingTool = msg.parts.some((p) => p.kind === 'tool' && p.tool.status === 'pending');
+  let lastMeaningfulKind: MsgPart['kind'] | null = null;
+  for (let idx = msg.parts.length - 1; idx >= 0; idx--) {
+    const p = msg.parts[idx]!;
+    if (p.kind === 'text' && p.text.trim().length > 0) {
+      lastMeaningfulKind = 'text';
+      break;
+    }
+    if (p.kind === 'reasoning' && p.text.trim().length > 0) {
+      lastMeaningfulKind = 'reasoning';
+      break;
+    }
+    if (p.kind === 'tool') {
+      lastMeaningfulKind = 'tool';
+      break;
+    }
+    if (p.kind === 'notice' && p.text.trim().length > 0 && !isIgnoredChatNotice(p.text)) {
+      lastMeaningfulKind = 'notice';
+      break;
+    }
+    if (p.kind === 'rate_limited' && p.text.trim().length > 0) {
+      lastMeaningfulKind = 'rate_limited';
+      break;
+    }
+  }
+  const thinkingLive =
+    streaming &&
+    !isCompacting &&
+    (!hasAnswerText || hasPendingTool || (lastMeaningfulKind !== null && lastMeaningfulKind !== 'text'));
+
   const hasContent =
     effectiveReasoning.trim().length > 0 ||
+    hasAnswerText ||
     msg.parts.some(
       (p) =>
-        (p.kind === 'text' && p.text.trim().length > 0) ||
         (p.kind === 'reasoning' && p.text.trim().length > 0) ||
         (p.kind === 'notice' && p.text.trim().length > 0 && !isIgnoredChatNotice(p.text)) ||
         (p.kind === 'rate_limited' && p.text.trim().length > 0) ||
@@ -10586,7 +10694,7 @@ function AssistantMessageView({
 
   // 纯工具调用或无可见内容的消息在结束后不渲染多余气泡，彻底消除空卡片堆叠；
   // 若整轮思考已经汇入最后一条消息，非终条无正文的中间助手消息直接跳过，避免重复气泡。
-  if (!isLastInTurn && !streaming && !msg.parts.some((p) => p.kind === 'text' && p.text.trim())) {
+  if (!isLastInTurn && !streaming && !hasAnswerText) {
     return null;
   }
   if (!hasContent && !streaming) {
@@ -10609,14 +10717,20 @@ function AssistantMessageView({
         <>
           {/* Segments in chronological order: text→reasoning→text,
               matching clean DeepSeek layout. Tools are hidden from chat timeline. */}
-          {renderAssistantParts(msg.parts, search, cwd, isLastInTurn ? turnReasoning : undefined)}
-          {streaming && !hasContent && (
-            <span class="codex-shimmer-status" aria-live="polite">
-              {isCompacting ? 'Compacting...' : 'Working...'}
-            </span>
+          {renderAssistantParts(
+            msg.parts,
+            search,
+            cwd,
+            isLastInTurn ? turnReasoning : undefined,
+            thinkingLive,
+            hasPendingTool,
           )}
-          {streaming && hasContent && isCompacting && (
-            <span class="codex-shimmer-status" aria-live="polite" style={{ display: 'block', marginTop: '6px' }}>
+          {streaming && isCompacting && (
+            <span
+              class="codex-shimmer-status"
+              aria-live="polite"
+              style={hasContent || thinkingLive ? { display: 'block', marginTop: '6px' } : undefined}
+            >
               Compacting...
             </span>
           )}
@@ -10659,6 +10773,8 @@ function renderAssistantParts(
   search: string,
   cwd?: string,
   overrideReasoning?: string,
+  thinkingLive = false,
+  hasPendingTool = false,
 ): VNode[] {
   const out: VNode[] = [];
   let trailingTodos: { kind: 'todo_list'; items: TodoItem[] } | null = null;
@@ -10675,9 +10791,15 @@ function renderAssistantParts(
     combinedReasoning = list.join('\n\n---\n\n');
   }
 
-  if (combinedReasoning) {
+  if (combinedReasoning || thinkingLive) {
     out.push(
-      <ReasoningBlock key="rs-combined" text={combinedReasoning} search={search} />,
+      <ReasoningBlock
+        key="rs-combined"
+        text={combinedReasoning}
+        search={search}
+        live={thinkingLive}
+        hasPendingTool={hasPendingTool}
+      />,
     );
   }
 
@@ -10734,15 +10856,34 @@ function renderAssistantParts(
   return out;
 }
 
-/** Collapsible thinking / reasoning block (DeepSeek-style disclosure). */
-function ReasoningBlock({ text, search }: { text: string; search: string }) {
+function cleanReasoningPreviewLine(rawLine: string): string {
+  const trimmed = rawLine.trim();
+  if (!trimmed || /^---+$/.test(trimmed)) return '';
+  return trimmed
+    .replace(/^([#*>-]|\d+\.)\s*/, '')
+    .replace(/[*_`]/g, '')
+    .replace(/\.\.\.$/, '')
+    .trim();
+}
+
+/** Collapsible thinking / reasoning capsule with live rolling preview & shimmer. */
+function ReasoningBlock({
+  text,
+  search,
+  live = false,
+  hasPendingTool = false,
+}: {
+  text: string;
+  search: string;
+  live?: boolean;
+  hasPendingTool?: boolean;
+}) {
   const t = useT();
-  // Default expanded while streaming (short / growing); collapse once settled
-  // if the user prefers — start open so live thinking is visible.
   const [open, setOpen] = useState(false);
+  const [idleTick, setIdleTick] = useState(0);
+  const lastTextUpdateAtRef = useRef<number>(Date.now());
+  const prevLatestLineRef = useRef<string>('');
   const bodyRef = useRef<HTMLDivElement>(null);
-  // Follow latest tokens at the bottom until the user scrolls up (same policy
-  // as the main timeline: sticky follow, release on manual up-scroll).
   const followBottomRef = useRef(true);
   const REASONING_BOTTOM_SLACK = 48;
   const recomputeFollow = () => {
@@ -10758,41 +10899,108 @@ function ReasoningBlock({ text, search }: { text: string; search: string }) {
     el.scrollTop = el.scrollHeight;
   }, [text, open]);
 
-  // 提取思考过程的第一行有效文本作为未展开时的摘要预览（深度对齐 DeepSeek）
-  const summary = useMemo(() => {
-    if (!text) return '';
+  // 同时提取首行（完成后静止摘要）与最新有效行（流式生成时实时滚动展示）
+  const { firstLine, latestLine } = useMemo(() => {
+    if (!text) return { firstLine: '', latestLine: '' };
     const lines = text.split('\n');
-    for (const rawLine of lines) {
-      const line = rawLine.trim().replace(/^([#*>-]|\d+\.)\s*/, '').replace(/[*_`]/g, '').trim();
-      if (line) {
-        return line;
+    let first = '';
+    let latest = '';
+    for (let i = 0; i < lines.length; i++) {
+      const cleaned = cleanReasoningPreviewLine(lines[i]!);
+      if (cleaned) {
+        first = cleaned;
+        break;
       }
     }
-    return '';
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const cleaned = cleanReasoningPreviewLine(lines[i]!);
+      if (cleaned) {
+        latest = cleaned;
+        break;
+      }
+    }
+    return { firstLine: first, latestLine: latest };
   }, [text]);
 
-  if (!text.trim()) return null;
+  // 当模型吐出新的思考行时，立即归零轮播计数并切回最新思考行
+  useEffect(() => {
+    if (latestLine && latestLine !== prevLatestLineRef.current) {
+      prevLatestLineRef.current = latestLine;
+      lastTextUpdateAtRef.current = Date.now();
+      setIdleTick(0);
+    }
+  }, [latestLine]);
+
+  // 流式运行期间若超过 2s 无新思考行（如等待首包、仅返回单句摘要、重试或后台执行工具），平滑轮播状态提示，确保「·」后持续跳动
+  useEffect(() => {
+    if (!live) {
+      setIdleTick(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastTextUpdateAtRef.current >= 1900) {
+        setIdleTick((n) => n + 1);
+      }
+    }, 2200);
+    return () => window.clearInterval(timer);
+  }, [live]);
+
+  const hasReasoningText = text.trim().length > 0;
+
+  const liveDisplay = useMemo(() => {
+    if (!live) return firstLine;
+    const stage1 = t('chat.thinkingStage1');
+    const stage2 = t('chat.thinkingStage2');
+    const stage3 = t('chat.thinkingStage3');
+    const stageTool = t('chat.thinkingStageTool');
+    const pool = hasPendingTool
+      ? [...(latestLine ? [latestLine] : []), stageTool, stage2, stage3]
+      : [...(latestLine ? [latestLine] : []), stage1, stage2, stage3];
+    if (pool.length === 0) return stage1;
+    return pool[idleTick % pool.length]!;
+  }, [live, firstLine, latestLine, hasPendingTool, idleTick, t]);
+
+  if (!hasReasoningText && !live) return null;
+
+  const previewText = live ? liveDisplay : (!open ? firstLine : '');
+  const tickerKey = live ? `${idleTick}:${previewText.slice(0, 48)}` : 'settled';
+
   return (
-    <div class={'reasoning-block' + (open ? ' is-open' : '')}>
+    <div class={'reasoning-block' + (open && hasReasoningText ? ' is-open' : '') + (live ? ' is-live' : '')}>
       <button
         type="button"
-        class="reasoning-toggle"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+        class={'reasoning-toggle' + (!hasReasoningText ? ' is-non-expandable' : '')}
+        onClick={() => {
+          if (hasReasoningText) setOpen((v) => !v);
+        }}
+        aria-expanded={open && hasReasoningText}
       >
-        <span class="reasoning-icon" aria-hidden="true">
+        <span class={'reasoning-icon' + (live ? ' is-live' : '')} aria-hidden="true">
           ✦
         </span>
         <span class="reasoning-label">{t('chat.thinking')}</span>
-        {!open && summary && (
+        {previewText && (
           <>
             <span class="reasoning-separator" aria-hidden="true">·</span>
-            <span class="reasoning-summary" title={summary}>{summary}</span>
+            <span class="reasoning-summary" title={previewText} aria-live={live ? 'polite' : undefined}>
+              <span key={tickerKey} class={'reasoning-summary-inner' + (live ? ' is-live' : '')}>
+                {previewText}
+              </span>
+              {live && (
+                <span class="reasoning-live-dots" aria-hidden="true">
+                  <span>.</span>
+                  <span>.</span>
+                  <span>.</span>
+                </span>
+              )}
+            </span>
           </>
         )}
-        <span class={'reasoning-chevron' + (open ? ' expanded' : '')}>▾</span>
+        {hasReasoningText && (
+          <span class={'reasoning-chevron' + (open ? ' expanded' : '')}>▾</span>
+        )}
       </button>
-      {open && (
+      {open && hasReasoningText && (
         <div class="reasoning-body" ref={bodyRef} onScroll={recomputeFollow}>
           {highlightText(text, search)}
         </div>

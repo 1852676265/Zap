@@ -1990,74 +1990,140 @@ export function Sidebar({
     );
   };
 
-  // 乐观会话并入列表：仅当后端列表尚无对应条目时置顶插入。后端落盘后列表刷新带出
-  // 真实会话，此处便不再插入，真实条目（含自动命名标题）自然取而代之。注意乐观条目
-  // 与落盘条目的 id 可能不同（live 快照的会话 id ≠ /sessions 列出的 core .json id），
-  // 故 mergeOptimisticSessions 在 id 不匹配时按「同目录 + 名字互为前缀」兜底去重，
-  // 避免出现两条相同会话（刷新才消失）。
-  const merged = mergeOptimisticSessions(allOptimistic, sessions);
+  const normProjectPath = (p?: string) =>
+    p ? stripExtendedPathPrefix(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() : '';
 
-  const allProjects = projects.filter((p) => !isUserHomeDir(p.working_dir));
-  for (const pinned of pinnedProjects) {
-    if (!isUserHomeDir(pinned.working_dir) && !allProjects.some((p) => p.hash === pinned.hash)) {
-      allProjects.push(pinned);
-    }
-  }
-  if (
-    projectHash &&
-    cwd &&
-    !isUserHomeDir(cwd) &&
-    !allProjects.some((p) => p.hash === projectHash) &&
-    !hiddenProjectHashes.has(projectHash)
-  ) {
-    allProjects.unshift({
-      hash: projectHash,
-      name: shortDir(cwd),
-      working_dir: cwd,
-      session_count: 0,
-      created_at: Date.now(),
-      last_updated: Date.now(),
-    });
-  }
   const sameProjectDir = (a?: string, b?: string) => {
     if (!a || !b) return false;
-    const norm = (p: string) => stripExtendedPathPrefix(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    return norm(a) === norm(b);
+    return normProjectPath(a) === normProjectPath(b);
   };
-  const projectActivity = (p: ProjectInfo) => {
-    let ts = p.last_updated || p.created_at || 0;
-    const bump = (s: { updated_at?: number; created_at?: number }) => {
-      const raw = s.updated_at || s.created_at || 0;
-      const norm = raw > 0 && raw < 1e11 ? raw * 1000 : raw;
-      ts = Math.max(ts, norm);
-    };
-    for (const s of sessions) if (s.project_hash === p.hash) bump(s);
-    for (const s of projectSessionsMap[p.hash] ?? []) bump(s);
-    for (const s of allOptimistic) {
-      if (s.project_hash === p.hash || sameProjectDir(s.working_dir, p.working_dir)) bump(s);
-    }
-    return ts;
-  };
-  const activeSet = new Set(extraRunningIds !== undefined ? extraRunningIds : activeIds);
-  const projectIsRunning = (p: ProjectInfo) => {
-    const rows = [
-      ...sessions.filter((s) => s.project_hash === p.hash),
-      ...(projectSessionsMap[p.hash] ?? []),
-      ...allOptimistic.filter(
-        (s) => s.project_hash === p.hash || sameProjectDir(s.working_dir, p.working_dir),
-      ),
-    ];
-    return rows.some((s) => activeSet.has(s.id));
-  };
-  allProjects.sort((a, b) => {
-    const ar = projectIsRunning(a) ? 1 : 0;
-    const br = projectIsRunning(b) ? 1 : 0;
-    if (ar !== br) return br - ar;
-    return projectActivity(b) - projectActivity(a);
-  });
-  const visibleProjects = allProjects.filter((p) => !hiddenProjectHashes.has(p.hash));
 
-  const sortSessions = (list: SessionMetaWithProject[]) => {
+  const activeSet = useMemo(
+    () => new Set(extraRunningIds !== undefined ? extraRunningIds : activeIds),
+    [extraRunningIds, activeIds],
+  );
+
+  // 乐观会话并入列表：缓存合并结果，避免侧栏 hover/scroll 时重复全量合并
+  const merged = useMemo(
+    () => mergeOptimisticSessions(allOptimistic, sessions),
+    [allOptimistic, sessions],
+  );
+
+  // 预按 project_hash 建索引，消除每个项目分组对 sessions 的 O(P * S) 重复过滤
+  const sessionsByProjectHash = useMemo(() => {
+    const map = new Map<string, SessionMetaWithProject[]>();
+    for (const s of sessions) {
+      if (!s.project_hash) continue;
+      let arr = map.get(s.project_hash);
+      if (!arr) {
+        arr = [];
+        map.set(s.project_hash, arr);
+      }
+      arr.push(s);
+    }
+    return map;
+  }, [sessions]);
+
+  const {
+    allProjects,
+    visibleProjects,
+    knownHashes,
+    knownDirs,
+    projectByHash,
+    projectByNormDir,
+  } = useMemo(() => {
+    const list = projects.filter((p) => !isUserHomeDir(p.working_dir));
+    for (const pinned of pinnedProjects) {
+      if (!isUserHomeDir(pinned.working_dir) && !list.some((p) => p.hash === pinned.hash)) {
+        list.push(pinned);
+      }
+    }
+    if (
+      projectHash &&
+      cwd &&
+      !isUserHomeDir(cwd) &&
+      !list.some((p) => p.hash === projectHash) &&
+      !hiddenProjectHashes.has(projectHash)
+    ) {
+      list.unshift({
+        hash: projectHash,
+        name: shortDir(cwd),
+        working_dir: cwd,
+        session_count: 0,
+        created_at: Date.now(),
+        last_updated: Date.now(),
+      });
+    }
+
+    const projectActivity = (p: ProjectInfo) => {
+      let ts = p.last_updated || p.created_at || 0;
+      const bump = (s: { updated_at?: number; created_at?: number }) => {
+        const raw = s.updated_at || s.created_at || 0;
+        const norm = raw > 0 && raw < 1e11 ? raw * 1000 : raw;
+        ts = Math.max(ts, norm);
+      };
+      for (const s of sessionsByProjectHash.get(p.hash) ?? []) bump(s);
+      for (const s of projectSessionsMap[p.hash] ?? []) bump(s);
+      const pDir = normProjectPath(p.working_dir);
+      for (const s of allOptimistic) {
+        if (s.project_hash === p.hash || (pDir && normProjectPath(s.working_dir) === pDir)) bump(s);
+      }
+      return ts;
+    };
+
+    const projectIsRunning = (p: ProjectInfo) => {
+      const pDir = normProjectPath(p.working_dir);
+      for (const s of sessionsByProjectHash.get(p.hash) ?? []) {
+        if (activeSet.has(s.id)) return true;
+      }
+      for (const s of projectSessionsMap[p.hash] ?? []) {
+        if (activeSet.has(s.id)) return true;
+      }
+      for (const s of allOptimistic) {
+        if (
+          (s.project_hash === p.hash || (pDir && normProjectPath(s.working_dir) === pDir)) &&
+          activeSet.has(s.id)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    list.sort((a, b) => {
+      const ar = projectIsRunning(a) ? 1 : 0;
+      const br = projectIsRunning(b) ? 1 : 0;
+      if (ar !== br) return br - ar;
+      return projectActivity(b) - projectActivity(a);
+    });
+
+    const visible = list.filter((p) => !hiddenProjectHashes.has(p.hash));
+    const hashes = new Set<string>();
+    const dirs = new Set<string>();
+    const byHash = new Map<string, ProjectInfo>();
+    const byDir = new Map<string, ProjectInfo>();
+    for (const p of list) {
+      hashes.add(p.hash);
+      byHash.set(p.hash, p);
+      if (p.working_dir) {
+        const nd = normProjectPath(p.working_dir);
+        if (nd) {
+          dirs.add(nd);
+          if (!byDir.has(nd)) byDir.set(nd, p);
+        }
+      }
+    }
+    return {
+      allProjects: list,
+      visibleProjects: visible,
+      knownHashes: hashes,
+      knownDirs: dirs,
+      projectByHash: byHash,
+      projectByNormDir: byDir,
+    };
+  }, [projects, pinnedProjects, projectHash, cwd, hiddenProjectHashes, sessionsByProjectHash, projectSessionsMap, allOptimistic, activeSet]);
+
+  const sortSessions = useCallback((list: SessionMetaWithProject[]) => {
     return list.slice().sort((a, b) => {
       const aAct = activeSet.has(a.id) ? 1 : 0;
       const bAct = activeSet.has(b.id) ? 1 : 0;
@@ -2068,36 +2134,35 @@ export function Sidebar({
       const bMs = bTs > 0 && bTs < 1e11 ? bTs * 1000 : bTs;
       return bMs - aMs;
     });
-  };
+  }, [activeSet]);
 
   const q = query.trim().toLowerCase();
-  const searchFiltered = q
-    ? merged.filter(
-        (s) =>
-          (s.name || '').toLowerCase().includes(q) ||
-          s.id.toLowerCase().startsWith(q) ||
-          (s.working_dir || '').toLowerCase().includes(q),
-      )
-    : [];
-
-  const knownHashes = new Set(allProjects.map((p) => p.hash));
-  const knownDirs = new Set(
-    allProjects
-      .filter((p) => Boolean(p.working_dir))
-      .map((p) => p.working_dir.replace(/\\/g, '/').toLowerCase())
+  const searchFiltered = useMemo(
+    () =>
+      q
+        ? merged.filter(
+            (s) =>
+              (s.name || '').toLowerCase().includes(q) ||
+              s.id.toLowerCase().startsWith(q) ||
+              (s.working_dir || '').toLowerCase().includes(q),
+          )
+        : [],
+    [q, merged],
   );
 
+  const optimisticIdSet = useMemo(() => new Set(allOptimistic.map((opt) => opt.id)), [allOptimistic]);
+
   // 过滤掉尚未发出第一条消息的空白会话（新建但未发送消息者不建会话、不入列表；首发即入列并持续展示）
-  const isNonEmptySession = (s: SessionMetaWithProject) => {
-    if (allOptimistic.some((opt) => opt.id === s.id)) return true;
+  const isNonEmptySession = useCallback((s: SessionMetaWithProject) => {
+    if (optimisticIdSet.has(s.id)) return true;
     if (s.id === activeSessionId) return true;
-    if (activeIds.includes(s.id) || extraRunningIds?.includes(s.id)) return true;
+    if (activeSet.has(s.id)) return true;
     return (s.message_count ?? 0) > 0;
-  };
+  }, [optimisticIdSet, activeSessionId, activeSet]);
 
   // 判断一个会话是否归属于某个具体项目
-  const isProjectSession = (s: SessionMetaWithProject) => {
-    const normDir = (s.working_dir || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const isProjectSession = useCallback((s: SessionMetaWithProject) => {
+    const normDir = normProjectPath(s.working_dir);
     if (!normDir || normDir === '__global__' || normDir.includes('.zap/workspace') || normDir.includes('.jeikcode/workspace') || isUserHomeDir(normDir)) {
       return false;
     }
@@ -2108,11 +2173,12 @@ export function Sidebar({
       return true;
     }
     return false;
-  };
+  }, [knownHashes, knownDirs]);
 
   // 下方列表只展示没有项目的会话（有项目的已在上方各项目树内展示，不用在下面显示）
-  const recentsList = sortSessions(
-    merged.filter((s) => isNonEmptySession(s) && !isProjectSession(s)),
+  const recentsList = useMemo(
+    () => sortSessions(merged.filter((s) => isNonEmptySession(s) && !isProjectSession(s))),
+    [merged, isNonEmptySession, isProjectSession, sortSessions],
   );
 
   const displayRecents = useMemo(() => {
@@ -2130,11 +2196,11 @@ export function Sidebar({
     return topList;
   }, [recentsList, showAllRecents, selectMode, activeSessionId]);
 
-  const rowsForProject = (p: ProjectInfo): SessionMetaWithProject[] => {
+  const rowsForProject = useCallback((p: ProjectInfo): SessionMetaWithProject[] => {
     const bucket = projectSessionsMap[p.hash] ?? [];
-    const globalRows = sessions.filter((s) => s.project_hash === p.hash);
+    const globalRows = sessionsByProjectHash.get(p.hash) ?? [];
     return mergeProjectSessions(bucket, globalRows);
-  };
+  }, [projectSessionsMap, sessionsByProjectHash]);
 
   const filtered = q ? searchFiltered : merged;
   // 显式多选模式与 Ctrl/Shift 临时多选共用同一套选中状态与批量删除栏。
@@ -2177,11 +2243,9 @@ export function Sidebar({
     const selected = selectedIds.has(s.id);
     const label = s.name || s.id.slice(0, 8);
     const dir = shortDir(s.working_dir);
-    const proj = allProjects.find(
-      (p) =>
-        p.hash === s.project_hash ||
-        (p.working_dir && s.working_dir && sameProjectDir(p.working_dir, s.working_dir)),
-    );
+    const proj =
+      (s.project_hash ? projectByHash.get(s.project_hash) : undefined) ??
+      (s.working_dir ? projectByNormDir.get(normProjectPath(s.working_dir)) : undefined);
     const itemTitle = proj?.name ? `${label} (${proj.name})` : (s.working_dir || dir);
     return (
       <div

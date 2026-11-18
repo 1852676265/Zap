@@ -1,15 +1,15 @@
 //! `jeikcode telemetry ...` subcommands.
 
 use anyhow::Result;
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
+use std::sync::Arc;
+use std::time::Duration;
 use zap_telemetry::{
     config::{resolve, ProcessEnv, TelemetryConfig},
     queue::Queue,
     CliOverride, Event, Telemetry, TelemetryState,
 };
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
-use std::sync::Arc;
-use std::time::Duration;
 
 pub fn status(jeikcode_dir: &std::path::Path, cfg: &TelemetryConfig) -> Result<()> {
     let resolved = resolve(

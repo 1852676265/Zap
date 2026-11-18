@@ -13,6 +13,8 @@ import { DshPetSettingsView } from './dsh-pet-settings';
 import {
   CapabilityItem,
   getCapabilities,
+  getModels,
+  ModelInfo,
   postLanguage,
   toggleCapability,
   fetchFsRead,
@@ -20,6 +22,7 @@ import {
 import { useSettings, Theme } from '../settings';
 import { Lang } from '../i18n';
 import { ModelSelector } from '../components/ModelSelector';
+import { modelAliasLabel, modelSourceLabel } from '../lib/modelLabel';
 import { getActiveServerProfile, isDirectLlmProfile, PROFILES_CHANGE_EVENT } from '../lib/serverProfiles';
 import {
   zapPluginKernel,
@@ -713,6 +716,29 @@ function PluginsManagerSection({
 function DynamicPluginConfigForm({ pkg }: { pkg: ExternalPluginPackage }) {
   const schema = pkg.configSchema || [];
   const [values, setValues] = useState<Record<string, any>>(() => ({ ...(pkg.configValues || {}) }));
+  const hasModelField = schema.some((item) => item.type === 'model');
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+
+  const loadModels = () => {
+    setModelsLoading(true);
+    getModels()
+      .then((list) => setModels(Array.isArray(list) ? list : []))
+      .catch(() => {})
+      .finally(() => setModelsLoading(false));
+  };
+
+  useEffect(() => {
+    if (!hasModelField) return;
+    loadModels();
+    const onReload = () => loadModels();
+    window.addEventListener('jeikcode:config-reloaded', onReload);
+    window.addEventListener('jeikcode:reload-models', onReload);
+    return () => {
+      window.removeEventListener('jeikcode:config-reloaded', onReload);
+      window.removeEventListener('jeikcode:reload-models', onReload);
+    };
+  }, [hasModelField]);
 
   const handleChange = (key: string, val: any) => {
     setValues((prev) => ({ ...prev, [key]: val }));
@@ -729,50 +755,93 @@ function DynamicPluginConfigForm({ pkg }: { pkg: ExternalPluginPackage }) {
 
   return (
     <ul class="dsh-card-list">
-      {schema.map((item) => (
-        <li key={item.key} class="dsh-item-card">
-          <div class="dsh-item-card-head">
-            <div class="dsh-item-main">
-              <span class="dsh-item-title">{item.label}</span>
-              {item.description && (
-                <span class="dsh-item-desc">{item.description}</span>
-              )}
-            </div>
-            <div class="dsh-item-actions">
-              {item.type === 'boolean' && (
-                <DshSwitch
-                  checked={Boolean(values[item.key])}
-                  onChange={(checked) => handleChange(item.key, checked)}
-                />
-              )}
-              {item.type === 'string' && (
-                <div class="dsh-search-box" style="min-width: 260px;">
-                  <input
-                    type="text"
-                    class="dsh-search-input"
-                    value={values[item.key] ?? ''}
-                    onInput={(e) => handleChange(item.key, (e.target as HTMLInputElement).value)}
+      {schema.map((item) => {
+        const curVal = String(values[item.key] ?? '');
+        const hasMissingSavedModel =
+          item.type === 'model' &&
+          Boolean(curVal) &&
+          !models.some((m) => m.provider === curVal);
+
+        return (
+          <li key={item.key} class="dsh-item-card">
+            <div class="dsh-item-card-head">
+              <div class="dsh-item-main">
+                <span class="dsh-item-title">{item.label}</span>
+                {item.description && (
+                  <span class="dsh-item-desc">{item.description}</span>
+                )}
+              </div>
+              <div class="dsh-item-actions">
+                {item.type === 'boolean' && (
+                  <DshSwitch
+                    checked={Boolean(values[item.key])}
+                    onChange={(checked) => handleChange(item.key, checked)}
                   />
-                </div>
-              )}
-              {item.type === 'select' && item.options && (
-                <select
-                  class="dsh-btn dsh-btn-outline dsh-btn-sm"
-                  style="padding: 6px 10px; font-size: 13px;"
-                  value={values[item.key]}
-                  onChange={(e) => handleChange(item.key, (e.target as HTMLSelectElement).value)}
-                >
-                  {item.options.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              )}
+                )}
+                {item.type === 'string' && (
+                  <div class="dsh-search-box" style="min-width: 260px;">
+                    <input
+                      type="text"
+                      class="dsh-search-input"
+                      value={values[item.key] ?? ''}
+                      onInput={(e) => handleChange(item.key, (e.target as HTMLInputElement).value)}
+                    />
+                  </div>
+                )}
+                {item.type === 'select' && item.options && (
+                  <select
+                    class="dsh-btn dsh-btn-outline dsh-btn-sm"
+                    style="padding: 6px 10px; font-size: 13px;"
+                    value={values[item.key]}
+                    onChange={(e) => handleChange(item.key, (e.target as HTMLSelectElement).value)}
+                  >
+                    {item.options.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {item.type === 'model' && (
+                  <div style="display: inline-flex; align-items: center; gap: 6px;">
+                    <select
+                      class="dsh-btn dsh-btn-outline dsh-btn-sm"
+                      style="padding: 6px 10px; font-size: 13px; min-width: 240px; max-width: 360px;"
+                      value={curVal}
+                      onChange={(e) => handleChange(item.key, (e.target as HTMLSelectElement).value)}
+                    >
+                      <option value="">自动（跟随当前对话模型）</option>
+                      {hasMissingSavedModel && (
+                        <option value={curVal}>{curVal}（当前已配置）</option>
+                      )}
+                      {models.map((m) => {
+                        const alias = modelAliasLabel(m);
+                        const source = modelSourceLabel(m);
+                        const label = source && source !== alias ? `${alias} (${source})` : alias;
+                        return (
+                          <option key={m.provider} value={m.provider}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <button
+                      type="button"
+                      class="dsh-btn dsh-btn-outline dsh-btn-sm"
+                      onClick={loadModels}
+                      disabled={modelsLoading}
+                      title="刷新可用模型列表"
+                      style="padding: 6px 8px;"
+                    >
+                      <IconRefresh size={13} />
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }

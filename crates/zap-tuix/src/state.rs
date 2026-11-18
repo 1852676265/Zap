@@ -321,9 +321,7 @@ impl UserInputPanel {
     pub fn build_response(
         &self,
     ) -> Option<zap_capabilities::tools::request_user_input::UserInputResponse> {
-        use zap_capabilities::tools::request_user_input::{
-            UserInputMode::*, UserInputResponse,
-        };
+        use zap_capabilities::tools::request_user_input::{UserInputMode::*, UserInputResponse};
         match self.mode {
             Single => {
                 let selected = if self.cursor < self.options.len() {
@@ -1759,10 +1757,7 @@ impl UiState {
 
     /// The kernel confirmed one or more steered prompts. Return locally-owned
     /// payloads whose content matches the authoritative folded inputs.
-    pub fn on_steered(
-        &mut self,
-        inputs: &[zap_kernel::event::SteeredInput],
-    ) -> Vec<PendingSteer> {
+    pub fn on_steered(&mut self, inputs: &[zap_kernel::event::SteeredInput]) -> Vec<PendingSteer> {
         let mut confirmed = Vec::new();
         for input in inputs {
             let input_clean = strip_steer_envelope_for_tui(&input.text);
@@ -2494,11 +2489,10 @@ mod tests {
         // Turn 1: simulate paste sites' increment-then-push pattern.
         s.session_image_count += 1;
         let n1 = s.session_image_count;
-        s.pending_images
-            .push(zap_kernel::message::ImageContent {
-                media_type: "image/png".into(),
-                data: "AAAA".into(),
-            });
+        s.pending_images.push(zap_kernel::message::ImageContent {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+        });
         s.pending_image_hashes.push(0xdead_beef);
         // Submit drains pending_images / hashes (mirrors event_loop logic).
         let _ = std::mem::take(&mut s.pending_images);

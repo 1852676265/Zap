@@ -6,9 +6,9 @@
 use super::{err, ok, resolve_path};
 use crate::tool_feedback::parse_tool_args;
 use async_trait::async_trait;
-use zap_kernel::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
+use zap_kernel::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 pub struct WriteFileTool;
 
@@ -135,8 +135,8 @@ impl Tool for WriteFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::ToolContext;
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::ToolContext;
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext {

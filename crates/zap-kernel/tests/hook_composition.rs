@@ -10,6 +10,7 @@
 //! These tests exercise the per-method composition contract end-to-end through the
 //! real agent loop (not just a unit call of HookChain).
 
+use std::sync::{Arc, Mutex};
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{
@@ -17,7 +18,6 @@ use zap_kernel::testkit::{
     RewritePromptHook, TailReminderHook,
 };
 use zap_kernel::tool::ToolRegistry;
-use std::sync::{Arc, Mutex};
 
 /// Drains events until TurnComplete (collecting any Error messages along the way).
 async fn drive_collect_errors(

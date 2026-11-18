@@ -13,12 +13,12 @@
 //! ordering contract).
 
 use async_trait::async_trait;
-use zap_kernel::middleware::{BeforeOutcome, ToolMiddleware};
-use zap_kernel::request::RequestCtx;
-use zap_kernel::tool::{RiskLevel, Tool, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use zap_kernel::middleware::{BeforeOutcome, ToolMiddleware};
+use zap_kernel::request::RequestCtx;
+use zap_kernel::tool::{RiskLevel, Tool, ToolCall};
 
 /// Truncate tool args for the diagnostic log at a char boundary (CJK-safe).
 fn log_truncate_approval(value: &str, max: usize) -> String {
@@ -295,10 +295,10 @@ impl ToolMiddleware for ApprovalMiddleware {
 mod tests {
     use super::*;
     use crate::tools::write::WriteFileTool;
-    use zap_kernel::event::AgentEvent;
-    use zap_kernel::tool::ToolCall;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
+    use zap_kernel::event::AgentEvent;
+    use zap_kernel::tool::ToolCall;
 
     #[test]
     fn parse_permission_decision_maps_daemon_wire() {

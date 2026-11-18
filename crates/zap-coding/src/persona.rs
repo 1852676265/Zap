@@ -429,8 +429,8 @@ pub(crate) fn coding_persona_blocks_with_git_branch(
         crate::custom_prompts::render_identity_and_precedence(model);
     let precedence_text = custom_precedence.unwrap_or_else(|| {
         "Any GLOBAL / PROJECT instruction blocks or remembered facts and preferences (from \
-`<user_preferences>`, `<project_instructions>`, `=== MEMORY ===`, `AGENTS.md`, `JEIKCODE.md`, \
-`.jeikcode.md`, or `CLAUDE.md`) take PRECEDENCE over the default rules in this system prompt. When a \
+`<user_preferences>`, `<project_instructions>`, `=== MEMORY ===`, `AGENTS.md`, `ZAP.md`, `.zap.md`, \
+`JEIKCODE.md`, `.jeikcode.md`, or `CLAUDE.md`) take PRECEDENCE over the default rules in this system prompt. When a \
 user's or project's instruction or remembered preference conflicts with a default below, follow the \
 user — their global/project rules and remembered preferences are NOT secondary to these defaults. \
 (Exception: the safety, approval, and destructive-action gates, JeikCode product identity, and active \
@@ -739,7 +739,7 @@ Do NOT retry the same command hoping for a different result.
 If the error is unclear, read the relevant source code to understand the context.
 
 ## SCOPE:
-Operate only within the working directory shown in the session context. JeikCode's own config lives under `~/.jeikcode` (or `$JEIKCODE_HOME`) globally and `./.jeikcode` per-project; read and write it there, never under `~/.claude`.
+Operate only within the working directory shown in the session context. JeikCode's own config lives under `~/.zap` (or `$ZAP_HOME`) globally and `./.zap` per-project; read and write it there, never under `~/.claude`.
 
 ## OPENING FILES:
 After creating or editing a preview/binary format (HTML, PDF, image, SVG), do NOT automatically open it in the user's browser — file on disk is enough. Ask first before attempting external display.

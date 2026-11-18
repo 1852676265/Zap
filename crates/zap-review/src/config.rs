@@ -115,10 +115,12 @@ impl ReviewAgentConfig {
 
 fn default_tool_loop_policy() -> Option<ToolLoopPolicy> {
     resolve_tool_loop_policy(
-        std::env::var("ZAP_TOOL_LOOP_WARNING_THRESHOLD").or_else(|_| std::env::var("JEIKCODE_TOOL_LOOP_WARNING_THRESHOLD"))
+        std::env::var("ZAP_TOOL_LOOP_WARNING_THRESHOLD")
+            .or_else(|_| std::env::var("JEIKCODE_TOOL_LOOP_WARNING_THRESHOLD"))
             .ok()
             .as_deref(),
-        std::env::var("ZAP_TOOL_LOOP_STOP_THRESHOLD").or_else(|_| std::env::var("JEIKCODE_TOOL_LOOP_STOP_THRESHOLD"))
+        std::env::var("ZAP_TOOL_LOOP_STOP_THRESHOLD")
+            .or_else(|_| std::env::var("JEIKCODE_TOOL_LOOP_STOP_THRESHOLD"))
             .ok()
             .as_deref(),
     )

@@ -6,6 +6,7 @@
 //! runtime as a Warning instead.
 
 use async_trait::async_trait;
+use std::sync::Arc;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
@@ -13,7 +14,6 @@ use zap_kernel::message::Message;
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{MockProvider, TailReminderHook};
 use zap_kernel::tool::ToolRegistry;
-use std::sync::Arc;
 
 /// Rewrites the FIRST message every round — a PREFIX mutation that poisons the wire cache.
 struct PrefixMutatingHook;

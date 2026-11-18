@@ -20,7 +20,6 @@ pub(crate) use super::coerce_eol;
 use super::{err, ok, resolve_path};
 use crate::tool_feedback::{format_path_not_found, parse_tool_args};
 use async_trait::async_trait;
-use zap_kernel::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -30,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, Weak};
 use std::time::Duration;
 use tokio::sync::OwnedMutexGuard;
+use zap_kernel::tool::{RiskLevel, Tool, ToolContext, ToolResult};
 
 pub struct EditFileTool;
 
@@ -3184,8 +3184,8 @@ mod tests {
         assert_eq!(args.edits.len(), 1);
         assert_eq!(args.edits[0].new_string, "can't // literal");
     }
-    use zap_kernel::tool::ToolContext;
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::ToolContext;
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext {

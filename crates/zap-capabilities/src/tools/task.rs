@@ -3,6 +3,11 @@
 //! 选子工具集。子 agent 跑在独立内核会话里,结果用 <task_result> 包回。
 
 use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::json;
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use zap_kernel::agent::{Agent, AutoRespond, Outcome, ToolLoopPolicy};
 use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
@@ -13,11 +18,6 @@ use zap_kernel::request::RequestCtx;
 use zap_kernel::tool::{
     MountedTools, ProgressSink, RiskLevel, Tool, ToolCall, ToolContext, ToolResult,
 };
-use serde::Deserialize;
-use serde_json::json;
-use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 /// Sentinel prefix on a `ctx.progress` line that marks it as EPHEMERAL live activity
 /// (current action of a running subtask) rather than a committed ↻/✓/✗ scrollback line.
@@ -99,9 +99,7 @@ impl ToolMiddleware for DenyOfflineNetwork {
         _tool: &Arc<dyn Tool>,
         _rt: &RequestCtx,
     ) -> BeforeOutcome {
-        if zap_config::config::offline::is_offline_active()
-            && is_network_egress_tool(&call.name)
-        {
+        if zap_config::config::offline::is_offline_active() && is_network_egress_tool(&call.name) {
             // Offline network is a capability boundary, not a hard policy
             // violation. `Deny` blocks this call without terminating the
             // subagent turn or cancelling safe siblings already planned in the
@@ -1668,11 +1666,11 @@ mod tests {
     use super::*;
     use futures::stream::{self, BoxStream};
     use futures::StreamExt;
+    use tokio_util::sync::CancellationToken;
     use zap_kernel::message::Message;
     use zap_kernel::provider::ChatOptions;
     use zap_kernel::stream::{ProviderError, StreamEvent};
     use zap_kernel::tool::{ProgressSink, ToolDef, ToolRegistry};
-    use tokio_util::sync::CancellationToken;
 
     /// Scripted provider: `Some(reply)` → one text turn then clean stop;
     /// `None` → a terminal open error (simulates a failed child).
@@ -1847,9 +1845,9 @@ mod tests {
 
     #[tokio::test]
     async fn subtask_hook_reports_semantic_progress_and_monotonic_tokens() {
+        use std::sync::Mutex;
         use zap_kernel::message::MessageMeta;
         use zap_kernel::stream::TokenUsage;
-        use std::sync::Mutex;
 
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = {
@@ -2568,11 +2566,7 @@ mod tests {
         });
 
         // 4. search_replace directory
-        ledger.record_call(
-            "5",
-            "search_replace",
-            r#"{"path":"crates/zap-coding"}"#,
-        );
+        ledger.record_call("5", "search_replace", r#"{"path":"crates/zap-coding"}"#);
         ledger.record_tool_result(&ToolResult {
             call_id: "5".into(),
             content: "ok".into(),

@@ -9,16 +9,16 @@
 //! - MCP servers, skills structure, plugins ecosystem
 //! - Cilin thesaurus (`thesaurus/*.txt`), bilingual code search relevance
 //! - Tool execution timeouts (shared command max_timeout_secs, max_rounds, first_token_timeout, output folding)
-//! - Complete `~/.jeikcode` directory layout and file catalog
+//! - Complete `~/.zap` directory layout and file catalog
 
 use super::ok;
 use crate::tool_feedback::parse_tool_args;
 use async_trait::async_trait;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 const DOC_OVERVIEW: &str = include_str!("../../assets/teaches/00_overview_index.md");
 const DOC_PROMPTS: &str = include_str!("../../assets/teaches/01_prompts_and_context.md");
@@ -53,8 +53,8 @@ impl ZapConfigTool {
         Self
     }
 
-    /// Load guide document content, prioritizing `$JEIKCODE_HOME/teaches/`
-    /// (else `~/.jeikcode/teaches/`) when present. When `english` is true,
+    /// Load guide document content, prioritizing `$ZAP_HOME/teaches/`
+    /// (else `~/.zap/teaches/`) when present. When `english` is true,
     /// it looks for `teaches/en/<filename>` before falling back to `teaches/<filename>`.
     fn load_document(&self, filename: &str, embedded: &'static str, english: bool) -> String {
         if let Some(home) = jeikcode_home() {
@@ -414,8 +414,8 @@ impl Tool for ZapConfigTool {
                          - `mcp` / `skills`: MCP servers, Skills structure, plugin market\n\
                          - `thesaurus`: Cilin bilingual code search dictionaries and accuracy tuning\n\
                          - `tools`: Bash timeouts, output fold preview, coding round caps\n\
-                         - `directories`: Full directory and file layout of `~/.jeikcode`\n\
-                         - `project`: Project constraints (AGENTS.md, JEIKCODE.md, rules.md, glossary.md, dbwords.md)\n\
+                         - `directories`: Full directory and file layout of `~/.zap`\n\
+                         - `project`: Project constraints (AGENTS.md, ZAP.md, rules.md, glossary.md, dbwords.md)\n\
                          - `updates` / `upgrade`: Default update endpoints, manifest schema, self-update and cross-compilation release workflow\n\
                          - `all`: Complete comprehensive guide."
                     )
@@ -428,8 +428,8 @@ impl Tool for ZapConfigTool {
                          - `mcp` / `skills`: MCP 外部工具、Skills 规范、插件市场\n\
                          - `thesaurus`: 词林中英双语代码检索词库与准确度调优\n\
                          - `tools`: Bash 超时、工具输出折叠、编码轮次上限\n\
-                         - `directories`: `~/.jeikcode` 完整目录结构与文件清单\n\
-                         - `project`: 项目约束（AGENTS.md、JEIKCODE.md、rules.md、glossary.md、dbwords.md）\n\
+                         - `directories`: `~/.zap` 完整目录结构与文件清单\n\
+                         - `project`: 项目约束（AGENTS.md、ZAP.md、rules.md、glossary.md、dbwords.md）\n\
                          - `updates` / `upgrade`: 默认更新源、清单格式、自升级与发版流程\n\
                          - `all`: 完整配置指南汇总。"
                     )
@@ -451,8 +451,8 @@ fn jeikcode_home() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::{ProgressSink, Tool};
     use std::path::PathBuf;
+    use zap_kernel::tool::{ProgressSink, Tool};
 
     #[tokio::test]
     async fn guide_tool_overview_returns_index() {
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn embedded_mcp_guide_documents_reload_tool_and_webui() {
-        // Host `~/.jeikcode/teaches/` can override execute(); pin the shipped asset.
+        // Host `~/.zap/teaches/` can override execute(); pin the shipped asset.
         assert!(DOC_MCP_SKILLS.contains("zap_config"));
         assert!(DOC_MCP_SKILLS.contains("/mcp reload"));
         assert!(DOC_MCP_SKILLS.contains("刷新按钮"));

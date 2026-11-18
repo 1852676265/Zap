@@ -1,7 +1,7 @@
 //! Test-only isolation seam (`test-util` feature).
 //!
 //! Why this exists: every test in a process otherwise shares the ONE user home
-//! (`$JEIKCODE_HOME` → `~/.jeikcode`). One test's config write rewrites the very
+//! (`$ZAP_HOME` / `$JEIKCODE_HOME` → `~/.zap`). One test's config write rewrites the very
 //! file another test is asserting on, and — worse — tests that repointed the
 //! PROCESS-WIDE `JEIKCODE_HOME` env var ("scoped home" guards) could flip the
 //! resolved home *between* another test's write and read, so the same logical

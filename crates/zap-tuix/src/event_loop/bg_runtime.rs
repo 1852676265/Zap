@@ -409,9 +409,8 @@ fn load_background_session_projection_in_root(
         .ok_or_else(|| "background runtime changed to a sessionless state".to_string())?;
     let working_dir = zap_capabilities::pathnorm::strip_verbatim_path(&changed.working_dir);
     let project_bucket = zap_capabilities::session::SessionManager::project_hash(&working_dir);
-    let manager = zap_capabilities::session::SessionManager::with_root(
-        sessions_root.join(&project_bucket),
-    );
+    let manager =
+        zap_capabilities::session::SessionManager::with_root(sessions_root.join(&project_bucket));
     let loaded = manager.load_native_session(session_id).map_err(|error| {
         format!("failed to load background session {project_bucket}/{session_id}: {error}")
     })?;
@@ -952,8 +951,7 @@ impl BgRuntimeManager {
                 working_dir,
             )) => {
                 if let Some(bg) = self.backgrounds.slot_mut_for_runtime_id(runtime_id) {
-                    bg.working_dir =
-                        zap_capabilities::pathnorm::strip_verbatim_path(&working_dir);
+                    bg.working_dir = zap_capabilities::pathnorm::strip_verbatim_path(&working_dir);
                 }
                 false
             }
@@ -1033,13 +1031,11 @@ impl BgRuntimeManager {
                         zap_coding::TurnCompletion::SnapshotUnavailable { error, .. } => {
                             bg.state = RuntimeState::Error;
                             bg.buffered_events.push(RuntimeEventPayload::Native(
-                                CodingRuntimeEvent::Agent(
-                                    zap_kernel::event::AgentEvent::Error {
-                                        message: error.message,
-                                        http_status: None,
-                                        code: None,
-                                    },
-                                ),
+                                CodingRuntimeEvent::Agent(zap_kernel::event::AgentEvent::Error {
+                                    message: error.message,
+                                    http_status: None,
+                                    code: None,
+                                }),
                             ));
                         }
                     }
@@ -1648,14 +1644,12 @@ mod tests {
         );
         manager.apply_background_event(
             RuntimeId::new(2),
-            RuntimeEventPayload::Native(CodingRuntimeEvent::Request(
-                zap_coding::RuntimeRequest {
-                    id: 7,
-                    kind: zap_capabilities::tools::APPROVAL_KIND.into(),
-                    payload: serde_json::json!({}),
-                    snapshot: None,
-                },
-            )),
+            RuntimeEventPayload::Native(CodingRuntimeEvent::Request(zap_coding::RuntimeRequest {
+                id: 7,
+                kind: zap_capabilities::tools::APPROVAL_KIND.into(),
+                payload: serde_json::json!({}),
+                snapshot: None,
+            })),
         );
 
         let resumed = manager.resume_slot(1, RuntimeState::Idle).unwrap();
@@ -1694,16 +1688,14 @@ mod tests {
         );
         manager.apply_background_event(
             RuntimeId::new(2),
-            RuntimeEventPayload::Native(CodingRuntimeEvent::Request(
-                zap_coding::RuntimeRequest {
-                    id: 7,
-                    kind: zap_capabilities::tools::APPROVAL_KIND.into(),
-                    payload: serde_json::json!({}),
-                    snapshot: Some(Arc::new(SessionSnapshot::new(vec![Message::user(
-                        "question",
-                    )]))),
-                },
-            )),
+            RuntimeEventPayload::Native(CodingRuntimeEvent::Request(zap_coding::RuntimeRequest {
+                id: 7,
+                kind: zap_capabilities::tools::APPROVAL_KIND.into(),
+                payload: serde_json::json!({}),
+                snapshot: Some(Arc::new(SessionSnapshot::new(vec![Message::user(
+                    "question",
+                )]))),
+            })),
         );
 
         let resumed = manager.resume_slot(1, RuntimeState::Idle).unwrap();
@@ -1725,22 +1717,18 @@ mod tests {
             .unwrap();
         manager.apply_background_event(
             RuntimeId::new(2),
-            RuntimeEventPayload::Native(CodingRuntimeEvent::Request(
-                zap_coding::RuntimeRequest {
-                    id: 42,
-                    kind: zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND
-                        .into(),
-                    payload: serde_json::json!({}),
-                    snapshot: None,
-                },
-            )),
+            RuntimeEventPayload::Native(CodingRuntimeEvent::Request(zap_coding::RuntimeRequest {
+                id: 42,
+                kind: zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND.into(),
+                payload: serde_json::json!({}),
+                snapshot: None,
+            })),
         );
         manager.apply_background_event(
             RuntimeId::new(2),
             RuntimeEventPayload::Ui(AgentEvent::SharedRequestResolved {
                 request_id: 42,
-                kind: zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND
-                    .into(),
+                kind: zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND.into(),
             }),
         );
 

@@ -2,13 +2,13 @@
 //! assembled coding agent through a tool call and a stop. Proves provider + tools +
 //! approval + persona + discipline wire together and the loop runs to completion.
 
+use std::sync::Arc;
 use zap_coding::{build_coding_agent_with, CodingAgentConfig};
 use zap_kernel::agent::AutoRespond;
 use zap_kernel::event::StopReason;
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::MockProvider;
 use zap_kernel::tool::ToolCall;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn assembles_and_runs_a_tool_end_to_end() {

@@ -146,9 +146,7 @@ fn reveal_live_locked(state: &mut SidebarFile) -> bool {
         return false;
     }
     let mut live_hashes = BTreeSet::new();
-    for entry in
-        zap_coding::session_runtime_registry::SessionRuntimeRegistry::global().list_all()
-    {
+    for entry in zap_coding::session_runtime_registry::SessionRuntimeRegistry::global().list_all() {
         if entry.activity.is_live_turn() {
             live_hashes.insert(hash_path(&entry.working_dir));
         }

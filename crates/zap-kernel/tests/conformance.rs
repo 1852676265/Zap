@@ -11,6 +11,9 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use zap_kernel::conformance::{self, ConformanceReport};
 use zap_kernel::hook::{HookChain, LifecycleHooks, NoopHooks};
 use zap_kernel::message::{Message, MessageMeta};
@@ -26,9 +29,6 @@ use zap_kernel::testkit::{
     WorkingDirProbeTool,
 };
 use zap_kernel::tool::{RiskLevel, Tool, ToolCall, ToolContext, ToolDef, ToolResult};
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
 
 /// Assert a report is non-conformant AND the failure is the EXPECTED named check.
 fn assert_check_failed(report: &ConformanceReport, name: &str) {

@@ -709,7 +709,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::HelpCustomNone =>
             "    (none)\n\n".into(),
         Msg::HelpCustomCreateHint =>
-            "  Create: ~/.jeikcode/commands/<name>.md or .jeikcode/commands/<name>.md\n".into(),
+            "  Create: ~/.zap/commands/<name>.md or .zap/commands/<name>.md\n".into(),
         Msg::HelpSourceGlobal => "global".into(),
         Msg::HelpSourceProject => "project".into(),
 
@@ -822,11 +822,11 @@ Msg::PluginMgrInstallingLabel => "Installing…".into(),
         Msg::PluginMgrRemoveMarketplaceNo => "No, keep".into(),
         Msg::PluginMgrRemoveMarketplaceHint => "↑/↓ select · ⏎ confirm · esc cancel".into(),
         Msg::PluginScopeUser => "Install for you (user scope)".into(),
-        Msg::PluginScopeUserDesc => "~/.jeikcode/plugins — all projects".into(),
+        Msg::PluginScopeUserDesc => "~/.zap/plugins — all projects".into(),
         Msg::PluginScopeProject => "Install for all collaborators (project scope)".into(),
-        Msg::PluginScopeProjectDesc => ".jeikcode/plugins — shared via git".into(),
+        Msg::PluginScopeProjectDesc => ".zap/plugins — shared via git".into(),
         Msg::PluginScopeLocal => "Install for you, in this repo only (local scope)".into(),
-        Msg::PluginScopeLocalDesc => ".jeikcode/plugins/local — not committed".into(),
+        Msg::PluginScopeLocalDesc => ".zap/plugins/local — not committed".into(),
         Msg::PluginScopeHint => "↑↓ Select scope · Enter confirm · Esc back".into(),
         Msg::PluginScopeUserShort => "user".into(),
         Msg::PluginScopeProjectShort => "project".into(),
@@ -1084,7 +1084,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
              \u{20}\u{20}/goal help            this help\n  \
              Notes:\n  \
              \u{20}\u{20}- A fast model evaluates each round; configure via [providers] +\n  \
-             \u{20}\u{20}\u{20}\u{20}evaluator_provider in ~/.jeikcode/config.toml.\n  \
+             \u{20}\u{20}\u{20}\u{20}evaluator_provider in ~/.zap/config.toml.\n  \
              \u{20}\u{20}- No built-in round / time cap — express budgets in the condition\n  \
              \u{20}\u{20}\u{20}\u{20}text itself (e.g. \"or stop after 20 turns\"). CC's /goal works the same way.\n  \
              \u{20}\u{20}- Esc / Ctrl+C stops the goal at any time.\n".into(),
@@ -1213,7 +1213,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::CliAboutTelemetry => "Telemetry controls".into(),
         Msg::CliAboutPlugin => "Manage skill/command plugins".into(),
         Msg::CliAboutUninstall => "Uninstall JeikCode. With no arguments, ask whether to keep user configuration. `simple` removes only the program. `all` removes everything. Tutorial: https://jeikcode.top/guide/updates.html".into(),
-        Msg::CliAboutSetup => "Re-initialize JeikCode environment and bundled configurations to ~/.jeikcode/".into(),
+        Msg::CliAboutSetup => "Re-initialize JeikCode environment and bundled configurations to ~/.zap/".into(),
         Msg::CliAboutHooks => "Manage hooks (list, test, enable/disable)".into(),
         Msg::CliAboutHooksList => "List all loaded hooks with their status".into(),
         Msg::CliAboutHooksTest => "Test a specific hook by name".into(),
@@ -1254,8 +1254,8 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::CliHelpPortWebui => "Port (default: 13457)".into(),
         Msg::CliHelpHost => "Bind address (default: 127.0.0.1)".into(),
         Msg::CliHelpUninstallYes => "Skip prompts; use per-group default decisions".into(),
-        Msg::CliHelpUninstallPurge => "Wipe ~/.jeikcode/ entirely".into(),
-        Msg::CliHelpUninstallKeepData => "Keep ~/.jeikcode/ entirely".into(),
+        Msg::CliHelpUninstallPurge => "Wipe ~/.zap/ entirely".into(),
+        Msg::CliHelpUninstallKeepData => "Keep ~/.zap/ entirely".into(),
         Msg::CliHelpUninstallDryRun => "Print the plan; do nothing".into(),
         Msg::CliAboutUninstallSimple => "Remove only the program and PATH entry. Keep user configuration. No prompts.".into(),
         Msg::CliAboutUninstallAll => "Remove the program, PATH entry, and all user configuration. No prompts.".into(),
@@ -1287,7 +1287,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::UninstallGroupBinary => "[1] Program and PATH entry".into(),
         Msg::UninstallGroupCredentials => "[2] Credentials and global config".into(),
         Msg::UninstallGroupState => "[3] Local state and extensions".into(),
-        Msg::CliHelpMcpGlobal => "Write ~/.jeikcode/mcp.json instead of <dir>/.mcp.json".into(),
+        Msg::CliHelpMcpGlobal => "Write ~/.zap/mcp.json instead of <dir>/.mcp.json".into(),
         Msg::CliHelpMcpDir => "Directory for project .mcp.json".into(),
         Msg::CliHelpMcpName => "Server key".into(),
         Msg::CliHelpHooksTestName => "Hook name to test".into(),

@@ -193,10 +193,8 @@ mod tests {
     fn project_zap_md_is_found() {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join(".zap.md"), "Use tabs.").unwrap();
-        let instructions = LayeredInstructions::try_load(
-            &tmp.path().join(".zap.md"),
-            InstructionLevel::Project,
-        );
+        let instructions =
+            LayeredInstructions::try_load(&tmp.path().join(".zap.md"), InstructionLevel::Project);
         assert!(instructions.is_some());
         let f = instructions.unwrap();
         assert_eq!(f.level, InstructionLevel::Project);
@@ -295,10 +293,8 @@ mod tests {
     fn empty_file_is_skipped() {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join(".zap.md"), "   \n  \n").unwrap();
-        let project = LayeredInstructions::try_load(
-            &tmp.path().join(".zap.md"),
-            InstructionLevel::Project,
-        );
+        let project =
+            LayeredInstructions::try_load(&tmp.path().join(".zap.md"), InstructionLevel::Project);
         assert!(project.is_none());
     }
 

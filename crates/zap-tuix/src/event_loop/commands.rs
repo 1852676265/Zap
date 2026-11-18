@@ -283,8 +283,7 @@ fn bind_observer_foreground(
         .is_some_and(|handle| {
             matches!(
                 handle.status().phase,
-                zap_coding::RuntimePhase::InTurn
-                    | zap_coding::RuntimePhase::WaitingApproval
+                zap_coding::RuntimePhase::InTurn | zap_coding::RuntimePhase::WaitingApproval
             )
         });
     bind_spawned_foreground(ctx, state, runtime_id, endpoint, session);
@@ -541,8 +540,8 @@ fn schedule_resumed_runtime_replay(
 /// Publish live runners into the L2 registry (OpenCode model: registry is
 /// authoritative for activity; the TUI only owns ViewBinding + local endpoints).
 pub(crate) fn sync_session_runtime_registry(ctx: &LoopCtx, state: &UiState) {
-    use zap_coding::session_runtime_registry::{RuntimeActivity, SessionRuntimeRegistry};
     use std::collections::HashSet;
+    use zap_coding::session_runtime_registry::{RuntimeActivity, SessionRuntimeRegistry};
 
     let selected_running = matches!(
         state.phase,
@@ -2509,13 +2508,11 @@ fn execute_slash_command_impl(
                 }
                 let session_id = ctx.current_session.id.to_string();
                 let open_msg = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(
-                        zap_daemon::ensure_server_and_open(
-                            &host,
-                            zap_daemon::WEBUI_DEFAULT_PORT,
-                            Some(session_id.as_str()),
-                        ),
-                    )
+                    tokio::runtime::Handle::current().block_on(zap_daemon::ensure_server_and_open(
+                        &host,
+                        zap_daemon::WEBUI_DEFAULT_PORT,
+                        Some(session_id.as_str()),
+                    ))
                 });
                 open_msg
             };
@@ -2823,12 +2820,10 @@ fn execute_slash_command_impl(
                     Ok(sum) => {
                         // Route through the event channel so rendering
                         // and "set done → exit" logic stays in one place.
-                        let _ = ctx
-                            .upgrade_tx
-                            .send(zap_updater::UpgradeEvent::RolledBack {
-                                exe: sum.exe,
-                                backup: sum.backup,
-                            });
+                        let _ = ctx.upgrade_tx.send(zap_updater::UpgradeEvent::RolledBack {
+                            exe: sum.exe,
+                            backup: sum.backup,
+                        });
                     }
                     Err(e) => {
                         let _ = ctx
@@ -2923,8 +2918,7 @@ fn execute_slash_command_impl(
                     // The driver emits Done via `tx` on success; on error
                     // we translate to a Failed event so the TUI layer
                     // only has to handle one event stream.
-                    if let Err(e) = zap_updater::run_upgrade(current, force, tx.clone()).await
-                    {
+                    if let Err(e) = zap_updater::run_upgrade(current, force, tx.clone()).await {
                         let _ = tx.send(zap_updater::UpgradeEvent::Failed(format!("{:#}", e)));
                     }
                 });
@@ -3094,12 +3088,9 @@ fn execute_slash_command_impl(
                     | bg_runtime::BgError::SessionNotInBackground { .. },
                 ) => unreachable!("push_background_runtime cannot return a resume error"),
             };
-            let submit_result =
-                endpoint
-                    .native
-                    .dispatch_when_ready(zap_coding::DriverCommand::Submit(
-                        task.to_string().into(),
-                    ));
+            let submit_result = endpoint
+                .native
+                .dispatch_when_ready(zap_coding::DriverCommand::Submit(task.to_string().into()));
             if let Err(error) =
                 finalize_background_submission(&mut ctx.bg_manager, slot, submit_result)
             {
@@ -3144,20 +3135,19 @@ fn execute_slash_command_impl(
                         renderer.flush();
                         return Ok(());
                     }
-                    let configs =
-                        match zap_capabilities::mcp::load_mcp_config(&ctx.working_dir) {
-                            Ok(configs) => configs,
-                            Err(e) => {
-                                renderer.render(UiLine::Error(
-                                    t(Msg::McpOAuthLoadConfigFailed {
-                                        error: &format!("{:#}", e),
-                                    })
-                                    .into_owned(),
-                                ));
-                                renderer.flush();
-                                return Ok(());
-                            }
-                        };
+                    let configs = match zap_capabilities::mcp::load_mcp_config(&ctx.working_dir) {
+                        Ok(configs) => configs,
+                        Err(e) => {
+                            renderer.render(UiLine::Error(
+                                t(Msg::McpOAuthLoadConfigFailed {
+                                    error: &format!("{:#}", e),
+                                })
+                                .into_owned(),
+                            ));
+                            renderer.flush();
+                            return Ok(());
+                        }
+                    };
                     let Some(config) = configs.into_iter().find(|config| config.name == server)
                     else {
                         renderer.render(UiLine::Error(
@@ -3362,20 +3352,19 @@ fn execute_slash_command_impl(
                     }
                     // Preflight: parse merged MCP config so we can show progress immediately.
                     // (Connection attempts happen in background and may take up to timeout_ms.)
-                    let configs =
-                        match zap_capabilities::mcp::load_mcp_config(&ctx.working_dir) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                renderer.render(UiLine::Error(
-                                    t(Msg::McpReloadFailed {
-                                        error: &format!("{:#}", e),
-                                    })
-                                    .into_owned(),
-                                ));
-                                renderer.flush();
-                                return Ok(());
-                            }
-                        };
+                    let configs = match zap_capabilities::mcp::load_mcp_config(&ctx.working_dir) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            renderer.render(UiLine::Error(
+                                t(Msg::McpReloadFailed {
+                                    error: &format!("{:#}", e),
+                                })
+                                .into_owned(),
+                            ));
+                            renderer.flush();
+                            return Ok(());
+                        }
+                    };
 
                     // Partition by trust so the preflight header only lists servers that will
                     // actually be attempted (project-source servers from untrusted projects are
@@ -4161,40 +4150,35 @@ fn handle_plugin(arg: &str, ctx: &mut super::LoopCtx, renderer: &mut dyn Rendere
                         t(Msg::PluginMarketplaceCloning { url: &url }).into_owned(),
                     );
                     tokio::task::spawn_blocking(move || {
-                        let ev =
-                            match zap_capabilities::plugin::marketplace::add_marketplace(&url)
-                            {
-                                Ok(info) => {
-                                    zap_capabilities::plugin::PluginJobEvent::MarketplaceAdded(
-                                        info,
-                                    )
-                                }
-                                Err(e) => zap_capabilities::plugin::PluginJobEvent::Failed {
-                                    op: "add marketplace".into(),
-                                    msg: format!("{:#}", e),
-                                },
-                            };
+                        let ev = match zap_capabilities::plugin::marketplace::add_marketplace(&url)
+                        {
+                            Ok(info) => {
+                                zap_capabilities::plugin::PluginJobEvent::MarketplaceAdded(info)
+                            }
+                            Err(e) => zap_capabilities::plugin::PluginJobEvent::Failed {
+                                op: "add marketplace".into(),
+                                msg: format!("{:#}", e),
+                            },
+                        };
                         let _ = tx.send(ev);
                     });
                 }
-                "remove" => {
-                    match zap_capabilities::plugin::marketplace::remove_marketplace(arg) {
-                        Ok(()) => {
-                            super::reload_plugins(ctx);
-                            ok(
-                                renderer,
-                                t(Msg::PluginMarketplaceRemoved { name: arg }).into_owned(),
-                            );
-                        }
-                        Err(e) => err(
+                "remove" => match zap_capabilities::plugin::marketplace::remove_marketplace(arg) {
+                    Ok(()) => {
+                        super::reload_plugins(ctx);
+                        ok(
                             renderer,
-                            t(Msg::PluginMarketplaceRemoveFailed {
-                                error: &e.to_string(),
-                            })
-                            .into_owned(),
-                        ),
+                            t(Msg::PluginMarketplaceRemoved { name: arg }).into_owned(),
+                        );
                     }
-                }
+                    Err(e) => err(
+                        renderer,
+                        t(Msg::PluginMarketplaceRemoveFailed {
+                            error: &e.to_string(),
+                        })
+                        .into_owned(),
+                    ),
+                },
                 "update" => {
                     let name = arg.to_string();
                     let tx = ctx.plugin_job_tx.clone();
@@ -4203,8 +4187,9 @@ fn handle_plugin(arg: &str, ctx: &mut super::LoopCtx, renderer: &mut dyn Rendere
                         t(Msg::PluginMarketplaceUpdating { name: &name }).into_owned(),
                     );
                     tokio::task::spawn_blocking(move || {
-                        let ev = match zap_capabilities::plugin::marketplace::update_marketplace(&name)
-                        {
+                        let ev = match zap_capabilities::plugin::marketplace::update_marketplace(
+                            &name,
+                        ) {
                             Ok(info) => {
                                 zap_capabilities::plugin::PluginJobEvent::MarketplaceUpdated(info)
                             }
@@ -4287,9 +4272,7 @@ fn handle_plugin(arg: &str, ctx: &mut super::LoopCtx, renderer: &mut dyn Rendere
                 }
                 Some(PluginArg::Bare { plugin }) => {
                     // Bare plugin name — resolve across all marketplaces.
-                    match zap_capabilities::plugin::installer::resolve_plugin_marketplace(
-                        &plugin,
-                    ) {
+                    match zap_capabilities::plugin::installer::resolve_plugin_marketplace(&plugin) {
                         Ok(matches) if matches.len() == 1 => {
                             let m = &matches[0];
                             let mp = m.marketplace.clone();
@@ -4381,9 +4364,7 @@ fn handle_plugin(arg: &str, ctx: &mut super::LoopCtx, renderer: &mut dyn Rendere
                     .filter(|p| {
                         p.plugin == plugin
                             || p.plugin
-                                == zap_capabilities::plugin::marketplace::sanitize_name(
-                                    &plugin,
-                                )
+                                == zap_capabilities::plugin::marketplace::sanitize_name(&plugin)
                     })
                     .collect();
                 match matches.len() {
@@ -4395,8 +4376,7 @@ fn handle_plugin(arg: &str, ctx: &mut super::LoopCtx, renderer: &mut dyn Rendere
                         let p = &matches[0];
                         let (plug, mp, scope) =
                             (p.plugin.clone(), p.marketplace.clone(), p.scope.clone());
-                        match zap_capabilities::plugin::installer::uninstall(&plug, &mp, scope)
-                        {
+                        match zap_capabilities::plugin::installer::uninstall(&plug, &mp, scope) {
                             Ok(()) => {
                                 super::reload_plugins(ctx);
                                 ok(
@@ -6405,8 +6385,8 @@ mod save_tests {
         default_save_filename, expand_tilde_path, render_save_markdown, resolve_save_in,
         SaveOutcome,
     };
-    use zap_kernel::message::{Message, Role};
     use std::path::{Path, PathBuf};
+    use zap_kernel::message::{Message, Role};
 
     /// Build a kernel text message with an explicit role (kernel has no generic
     /// `new(role, text)`).
@@ -6760,13 +6740,11 @@ mod tests {
 
     #[test]
     fn live_request_resolution_projects_to_correlated_tui_event() {
-        let event =
-            project_live_view_event(zap_daemon::live_hub::LiveViewEvent::RequestResolved {
-                request_id: 42,
-                kind: zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND
-                    .into(),
-            })
-            .expect("request terminal must reach the TUI");
+        let event = project_live_view_event(zap_daemon::live_hub::LiveViewEvent::RequestResolved {
+            request_id: 42,
+            kind: zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND.into(),
+        })
+        .expect("request terminal must reach the TUI");
 
         assert!(matches!(
             event,
@@ -7398,11 +7376,11 @@ mod todo_command_tests {
         decide_custom_command, format_todo_command, render_custom_command_error, CustomDispatch,
     };
     use crate::render::{Renderer, UiLine};
+    use std::path::PathBuf;
     use zap_capabilities::commands::ArgsRequirement;
     use zap_config::i18n::{t, Msg};
     use zap_kernel::message::{Message, Role};
     use zap_kernel::tool::ToolCall;
-    use std::path::PathBuf;
 
     /// Kernel text message with an explicit role.
     fn msg(role: Role, text: &str) -> Message {

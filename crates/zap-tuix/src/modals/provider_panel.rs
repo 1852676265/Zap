@@ -6,13 +6,13 @@
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::sync::{mpsc, Arc, Mutex};
+use tokio::sync::mpsc::Sender as WakeSender;
 use zap_config::config::provider::{
     default_reasoning_effort_for, default_reasoning_levels_for, ModelProfileConfig,
     ProviderAccountConfig,
 };
 use zap_config::config::{provider_preset, Config};
-use std::sync::{mpsc, Arc, Mutex};
-use tokio::sync::mpsc::Sender as WakeSender;
 
 use super::upstream_models::{self, UpstreamListSpec};
 
@@ -1222,8 +1222,7 @@ impl ProviderPanel {
                 let selection_id = if let Some(id) = &edit_id {
                     // Edit in place — new-schema model or legacy provider.
                     let grok = model_name.to_ascii_lowercase().contains("grok");
-                    let gemini =
-                        zap_capabilities::provider::model_supports_thinking(&model_name);
+                    let gemini = zap_capabilities::provider::model_supports_thinking(&model_name);
                     let signed_thinking = grok || gemini;
                     if let Some(model) = persisted.models.get_mut(id) {
                         model.model = model_name.clone();
@@ -1287,8 +1286,7 @@ impl ProviderPanel {
                         base
                     };
                     let grok = model_name.to_ascii_lowercase().contains("grok");
-                    let gemini =
-                        zap_capabilities::provider::model_supports_thinking(&model_name);
+                    let gemini = zap_capabilities::provider::model_supports_thinking(&model_name);
                     let signed_thinking = grok || gemini;
                     let persist_reasoning = signed_thinking || reasoning_model;
                     persisted.models.insert(

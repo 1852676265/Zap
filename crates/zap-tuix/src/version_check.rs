@@ -55,9 +55,7 @@ fn format_version(v: (u64, u64, u64)) -> String {
 /// helpers in `zap-capabilities`/`zap-telemetry`.
 fn apply_async_proxy_policy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     zap_config::proxy::ensure_runtime_initialized();
-    let builder = if std::env::var(zap_config::proxy::MODE_ENV)
-        .ok()
-        .as_deref()
+    let builder = if std::env::var(zap_config::proxy::MODE_ENV).ok().as_deref()
         == Some(zap_config::proxy::ProxyMode::NoProxy.as_str())
     {
         builder.no_proxy()

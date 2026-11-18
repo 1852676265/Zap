@@ -3,12 +3,12 @@
 //! ToolMiddleware + approval round-trip seam with REAL risky tools (production only
 //! ever exercised it with testkit stubs).
 
+use std::sync::Arc;
 use zap_capabilities::tools::{coding_tool_names, register_coding_tools, ApprovalMiddleware};
 use zap_kernel::agent::{Agent, AutoRespond};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::MockProvider;
 use zap_kernel::tool::{ToolCall, ToolRegistry};
-use std::sync::Arc;
 
 fn tool_call(id: &str, name: &str, args: &str) -> StreamEvent {
     StreamEvent::ToolCall(ToolCall {
@@ -285,14 +285,13 @@ async fn run_command_preserves_redirection_and_chaining() {
 /// escape the workspace.
 #[tokio::test]
 async fn env_vars_in_tool_params_resolve_to_real_paths() {
-    use zap_kernel::tool::{ProgressSink, Tool};
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::{ProgressSink, Tool};
 
     let working_dir = tempfile::tempdir().unwrap();
     // Lives OUTSIDE the working dir, reachable ONLY through the expanded variable — the
     // exact shape that used to become a relative path and 404.
-    let probe =
-        zap_capabilities::special_dirs::temp_dir().join("jeik-env-expansion-probe.txt");
+    let probe = zap_capabilities::special_dirs::temp_dir().join("jeik-env-expansion-probe.txt");
     std::fs::write(&probe, "env-expansion-ok").unwrap();
 
     let mut reg = ToolRegistry::new();
@@ -346,8 +345,8 @@ async fn env_vars_in_tool_params_resolve_to_real_paths() {
 #[cfg(windows)]
 #[tokio::test]
 async fn native_gbk_line_does_not_mangle_utf8_output() {
-    use zap_kernel::tool::{ProgressSink, Tool};
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::{ProgressSink, Tool};
 
     let dir = tempfile::tempdir().unwrap();
     let mut reg = ToolRegistry::new();
@@ -396,8 +395,8 @@ async fn native_gbk_line_does_not_mangle_utf8_output() {
 #[cfg(windows)]
 #[tokio::test]
 async fn shell_temp_dir_is_the_same_real_directory_as_the_native_temp() {
-    use zap_kernel::tool::{ProgressSink, Tool};
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::{ProgressSink, Tool};
 
     let dir = tempfile::tempdir().unwrap();
     let mut reg = ToolRegistry::new();
@@ -457,9 +456,7 @@ async fn shell_temp_dir_is_the_same_real_directory_as_the_native_temp() {
         "writing through $TMPDIR must work: {:?}",
         out.content
     );
-    let _ = std::fs::remove_file(
-        zap_capabilities::special_dirs::temp_dir().join("jeik-tmp-probe"),
-    );
+    let _ = std::fs::remove_file(zap_capabilities::special_dirs::temp_dir().join("jeik-tmp-probe"));
 }
 
 /// The background report on the new code: the WORKLOAD's two real ids, the stop recipe,
@@ -467,8 +464,8 @@ async fn shell_temp_dir_is_the_same_real_directory_as_the_native_temp() {
 #[cfg(windows)]
 #[tokio::test]
 async fn background_report_carries_actionable_pids_and_the_recipe_kills() {
-    use zap_kernel::tool::{ProgressSink, Tool};
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::{ProgressSink, Tool};
 
     fn running(pid: u32) -> bool {
         let out = std::process::Command::new("tasklist")
@@ -548,8 +545,8 @@ async fn background_report_carries_actionable_pids_and_the_recipe_kills() {
 #[cfg(windows)]
 #[tokio::test]
 async fn native_temp_handle_is_usable_by_a_native_program() {
-    use zap_kernel::tool::{ProgressSink, Tool};
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::{ProgressSink, Tool};
 
     let dir = tempfile::tempdir().unwrap();
     let mut reg = ToolRegistry::new();

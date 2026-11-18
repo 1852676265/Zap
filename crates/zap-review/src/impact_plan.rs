@@ -408,10 +408,7 @@ diff --git a/crates/zap-tuix/src/event_loop/mod.rs b/crates/zap-tuix/src/event_l
         assert!(plan.contains("GoalUpdate"), "{plan}");
         assert!(plan.contains("finish_turn"), "{plan}");
         assert!(plan.contains("TurnComplete"), "{plan}");
-        assert!(
-            plan.contains("crates/zap-bridge/src/runtime.rs"),
-            "{plan}"
-        );
+        assert!(plan.contains("crates/zap-bridge/src/runtime.rs"), "{plan}");
     }
 
     #[test]

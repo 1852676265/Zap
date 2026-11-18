@@ -190,7 +190,7 @@ pub struct PathCleanupResult {
 }
 
 /// Read an rc file, strip the JeikCode installer block targeting `prefix`,
-/// write a `.jeikcode-uninstall.bak` next to it, then write the cleaned file.
+/// write a `.zap-uninstall.bak` next to it, then write the cleaned file.
 /// No-op (returns `modified=false`) if the file is missing or no block found.
 pub fn apply_unix_path_cleanup(rc_path: &Path, prefix: &str) -> io::Result<PathCleanupResult> {
     if !rc_path.exists() {
@@ -211,7 +211,7 @@ pub fn apply_unix_path_cleanup(rc_path: &Path, prefix: &str) -> io::Result<PathC
     };
     let backup = {
         let mut s = rc_path.as_os_str().to_os_string();
-        s.push(".jeikcode-uninstall.bak");
+        s.push(".zap-uninstall.bak");
         std::path::PathBuf::from(s)
     };
     std::fs::copy(rc_path, &backup)?;
@@ -299,7 +299,7 @@ impl SelfDeleteStrategy for PlatformSelfDelete {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-        // Rename live exe to .jeikcode.rolling so the install dir can be deleted.
+        // Rename live exe to .zap.rolling so the install dir can be deleted.
         let rolling = zap_updater::rolling_path(exe);
         if exe.file_name() != rolling.file_name() {
             let _ = std::fs::rename(exe, &rolling);
@@ -555,7 +555,7 @@ mod rc_apply_tests {
         .unwrap();
         let res = apply_unix_path_cleanup(&rc, "/p").unwrap();
         assert!(res.modified);
-        assert!(rc.with_file_name(".zshrc.jeikcode-uninstall.bak").exists());
+        assert!(rc.with_file_name(".zshrc.zap-uninstall.bak").exists());
         let new = std::fs::read_to_string(&rc).unwrap();
         assert!(!new.contains("JeikCode"));
     }
@@ -567,7 +567,7 @@ mod rc_apply_tests {
         std::fs::write(&rc, "alias x=1\n").unwrap();
         let res = apply_unix_path_cleanup(&rc, "/p").unwrap();
         assert!(!res.modified);
-        assert!(!rc.with_file_name(".zshrc.jeikcode-uninstall.bak").exists());
+        assert!(!rc.with_file_name(".zshrc.zap-uninstall.bak").exists());
     }
 }
 
@@ -580,7 +580,7 @@ mod execute_tests {
     fn fake_install(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
         let exe = tmp.path().join("jeikcode");
         std::fs::write(&exe, b"x").unwrap();
-        let data = tmp.path().join(".jeikcode");
+        let data = tmp.path().join(".zap");
         std::fs::create_dir(&data).unwrap();
         std::fs::write(data.join("auth.toml"), b"k").unwrap();
         std::fs::write(data.join("history"), b"h").unwrap();

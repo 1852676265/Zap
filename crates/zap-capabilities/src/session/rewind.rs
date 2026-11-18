@@ -7,7 +7,6 @@
 //! closed instead of pretending arbitrary filesystem side effects are reversible.
 
 use fs2::FileExt;
-use zap_kernel::message::SessionSnapshot;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -16,6 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Mutex, MutexGuard};
+use zap_kernel::message::SessionSnapshot;
 
 const STORE_VERSION: &str = "jeikcode-rewind-v1";
 /// Bumped to 2 in v5.0.5: `before_tree`/`after_tree` became optional (a

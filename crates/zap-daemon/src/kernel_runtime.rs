@@ -1,10 +1,10 @@
 //! Daemon entry points for the unified native [`zap_coding::CodingRuntime`].
 
+use tokio::sync::{mpsc, watch};
 use zap_coding::config::CodingAgentConfig;
 use zap_coding::parts::{PrepareOptions, SessionMode};
 use zap_coding::runtime::CodingRuntimeEvent;
 use zap_coding::CodingRuntimeConfig;
-use tokio::sync::{mpsc, watch};
 
 /// Convert the shared runtime configuration into the native coding-agent config.
 pub fn coding_config_from_runtime(cfg: &CodingRuntimeConfig) -> CodingAgentConfig {
@@ -24,16 +24,14 @@ fn map_lease_error(
 
 pub async fn start_native_runtime(
     cfg: CodingRuntimeConfig,
-) -> Result<(zap_coding::CodingRuntime, CodingAgentConfig), zap_coding::RuntimeStartError>
-{
+) -> Result<(zap_coding::CodingRuntime, CodingAgentConfig), zap_coding::RuntimeStartError> {
     start_native_runtime_with_session(cfg, SessionMode::Fresh).await
 }
 
 pub async fn start_native_runtime_with_session(
     cfg: CodingRuntimeConfig,
     session: SessionMode,
-) -> Result<(zap_coding::CodingRuntime, CodingAgentConfig), zap_coding::RuntimeStartError>
-{
+) -> Result<(zap_coding::CodingRuntime, CodingAgentConfig), zap_coding::RuntimeStartError> {
     start_native_runtime_with_session_bootstrap(
         cfg,
         session,
@@ -48,14 +46,12 @@ async fn start_native_runtime_with_session_bootstrap(
     session: SessionMode,
     bootstrap: zap_coding::ProviderBootstrap,
     image_preprocessor: Option<std::sync::Arc<dyn zap_coding::ImagePreprocessor>>,
-) -> Result<(zap_coding::CodingRuntime, CodingAgentConfig), zap_coding::RuntimeStartError>
-{
+) -> Result<(zap_coding::CodingRuntime, CodingAgentConfig), zap_coding::RuntimeStartError> {
     let coding_cfg = coding_config_from_runtime(&cfg);
     let (session, imported_lease) = match session {
         SessionMode::Resume(id) => {
-            let manager = zap_capabilities::session::SessionManager::for_project(
-                &coding_cfg.working_dir,
-            );
+            let manager =
+                zap_capabilities::session::SessionManager::for_project(&coding_cfg.working_dir);
             let lease = manager.acquire_lease(&id).map_err(map_lease_error)?;
             crate::legacy_convert::converge_session(&manager, &lease).map_err(|error| {
                 zap_coding::RuntimeStartError::Prepare(std::io::Error::other(error))
@@ -63,9 +59,8 @@ async fn start_native_runtime_with_session_bootstrap(
             (SessionMode::Resume(id), Some(lease))
         }
         SessionMode::ExternalSnapshot { id, snapshot } => {
-            let manager = zap_capabilities::session::SessionManager::for_project(
-                &coding_cfg.working_dir,
-            );
+            let manager =
+                zap_capabilities::session::SessionManager::for_project(&coding_cfg.working_dir);
             let lease = manager.acquire_lease(&id).map_err(map_lease_error)?;
             let has_existing = [
                 manager.meta_path(&id),
@@ -74,9 +69,7 @@ async fn start_native_runtime_with_session_bootstrap(
             ]
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                zap_coding::RuntimeStartError::Prepare(std::io::Error::from(error))
-            })?
+            .map_err(|error| zap_coding::RuntimeStartError::Prepare(std::io::Error::from(error)))?
             .iter()
             .any(|path| path.exists());
             if has_existing {
@@ -178,8 +171,7 @@ async fn start_native_runtime_with_session_bootstrap(
     };
     let runtime = match imported_lease {
         Some(lease) => {
-            zap_coding::CodingRuntime::start_with_session_lease(start, bootstrap, lease)
-                .await?
+            zap_coding::CodingRuntime::start_with_session_lease(start, bootstrap, lease).await?
         }
         None => zap_coding::CodingRuntime::start_with_bootstrap(start, bootstrap).await?,
     };
@@ -219,19 +211,18 @@ pub fn spawn_native_runtime_for_session_deferred_with_preprocessor(
     let (state_tx, state_rx) = watch::channel(zap_coding::DeferredRuntimeState::Starting);
     tokio::spawn(async move {
         let mut output_sequence = 0u64;
-        let send_event =
-            |event_tx: &mpsc::UnboundedSender<zap_coding::SequencedRuntimeEvent>,
-             output_sequence: &mut u64,
-             generation: u64,
-             event: CodingRuntimeEvent| {
-                let result = event_tx.send(zap_coding::SequencedRuntimeEvent {
-                    generation,
-                    sequence: *output_sequence,
-                    event,
-                });
-                *output_sequence = output_sequence.wrapping_add(1);
-                result
-            };
+        let send_event = |event_tx: &mpsc::UnboundedSender<zap_coding::SequencedRuntimeEvent>,
+                          output_sequence: &mut u64,
+                          generation: u64,
+                          event: CodingRuntimeEvent| {
+            let result = event_tx.send(zap_coding::SequencedRuntimeEvent {
+                generation,
+                sequence: *output_sequence,
+                event,
+            });
+            *output_sequence = output_sequence.wrapping_add(1);
+            result
+        };
         let working_dir = cfg.working_dir.clone();
         let session_id = id.clone();
         let bootstrap = if cfg.model.is_empty() {
@@ -242,8 +233,7 @@ pub fn spawn_native_runtime_for_session_deferred_with_preprocessor(
             zap_coding::ProviderBootstrap::RecoverAuthentication
         };
         let session_mode = {
-            let manager =
-                zap_capabilities::session::SessionManager::for_project(&cfg.working_dir);
+            let manager = zap_capabilities::session::SessionManager::for_project(&cfg.working_dir);
             let has_existing = manager.meta_path(&id).ok().is_some_and(|p| p.exists())
                 || manager.snapshot_path(&id).ok().is_some_and(|p| p.exists())
                 || manager.legacy_path(&id).ok().is_some_and(|p| p.exists());
@@ -264,16 +254,13 @@ pub fn spawn_native_runtime_for_session_deferred_with_preprocessor(
         let (runtime, _) = match runtime {
             Ok(runtime) => runtime,
             Err(error)
-                if matches!(
-                    error,
-                    zap_coding::RuntimeStartError::SessionInUse { .. }
-                ) || error.to_string().contains("already in use") =>
+                if matches!(error, zap_coding::RuntimeStartError::SessionInUse { .. })
+                    || error.to_string().contains("already in use") =>
             {
                 if let Some(handle) =
                     crate::native_live::wait_for_existing_runner_handle(&session_id).await
                 {
-                    state_tx
-                        .send_replace(zap_coding::DeferredRuntimeState::Ready(handle.clone()));
+                    state_tx.send_replace(zap_coding::DeferredRuntimeState::Ready(handle.clone()));
                     let reg =
                         zap_coding::session_runtime_registry::SessionRuntimeRegistry::global();
                     let _ = reg.open_or_attach(session_id.clone(), working_dir.clone());
@@ -332,9 +319,7 @@ pub fn spawn_native_runtime_for_session_deferred_with_preprocessor(
                     return;
                 }
                 let message = error.to_string();
-                state_tx.send_replace(zap_coding::DeferredRuntimeState::Failed(
-                    message.clone(),
-                ));
+                state_tx.send_replace(zap_coding::DeferredRuntimeState::Failed(message.clone()));
                 let _ = send_event(
                     &event_tx,
                     &mut output_sequence,
@@ -364,9 +349,7 @@ pub fn spawn_native_runtime_for_session_deferred_with_preprocessor(
             }
             Err(error) => {
                 let message = error.to_string();
-                state_tx.send_replace(zap_coding::DeferredRuntimeState::Failed(
-                    message.clone(),
-                ));
+                state_tx.send_replace(zap_coding::DeferredRuntimeState::Failed(message.clone()));
                 let _ = send_event(
                     &event_tx,
                     &mut output_sequence,
@@ -508,10 +491,7 @@ mod tests {
             _active_model: String,
             _supports_vision: bool,
             _session_id: Option<String>,
-        ) -> (
-            zap_coding::UserInput,
-            Option<zap_coding::VisionNotice>,
-        ) {
+        ) -> (zap_coding::UserInput, Option<zap_coding::VisionNotice>) {
             self.called
                 .store(true, std::sync::atomic::Ordering::Release);
             (
@@ -617,16 +597,14 @@ mod tests {
         ));
 
         control_tx
-            .send(zap_coding::DriverCommand::Submit(
-                zap_coding::UserInput {
-                    id: None,
-                    text: "inspect".into(),
-                    images: vec![zap_coding::ImageContent {
-                        media_type: "image/png".into(),
-                        data: "AAAA".into(),
-                    }],
-                },
-            ))
+            .send(zap_coding::DriverCommand::Submit(zap_coding::UserInput {
+                id: None,
+                text: "inspect".into(),
+                images: vec![zap_coding::ImageContent {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                }],
+            }))
             .unwrap();
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -686,12 +664,8 @@ mod tests {
             "a second view must attach the unique runtime instead of failing occupancy"
         );
 
-        first_tx
-            .send(zap_coding::DriverCommand::Shutdown)
-            .unwrap();
-        second_tx
-            .send(zap_coding::DriverCommand::Shutdown)
-            .unwrap();
+        first_tx.send(zap_coding::DriverCommand::Shutdown).unwrap();
+        second_tx.send(zap_coding::DriverCommand::Shutdown).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), first_tx.closed())
             .await
             .unwrap();

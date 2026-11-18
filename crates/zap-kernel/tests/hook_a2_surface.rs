@@ -14,6 +14,7 @@
 //!     telemetry/datalog/cache-RCA sees the FINAL outgoing request.
 
 use async_trait::async_trait;
+use std::sync::{Arc, Mutex};
 use zap_kernel::agent::{Agent, AgentHandle};
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::hook::{HookChain, LifecycleHooks, NoopHooks, TurnCtx};
@@ -22,7 +23,6 @@ use zap_kernel::provider::ChatOptions;
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{EchoTool, RecordingProvider};
 use zap_kernel::tool::{ToolCall, ToolDef, ToolRegistry};
-use std::sync::{Arc, Mutex};
 
 const PERSONA: &str = "you are a neutral test agent";
 

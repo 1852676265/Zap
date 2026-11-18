@@ -301,8 +301,8 @@ mod tests {
     fn expands_leading_tilde_to_home() {
         let home = Path::new("/Users/csdn");
         assert_eq!(
-            expand_tilde_with_home("~/.jeikcode/x", Some(home)),
-            Some(PathBuf::from("/Users/csdn/.jeikcode/x"))
+            expand_tilde_with_home("~/.zap/x", Some(home)),
+            Some(PathBuf::from("/Users/csdn/.zap/x"))
         );
         // A bare `~` (and `~/`) is the home dir itself.
         assert_eq!(
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn no_home_declines_expansion() {
         // No resolvable home → decline, so the caller degrades to its relative-join.
-        assert_eq!(expand_tilde_with_home("~/.jeikcode/x", None), None);
+        assert_eq!(expand_tilde_with_home("~/.zap/x", None), None);
     }
 
     #[cfg(not(windows))]
@@ -363,8 +363,8 @@ mod tests {
     fn backslash_expands_on_windows() {
         let home = Path::new(r"C:\Users\csdn");
         assert_eq!(
-            expand_tilde_with_home(r"~\.jeikcode\x", Some(home)),
-            Some(PathBuf::from(r"C:\Users\csdn\.jeikcode\x"))
+            expand_tilde_with_home(r"~\.zap\x", Some(home)),
+            Some(PathBuf::from(r"C:\Users\csdn\.zap\x"))
         );
         // Doubled separator must not escape to the drive root.
         assert_eq!(

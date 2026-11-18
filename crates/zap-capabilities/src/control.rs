@@ -6,9 +6,9 @@
 //! project changes. Each family keeps its own standard config file and scope mapping;
 //! this module is the adapter that erases the difference:
 //!
-//! - **MCP**: `$JEIKCODE_HOME/mcp.json` (GLOBAL) + `<project>/.mcp.json` (PROJECT), each
+//! - **MCP**: `$ZAP_HOME/mcp.json` (GLOBAL) + `<project>/.mcp.json` (PROJECT), each
 //!   server's `disabled` key ([`crate::mcp::config`]).
-//! - **Skills**: `$JEIKCODE_HOME/skills.json` (GLOBAL) + `<project>/.jeikcode/skills.json`
+//! - **Skills**: `$ZAP_HOME/skills.json` (GLOBAL) + `<project>/.zap/skills.json`
 //!   (PROJECT), a `disabled` name list ([`crate::skills::controls`]).
 //!
 //! Compiled only when at least one family is present; the endpoint in the daemon layers

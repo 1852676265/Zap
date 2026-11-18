@@ -109,7 +109,7 @@ mod tests {
         MapEnv(kv.iter().copied().collect())
     }
     fn dir() -> PathBuf {
-        PathBuf::from("/tmp/.jeikcode-test")
+        PathBuf::from("/tmp/.zap-test")
     }
 
     #[test]

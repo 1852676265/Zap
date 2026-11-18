@@ -1,6 +1,6 @@
 //! Embedded seeds: rust-best-practices.md, /review command, etc.
 //! Packed at build time into setup-seeds.tar.zst, extracted at first run to
-//! ~/.jeikcode/seeds-cache/<binary-version>/. Subsequent runs hit the cache.
+//! ~/.zap/seeds-cache/<binary-version>/. Subsequent runs hit the cache.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

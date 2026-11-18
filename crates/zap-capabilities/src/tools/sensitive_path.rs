@@ -41,6 +41,8 @@ const SENSITIVE_MARKERS: &[&str] = &[
     "/.config/gcloud",
     ".netrc",
     ".git-credentials",
+    "/.zap/auth.toml",
+    "/.zap/auth/",
     "/.jeikcode/auth.toml",
     "/.jeikcode/auth/",
     "/.docker/config",
@@ -96,9 +98,9 @@ fn matches_a_marker(lowercased: &str) -> bool {
 /// The credential paths under the CONFIGURED config dir, as lowercased
 /// `/`-separated substrings.
 ///
-/// [`SENSITIVE_MARKERS`] hardcodes the `/.jeikcode/…` spelling, which covers the
-/// default location under any home (and the `~/.jeikcode/…` form a model is
-/// likely to write). It matches nothing once `$JEIKCODE_HOME` points elsewhere,
+/// [`SENSITIVE_MARKERS`] hardcodes the `/.zap/…` (and legacy `/.jeikcode/…`) spelling, which covers the
+/// default location under any home (and the `~/.zap/…` form a model is
+/// likely to write). It matches nothing once `$ZAP_HOME` / `$JEIKCODE_HOME` points elsewhere,
 /// so the credentials of exactly the users who moved their config tree would
 /// ride out through a `Safe` read without a prompt. These markers close that.
 ///
@@ -168,7 +170,7 @@ fn home_dir() -> Option<PathBuf> {
 
 /// True iff `path` is the jeikcode credential store under `config_dir`.
 ///
-/// Anchored on the resolved config dir rather than a literal `~/.jeikcode`: with
+/// Anchored on the resolved config dir rather than a literal `~/.zap`: with
 /// `$JEIKCODE_HOME` set, the old form guarded a path that does not exist while
 /// the real `auth.toml` stayed unguarded. Pure (dir passed in) so the rule is
 /// testable without mutating the process-global env.
@@ -410,6 +412,7 @@ fn codegraph_sensitive_match(cwd: &Path, target: &Path) -> bool {
     for name in [".codegraphignore.graph", ".codegraignore.graph"] {
         for path in [
             cwd.join(name),
+            cwd.join(".zap").join(name),
             cwd.join(".jeikcode").join(name),
             cfg.join(name),
         ] {
@@ -620,6 +623,15 @@ mod tests {
             "real secret variant"
         );
         assert!(references_sensitive_path(
+            r#"{"file_path":"/home/u/.zap/auth.toml"}"#
+        ));
+        assert!(references_sensitive_path(
+            r#"{"command":"cat ~/.zap/auth.toml"}"#
+        ));
+        assert!(references_sensitive_path(
+            r#"{"file_path":"C:\\Users\\u\\.zap\\auth.toml"}"#
+        ));
+        assert!(references_sensitive_path(
             r#"{"file_path":"/home/u/.jeikcode/auth.toml"}"#
         ));
         assert!(references_sensitive_path(
@@ -782,8 +794,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn code_explore_sensitive_path_through_symlink_requires_approval() {
-        use zap_kernel::tool::{ToolContext, ToolResult};
         use std::os::unix::fs::symlink;
+        use zap_kernel::tool::{ToolContext, ToolResult};
 
         let ws = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -862,16 +874,16 @@ mod tests {
         // path is an ordinary file. `SENSITIVE_MARKERS` still covers the raw-arg
         // spelling — see `the_default_credential_markers_survive_relocation`.
         assert!(!is_credential_path(
-            Path::new("/home/u/.jeikcode/auth.toml"),
+            Path::new("/home/u/.zap/auth.toml"),
             moved
         ));
         // Prefix-of-a-name must not count: `auth.toml.bak` is a different file,
         // and `authors/` is not the credential dir.
         assert!(!is_credential_path(Path::new("/opt/ac/authors"), moved));
 
-        let default = Path::new("/home/u/.jeikcode");
+        let default = Path::new("/home/u/.zap");
         assert!(is_credential_path(
-            Path::new("/home/u/.jeikcode/auth.toml"),
+            Path::new("/home/u/.zap/auth.toml"),
             default
         ));
     }
@@ -904,7 +916,7 @@ mod tests {
     fn a_relocated_credential_path_is_flagged_in_raw_args() {
         let dir = crate::paths::config_dir();
         assert!(
-            !dir.to_string_lossy().contains(".jeikcode"),
+            !dir.to_string_lossy().contains(".zap") && !dir.to_string_lossy().contains(".jeikcode"),
             "precondition: the harness must have moved the config dir off the \
              default, else the const markers would carry this test — got {}",
             dir.display()
@@ -933,6 +945,12 @@ mod tests {
     /// a prompt whatever `$JEIKCODE_HOME` says.
     #[test]
     fn the_default_credential_markers_survive_relocation() {
+        assert!(references_sensitive_path(
+            r#"{"file_path":"/home/u/.zap/auth.toml"}"#
+        ));
+        assert!(references_sensitive_path(
+            r#"{"command":"cat ~/.zap/auth/token.json"}"#
+        ));
         assert!(references_sensitive_path(
             r#"{"file_path":"/home/u/.jeikcode/auth.toml"}"#
         ));

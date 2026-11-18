@@ -8,11 +8,11 @@
 
 | 层级 | 配置文件路径（按顺序匹配首个命中项） | 注入块 | 适用场景与差异说明 |
 | :--- | :--- | :--- | :--- |
-| **1. 全局层** | `~/.jeikcode/AGENTS.md`<br>`~/.jeikcode/JEIKCODE.md` | `<user_preferences>` | 全局跨项目个人偏好。 |
-| **2. 项目层** | `1. AGENTS.md`<br>`2. .jeikcode.md`<br>`3. JEIKCODE.md`<br>`4. CLAUDE.md`<br>`5. claude.md` | `<project_instructions>` | **项目核心开发规范**（架构边界、代码风格、提交规范）。建议提交至 Git 仓库，团队共享。 |
+| **1. 全局层** | `~/.zap/AGENTS.md`<br>`~/.zap/ZAP.md` | `<user_preferences>` | 全局跨项目个人偏好。 |
+| **2. 项目层** | `1. AGENTS.md`<br>`2. .zap.md`<br>`3. ZAP.md`<br>`4. CLAUDE.md`<br>`5. claude.md` | `<project_instructions>` | **项目核心开发规范**（架构边界、代码风格、提交规范）。建议提交至 Git 仓库，团队共享。 |
 
 > 优先级：不冲突时三套规则（全局偏好 / 项目指令 / system 默认）同时生效；冲突时 **项目指令 >> memory > 用户偏好 > system 规则**。优先级与审查边界统一由 sys-1 表达，两个指令块不再重复前导说明。
-> （原 `.jeikcode.user.md` 用户层已移除；核心安全网关与破坏性操作确认门不可被覆盖。）
+> （原 `.zap.user.md` 用户层已移除；核心安全网关与破坏性操作确认门不可被覆盖。）
 
 ---
 
@@ -22,11 +22,11 @@
 
 | 知识包类型 | 候选文件路径（按顺序首个命中即停） | 作用 |
 | :--- | :--- | :--- |
-| **业务名词表 (Glossary)** | `.jeikcode/glossary.md`<br>`docs/glossary.md`<br>`glossary.md` | 业务黑话与专业名词映射到代码符号/类名。 |
-| **业务规则 (Rules)** | `.jeikcode/rules.md`<br>`docs/rules.md`<br>`rules.md` | 业务逻辑、审批流与状态机等硬性规则约束。 |
-| **数据库字典 (DB Words)** | `.jeikcode/dbwords.md`<br>`docs/dbwords.md`<br>`dbwords.md` | 数据表名、字段含义与关联关系说明。 |
+| **业务名词表 (Glossary)** | `.zap/glossary.md`<br>`docs/glossary.md`<br>`glossary.md` | 业务黑话与专业名词映射到代码符号/类名。 |
+| **业务规则 (Rules)** | `.zap/rules.md`<br>`docs/rules.md`<br>`rules.md` | 业务逻辑、审批流与状态机等硬性规则约束。 |
+| **数据库字典 (DB Words)** | `.zap/dbwords.md`<br>`docs/dbwords.md`<br>`dbwords.md` | 数据表名、字段含义与关联关系说明。 |
 
-- **命中规则差异**：知识包按表格顺序**首个匹配即停**。例如找到 `.jeikcode/glossary.md` 后即停止检索，不会合并 `docs/glossary.md`。
+- **命中规则差异**：知识包按表格顺序**首个匹配即停**。例如找到 `.zap/glossary.md` 后即停止检索，不会合并 `docs/glossary.md`。
 
 ---
 
@@ -34,10 +34,10 @@
 
 | 扩展项 | 放置路径 |
 | :--- | :--- |
-| **项目技能** | `<workspace>/.skills/<skill-name>/SKILL.md` 或 `<workspace>/.jeikcode/skills/<skill-name>/SKILL.md` |
-| **提问包装** | `<workspace>/.jeikcode/user-wrap.md` 或 `<workspace>/user-wrap.md` |
+| **项目技能** | `<workspace>/.skills/<skill-name>/SKILL.md` 或 `<workspace>/.zap/skills/<skill-name>/SKILL.md` |
+| **提问包装** | `<workspace>/.zap/user-wrap.md` 或 `<workspace>/user-wrap.md` |
 | **专属 MCP** | `<workspace>/.mcp.json` |
-| **专属词林** | `<workspace>/.jeikcode/thesaurus/*.txt` |
+| **专属词林** | `<workspace>/.zap/thesaurus/*.txt` |
 | **索引/搜索忽略** | `<workspace>/.codegraphignore`（构建符号图谱与 glob/grep 默认过滤的噪声规则；`include_ignored=true` 可打开） |
 | **敏感凭据规则（图谱 + 搜索默认排除）** | `<workspace>/.codegraphignore.graph`（`.env`、密钥、SSH 等敏感凭据图谱与 glob/grep 默认都不返回；`include_sensitive=true` 经审批后可搜索） |
 
@@ -48,7 +48,7 @@
 ```text
 my-project/
 ├── AGENTS.md                 # 项目架构边界与开发约束
-├── .jeikcode/
+├── .zap/
 │   ├── user-wrap.md          # 专属提问包装
 │   ├── rules.md              # 业务规则与状态机约束
 │   ├── glossary.md           # 业务术语表

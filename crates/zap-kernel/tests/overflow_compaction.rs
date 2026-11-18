@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use std::sync::{Arc, Mutex};
 use zap_kernel::agent::{Agent, AutoRespond};
 use zap_kernel::message::{
     CompactTrigger, CompactionPlan, CompactionStrategy, CompactionView, Message, SessionSnapshot,
@@ -11,7 +12,6 @@ use zap_kernel::message::{
 use zap_kernel::provider::{ChatOptions, LlmProvider};
 use zap_kernel::stream::{ProviderError, StreamEvent};
 use zap_kernel::tool::{ToolDef, ToolRegistry};
-use std::sync::{Arc, Mutex};
 
 /// Overflows whenever the incoming request carries more than `max` messages; otherwise
 /// returns a clean one-line answer. Records the message count of every call.

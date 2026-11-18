@@ -166,9 +166,7 @@ fn exec_native_undo(session: NativeCommandSession, arg: &str) -> anyhow::Result<
     let available = expected_snapshot
         .messages
         .iter()
-        .filter(|message| {
-            message.role == zap_kernel::message::Role::User && !message.synthetic
-        })
+        .filter(|message| message.role == zap_kernel::message::Role::User && !message.synthetic)
         .count();
     if available == 0 {
         return Ok(CommandResult::Undo { undone: 0 });
@@ -369,8 +367,7 @@ async fn exec_native_compact(
     telemetry: Arc<zap_telemetry::Telemetry>,
     cancellation: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<NativeCompactOutcome> {
-    let config =
-        zap_config::config::Config::load(&zap_config::config::Config::default_path())?;
+    let config = zap_config::config::Config::load(&zap_config::config::Config::default_path())?;
     let resolved = crate::live_api::resolve_provider_name(&config, provider_name);
     // Validate the provider up front for a clean error (the old core path did
     // `providers.get(...).ok_or("Provider not found")`); without this a missing
@@ -492,8 +489,7 @@ async fn exec_context(
     // provider reported on the last assistant turn, projected onto the CURRENT
     // provider window. No parallel core tool-assembly (which diverged from the
     // native turn's actual tools/prompt and produced misleading per-zone numbers).
-    let config =
-        zap_config::config::Config::load(&zap_config::config::Config::default_path())?;
+    let config = zap_config::config::Config::load(&zap_config::config::Config::default_path())?;
     let resolved = crate::live_api::resolve_provider_name(&config, provider);
     let provider_config = config
         .provider_config_for_selection(&resolved)
@@ -1318,7 +1314,7 @@ mod tests {
 
     #[test]
     fn remember_then_memory_roundtrip_project_scope() {
-        // hermetic：project 作用域写到 working_dir/.jeikcode/memory.md
+        // hermetic：project 作用域写到 working_dir/.zap/memory.md
         let dir = tempfile::tempdir().unwrap();
         let wd = dir.path();
         exec_remember(wd, "阿童木用 Rust 写").unwrap();

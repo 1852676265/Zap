@@ -4,7 +4,7 @@
 //! - Unicode/CJK-aware tokenization & N-gram sliding window
 //! - Dense Semantic Vector Space (128-dim subword & semantic root embeddings)
 //! - Cosine similarity calculation between Query Vector and Code/Doc Vector
-//! - Dynamic thesaurus loader: loads user-editable `<dir>/.jeikcode/thesaurus/*.txt` files
+//! - Dynamic thesaurus loader: loads user-editable `<dir>/.zap/thesaurus/*.txt` files
 //! - Simple `=` syntax support: `中文词1, 中文词2 = en_word1, en_word2` (1:1, 1:N, N:1, N:M)
 //! - Preloaded rich domain thesaurus for E-Commerce, Admin Systems, AI/Agent, Medical, Robotics, Full-Stack
 //! - Hybrid retrieval: Lexical + Thesaurus + Dense Vector Cosine Matching
@@ -34,7 +34,7 @@ impl DynamicThesaurus {
         dt
     }
 
-    /// Load from `.jeikcode/thesaurus` directory in workspace or user home.
+    /// Load from `.zap/thesaurus` directory in workspace or user home.
     pub fn load_from_dir(&mut self, dir: &Path) {
         if !dir.is_dir() {
             return;
@@ -877,7 +877,7 @@ mod tests {
         );
     }
 
-    /// The same `中文 = 英文` lines shipped in `~/.jeikcode/thesaurus/*.txt`
+    /// The same `中文 = 英文` lines shipped in `~/.zap/thesaurus/*.txt`
     /// (the user-editable external thesaurus — NOT baked into the binary). The
     /// embedded defaults deliberately do NOT include these generic verbs, so
     /// the boost below comes purely from the external format.
@@ -927,7 +927,7 @@ mod tests {
     }
 
     /// REGRESSION: external-thesaurus lines (what a user drops into
-    /// `~/.jeikcode/thesaurus/*.txt`) MUST lift lexically-disjoint semantic
+    /// `~/.zap/thesaurus/*.txt`) MUST lift lexically-disjoint semantic
     /// matches across the code_explore floors (text_match >= 8.0 → raw >= 12.0,
     /// plus the `has_genuine_match_anchor` lexical anchor). 25.0 is comfortably
     /// above those floors while far below exact-hit scores, so this catches
@@ -959,7 +959,7 @@ mod tests {
     }
 
     /// REGRESSION: `load_from_dir` — the actual production path that reads
-    /// `~/.jeikcode/thesaurus/*.txt` — must pick up the same generic verbs from
+    /// `~/.zap/thesaurus/*.txt` — must pick up the same generic verbs from
     /// a `.txt` file on disk (verifies the external-thesaurus loading seam, not
     /// just `parse_and_append`).
     #[test]

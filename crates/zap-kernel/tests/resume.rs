@@ -14,13 +14,13 @@
 //!   * an UNSUPPORTED snapshot version yields an `AgentEvent::Warning` and an empty
 //!     start (no panic) — the forward-compat seam.
 
+use std::sync::Arc;
 use zap_kernel::agent::{Agent, AgentHandle};
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::message::{Message, Role, SessionSnapshot};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{EchoTool, RecordingProvider};
 use zap_kernel::tool::{ToolCall, ToolRegistry};
-use std::sync::Arc;
 
 const PERSONA: &str = "you are a neutral test agent";
 
@@ -485,9 +485,9 @@ async fn unsupported_snapshot_fallback_seeds_persona_like_fresh() {
 // across the resume boundary.
 #[tokio::test]
 async fn resume_continues_turn_id_sequence() {
+    use std::sync::Mutex;
     use zap_kernel::hook::{LifecycleHooks, TurnCtx};
     use zap_kernel::message::Conversation;
-    use std::sync::Mutex;
 
     struct TurnIdRecorder(Arc<Mutex<Vec<(u64, u64)>>>);
     #[async_trait::async_trait]
@@ -577,9 +577,9 @@ async fn resume_continues_turn_id_sequence() {
 // default 0) still resumes monotonically via the derive-from-meta fallback.
 #[tokio::test]
 async fn old_snapshot_without_counter_fields_resumes_monotonically() {
+    use std::sync::Mutex;
     use zap_kernel::hook::{LifecycleHooks, TurnCtx};
     use zap_kernel::message::Conversation;
-    use std::sync::Mutex;
 
     struct TurnIdRecorder(Arc<Mutex<Vec<u64>>>);
     #[async_trait::async_trait]

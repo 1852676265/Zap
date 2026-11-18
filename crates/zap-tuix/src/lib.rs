@@ -46,9 +46,9 @@ use crossterm::{
     },
     execute,
 };
-use zap_config::config::Config;
 use std::io;
 use tokio::sync::mpsc;
+use zap_config::config::Config;
 
 use crate::commands::CommandRegistry;
 pub use crate::event_loop::bg_runtime::RuntimeEventPayload;
@@ -760,8 +760,7 @@ pub async fn run(
                 // degrade (no askpass) rather than crashing the TUI.
                 let script_result = std::env::current_exe().ok().and_then(|exe| {
                     env.sock_path.parent().and_then(|dir| {
-                        zap_capabilities::askpass::wrapper::write_askpass_script(&exe, dir)
-                            .ok()
+                        zap_capabilities::askpass::wrapper::write_askpass_script(&exe, dir).ok()
                     })
                 });
                 if let Some(script) = script_result {
@@ -934,9 +933,8 @@ mod panic_restore_tests {
 
     #[test]
     fn automatic_history_replay_cap_is_below_retained_memory_limit() {
-        let cap =
-            resolve_history_replay_max_rows(&zap_config::Config::default(), &test_caps())
-                .expect("automatic replay must stay bounded");
+        let cap = resolve_history_replay_max_rows(&zap_config::Config::default(), &test_caps())
+            .expect("automatic replay must stay bounded");
         assert!(cap < crate::render::retained::MAX_SCROLLBACK_ROWS);
     }
 

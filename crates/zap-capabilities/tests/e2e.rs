@@ -189,10 +189,10 @@ async fn live_ollama_smoke_streams_text_and_done() {
 /// on_request, response via on_model_response), not via any adapter-specific code.
 #[tokio::test]
 async fn live_agent_turn_loop_logs_via_hook() {
+    use std::sync::Arc;
     use zap_capabilities::hooks::WireLogHooks;
     use zap_kernel::agent::{Agent, AutoRespond};
     use zap_kernel::tool::ToolRegistry;
-    use std::sync::Arc;
 
     let cfg = OpenAiCompatConfig::new(
         env("JEIKCODE_LIVE_API_KEY"),
@@ -294,10 +294,10 @@ async fn live_smoke_tool_call_assembles() {
 /// Requires JEIKCODE_LIVE_MODEL to be a `deepseek-v4*` model (Include policy).
 #[tokio::test]
 async fn e2e_multi_round_reasoning_roundtrip_does_not_400() {
+    use std::sync::{Arc, Mutex};
     use zap_capabilities::hooks::WireLogHooks;
     use zap_kernel::agent::{Agent, AutoRespond};
     use zap_kernel::tool::{Tool, ToolContext, ToolRegistry, ToolResult};
-    use std::sync::{Arc, Mutex};
 
     struct GetTimeTool;
     #[async_trait::async_trait]

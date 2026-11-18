@@ -216,14 +216,26 @@ pub async fn handle_plugin_rpc(
     let payload = req.payload;
 
     match action {
-        a if a.starts_with("neural:") => match crate::neural_memory::handle_rpc(a, &payload) {
-            Ok(val) => Json(val).into_response(),
-            Err(err) => (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "success": false, "error": err })),
-            )
-                .into_response(),
-        },
+        a if a.starts_with("neural:") => {
+            let act = a.to_string();
+            let res = tokio::task::spawn_blocking(move || {
+                crate::neural_memory::handle_rpc(&act, &payload)
+            })
+            .await;
+            match res {
+                Ok(Ok(val)) => Json(val).into_response(),
+                Ok(Err(err)) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "success": false, "error": err })),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "success": false, "error": format!("RPC task error: {err}") })),
+                )
+                    .into_response(),
+            }
+        }
 
         "storage:get" => {
             let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("");

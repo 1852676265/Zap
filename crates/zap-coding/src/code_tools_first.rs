@@ -11,14 +11,14 @@
 //! respawn keeps the same meter.
 
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use zap_capabilities::reminder::system_reminder;
 use zap_kernel::hook::LifecycleHooks;
 use zap_kernel::message::Conversation;
 use zap_kernel::middleware::{AfterOutcome, ToolMiddleware};
 use zap_kernel::tool::{Tool, ToolResult};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 const WANDER_WINDOW: u8 = 10;
 const WANDER_NUDGE_AT: u8 = 8;
@@ -124,8 +124,8 @@ impl ToolMiddleware for CodeToolsFirstHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::ToolContext;
     use serde_json::json;
+    use zap_kernel::tool::ToolContext;
 
     struct Named(&'static str);
 

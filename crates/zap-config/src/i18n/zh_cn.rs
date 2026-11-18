@@ -699,7 +699,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::HelpCustomNone =>
             "    （无）\n\n".into(),
         Msg::HelpCustomCreateHint =>
-            "  创建方式：~/.jeikcode/commands/<名称>.md 或 .jeikcode/commands/<名称>.md\n".into(),
+            "  创建方式：~/.zap/commands/<名称>.md 或 .zap/commands/<名称>.md\n".into(),
         Msg::HelpSourceGlobal => "全局".into(),
         Msg::HelpSourceProject => "项目".into(),
 
@@ -812,11 +812,11 @@ Msg::PluginMgrInstallingLabel => "安装中…".into(),
         Msg::PluginMgrRemoveMarketplaceNo => "否，保留".into(),
         Msg::PluginMgrRemoveMarketplaceHint => "↑/↓ 选择 · Enter 确认 · Esc 取消".into(),
  Msg::PluginScopeUser => "为你安装（用户级）".into(),
-Msg::PluginScopeUserDesc => "~/.jeikcode/plugins — 所有项目可见".into(),
+Msg::PluginScopeUserDesc => "~/.zap/plugins — 所有项目可见".into(),
 Msg::PluginScopeProject => "为所有协作者安装（项目级）".into(),
-Msg::PluginScopeProjectDesc => ".jeikcode/plugins — 通过 git 共享".into(),
+Msg::PluginScopeProjectDesc => ".zap/plugins — 通过 git 共享".into(),
 Msg::PluginScopeLocal => "仅在本仓库为你安装（本地级）".into(),
-Msg::PluginScopeLocalDesc => ".jeikcode/plugins/local — 不提交到 git".into(),
+Msg::PluginScopeLocalDesc => ".zap/plugins/local — 不提交到 git".into(),
 Msg::PluginScopeHint => "↑↓ 选择范围 · Enter 确认 · Esc 返回".into(),
 Msg::PluginScopeUserShort => "用户级".into(),
 Msg::PluginScopeProjectShort => "项目级".into(),
@@ -1063,7 +1063,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
              \u{20}\u{20}/goal clear           停止当前目标（别名：stop、off、reset、none、cancel）\n  \
              \u{20}\u{20}/goal help            显示本帮助\n  \
              说明：\n  \
-             \u{20}\u{20}- 每轮由一个快速模型评估；通过 ~/.jeikcode/config.toml 中的 [providers] +\n  \
+             \u{20}\u{20}- 每轮由一个快速模型评估；通过 ~/.zap/config.toml 中的 [providers] +\n  \
              \u{20}\u{20}\u{20}\u{20}evaluator_provider 配置。\n  \
              \u{20}\u{20}- 没有内置的轮次 / 时间上限——请在条件文本中自行表达预算\n  \
              \u{20}\u{20}\u{20}\u{20}（例如 \"或在 20 轮后停止\"）。Claude Code 的 /goal 也是这样工作的。\n  \
@@ -1190,7 +1190,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::CliAboutTelemetry => "遥测控制".into(),
         Msg::CliAboutPlugin => "管理技能/命令插件".into(),
         Msg::CliAboutUninstall => "卸载 JeikCode。无参数时交互询问是否保留用户配置；simple 只删程序；all 全部删除。详细教程：https://jeikcode.top/zh/guide/updates.html".into(),
-        Msg::CliAboutSetup => "重新初始化 JeikCode 环境与内置配置到 ~/.jeikcode/".into(),
+        Msg::CliAboutSetup => "重新初始化 JeikCode 环境与内置配置到 ~/.zap/".into(),
         Msg::CliAboutHooks => "管理钩子（列表、测试、启用/禁用）".into(),
         Msg::CliAboutHooksList => "列出所有已加载钩子及其状态".into(),
         Msg::CliAboutHooksTest => "按名称测试指定钩子".into(),
@@ -1231,8 +1231,8 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::CliHelpPortWebui => "端口（默认：13457）".into(),
         Msg::CliHelpHost => "绑定地址（默认：127.0.0.1）".into(),
         Msg::CliHelpUninstallYes => "跳过提示；使用每组的默认决定".into(),
-        Msg::CliHelpUninstallPurge => "完全清除 ~/.jeikcode/".into(),
-        Msg::CliHelpUninstallKeepData => "完全保留 ~/.jeikcode/".into(),
+        Msg::CliHelpUninstallPurge => "完全清除 ~/.zap/".into(),
+        Msg::CliHelpUninstallKeepData => "完全保留 ~/.zap/".into(),
         Msg::CliHelpUninstallDryRun => "仅打印计划；不执行操作".into(),
         Msg::CliAboutUninstallSimple => "只删除程序和 PATH 项，保留用户配置。无交互。".into(),
         Msg::CliAboutUninstallAll => "删除程序、PATH 项和全部用户配置。无交互。".into(),
@@ -1264,7 +1264,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::UninstallGroupBinary => "[1] 程序与 PATH 项".into(),
         Msg::UninstallGroupCredentials => "[2] 凭据与全局配置".into(),
         Msg::UninstallGroupState => "[3] 本地状态与扩展".into(),
-        Msg::CliHelpMcpGlobal => "写入 ~/.jeikcode/mcp.json 而非 <dir>/.mcp.json".into(),
+        Msg::CliHelpMcpGlobal => "写入 ~/.zap/mcp.json 而非 <dir>/.mcp.json".into(),
         Msg::CliHelpMcpDir => "项目 .mcp.json 的目录".into(),
         Msg::CliHelpMcpName => "服务器键名".into(),
         Msg::CliHelpHooksTestName => "要测试的钩子名称".into(),

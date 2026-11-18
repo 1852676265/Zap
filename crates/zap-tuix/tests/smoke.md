@@ -58,7 +58,7 @@ Manual acceptance after each build. All items must pass before considering the r
 ## History
 
 - [ ] After exit + re-enter, `↑` recalls prior messages
-- [ ] `~/.jeikcode/history` file exists and is readable
+- [ ] `~/.zap/history` file exists and is readable
 - [ ] Consecutive duplicate messages are collapsed
 
 ## Pipe / plain mode

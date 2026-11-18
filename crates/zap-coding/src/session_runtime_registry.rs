@@ -386,8 +386,7 @@ fn activity_from_runtime_event(
         | CodingRuntimeEvent::Agent(AgentEvent::ToolResult { .. })
         | CodingRuntimeEvent::Agent(AgentEvent::Reasoning(_)) => RuntimeActivity::Running,
         CodingRuntimeEvent::Request(request) => {
-            if request.kind
-                == zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND
+            if request.kind == zap_capabilities::tools::request_user_input::REQUEST_USER_INPUT_KIND
             {
                 RuntimeActivity::WaitingUserInput
             } else {

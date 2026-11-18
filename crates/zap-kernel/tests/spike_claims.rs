@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use zap_kernel::agent::{Agent, AutoRespond};
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::message::{Message, Role};
@@ -8,7 +9,6 @@ use zap_kernel::testkit::{
     RedactHook, RejectPromptHook, RiskyWriteTool, RoundBudgetHook, TruncateMiddleware,
 };
 use zap_kernel::tool::{ToolCall, ToolRegistry};
-use std::sync::Arc;
 
 // CLAIM 1: a turn runs with NO persona and NO middleware; a safe tool executes;
 // the kernel emits no Request.
@@ -1226,9 +1226,9 @@ async fn signed_reasoning_blocks_are_finalized_per_signature_in_order() {
 #[tokio::test]
 async fn shared_cwd_change_is_reflected_in_a_later_tool_call() {
     use async_trait::async_trait;
-    use zap_kernel::tool::{Tool, ToolContext, ToolResult};
     use std::path::PathBuf;
     use std::sync::{Mutex, RwLock};
+    use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
     // Writes a fixed target into the shared cwd handle.
     struct SetCwd {

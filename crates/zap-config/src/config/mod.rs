@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::proxy::ProxyConfig;
-use zap_telemetry::TelemetryConfig;
 use provider::{ModelProfileConfig, ProviderAccountConfig, ProviderConfig, ResolvedModelConfig};
+use zap_telemetry::TelemetryConfig;
 
 // DEFAULT_SYSTEM_PROMPT removed — single source of truth is now
 // config/prompt_sections.rs::UNIFIED_PROMPT (~500 tok).
@@ -218,7 +218,7 @@ pub fn append_long_bash_command_keyword_at(path: &Path, keyword: &str) -> Result
     Ok(true)
 }
 
-/// Append to the user `~/.jeikcode/config.toml`.
+/// Append to the user `~/.zap/config.toml`.
 pub fn append_long_bash_command_keyword(keyword: &str) -> Result<bool> {
     append_long_bash_command_keyword_at(&Config::default_path(), keyword)
 }
@@ -304,7 +304,7 @@ pub struct McpClientConfig {
 }
 
 impl McpClientConfig {
-    /// Load `[mcp]` from `~/.jeikcode/config.toml`, else defaults.
+    /// Load `[mcp]` from `~/.zap/config.toml`, else defaults.
     pub fn load_effective() -> Self {
         let path = Config::default_path();
         if path.is_file() {
@@ -376,7 +376,7 @@ impl ToolTimeoutsConfig {
         }
     }
 
-    /// Load `[tools.timeouts]` from `~/.jeikcode/config.toml`, else defaults.
+    /// Load `[tools.timeouts]` from `~/.zap/config.toml`, else defaults.
     pub fn load_effective() -> Self {
         let path = Config::default_path();
         if path.is_file() {
@@ -415,7 +415,7 @@ pub struct ToolOutputConfig {
     pub terminal_max_bytes: Option<usize>,
     /// Tool names whose output must reach the model verbatim (never folded),
     /// regardless of size. Batch whitelist: list any built-in tool name
-    /// (see `.jeikcode/builtin-tools.txt` for the full catalog) and its
+    /// (see `~/.zap/builtin-tools.txt` for the full catalog) and its
     /// results skip the fold preview entirely — like the intrinsic
     /// `never_truncate_result()` contract (code_explore).
     #[serde(
@@ -737,7 +737,7 @@ pub struct PluginConfig {
     /// First-startup behaviour: when true (default), jeikcode runs a
     /// one-time `git clone` of the official `jeikcode-plugins-official`
     /// marketplace into `$JEIKCODE_HOME/plugins/marketplaces/`. A marker
-    /// file (`~/.jeikcode/.plugin_bootstrap_v2`) is touched after the
+    /// file (`~/.zap/.plugin_bootstrap_v2`) is touched after the
     /// first attempt — set or unset — so the install fires exactly
     /// once per user. A subsequent `/plugin marketplace remove` is
     /// respected; the marker stays in place and the directory is NOT
@@ -1424,7 +1424,7 @@ pub struct DatalogConfig {
     /// Root directory under which datalog files are written. The per-project
     /// slug (`<basename>-<hash8>`) is always appended underneath, so two
     /// projects never collide. Accepted forms:
-    /// - `None` (or omitted) → `~/.jeikcode/datalog/` (default)
+    /// - `None` (or omitted) → `~/.zap/datalog/` (default)
     /// - Absolute path        → used as-is, not affected by /cd
     /// - `~/...`              → expanded relative to home, not affected by /cd
     /// - Relative path        → resolved against working_dir, follows /cd
@@ -1538,10 +1538,7 @@ pub fn ai_session_naming_enabled(cfg: &Config) -> bool {
     let env_val = std::env::var("ZAP_AI_SESSION_NAMING")
         .or_else(|_| std::env::var("JEIKCODE_AI_SESSION_NAMING"))
         .ok();
-    ai_session_naming_from_parts(
-        env_val.as_deref(),
-        cfg.ui.ai_session_naming,
-    )
+    ai_session_naming_from_parts(env_val.as_deref(), cfg.ui.ai_session_naming)
 }
 
 /// Resolve the effective todo switch: env `ZAP_TODO` / `JEIKCODE_TODO` (0/false/off vs 1/true/on)
@@ -1756,7 +1753,9 @@ fn render_instructions_section() -> String {
     out.push_str("\n# Project instructions — customize AI behavior via Markdown files.\n");
     out.push_str("# Zap loads instructions from three levels (low → high priority):\n");
     out.push_str("#\n");
-    out.push_str("#   1. ~/.zap/ZAP.md (or ~/.jeikcode/JEIKCODE.md) (global — your personal defaults)\n");
+    out.push_str(
+        "#   1. ~/.zap/ZAP.md (or ~/.jeikcode/JEIKCODE.md) (global — your personal defaults)\n",
+    );
     out.push_str(
         "#   2. <project>/.zap.md (or .jeikcode.md) (project — team-shared, commit to git)\n",
     );
@@ -1796,7 +1795,9 @@ fn render_hooks_json_section() -> String {
     out.push_str("#     \"hooks\": {\n");
     out.push_str("#       \"audit-all\": {\n");
     out.push_str("#         \"event\": \"pre_tool_use\",\n");
-    out.push_str("#         \"command\": \"echo \\\"$(date) $ZAP_TOOL_NAME\\\" >> ~/.zap/audit.log\"\n");
+    out.push_str(
+        "#         \"command\": \"echo \\\"$(date) $ZAP_TOOL_NAME\\\" >> ~/.zap/audit.log\"\n",
+    );
     out.push_str("#       },\n");
     out.push_str("#       \"block-rm\": {\n");
     out.push_str("#         \"event\": \"pre_tool_use\",\n");
@@ -1808,7 +1809,9 @@ fn render_hooks_json_section() -> String {
     out.push_str("#   }\n");
     out.push_str("#\n");
     out.push_str("# Events: pre_tool_use, post_tool_use, session_start, session_end\n");
-    out.push_str("# Env vars: ZAP_HOOK_EVENT, ZAP_TOOL_NAME, ZAP_HOOK_CONTEXT (also supports JEIKCODE_*)\n");
+    out.push_str(
+        "# Env vars: ZAP_HOOK_EVENT, ZAP_TOOL_NAME, ZAP_HOOK_CONTEXT (also supports JEIKCODE_*)\n",
+    );
     out.push_str("# PreToolUse stdout: {\"action\":\"allow\"} or {\"action\":\"block\",\"reason\":\"...\"}\n");
     out
 }
@@ -2015,10 +2018,7 @@ impl Config {
                     .or_else(|_| std::env::var("JEIKCODE_HOME"))
                     .ok()
                     .filter(|s| !s.is_empty());
-                Self::resolve_config_dir(
-                    env_home,
-                    crate::util::real_home_dir(),
-                )
+                Self::resolve_config_dir(env_home, crate::util::real_home_dir())
             })
             .clone()
     }
@@ -2112,7 +2112,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let seed = dir.path().join("jeikcode-default-config.toml");
         std::fs::write(&seed, SEED_TOML).unwrap();
-        let target = dir.path().join("home/.jeikcode/config.toml");
+        let target = dir.path().join("home/.zap/config.toml");
 
         let outcome = Config::seed_user_config(&target, Some(&seed));
         assert_eq!(outcome, SeedOutcome::Seeded);
@@ -2563,7 +2563,7 @@ model = "missing-type"
         assert!(rendered.contains("[datalog]"));
         assert!(rendered.contains("enabled = false"));
         assert!(
-            rendered.contains("\ndir = \"~/.jeikcode/datalog\"\n"),
+            rendered.contains("\ndir = \"~/.zap/datalog\"\n"),
             "default must emit the resolved dir as a real, uncommented value: {}",
             rendered
         );
@@ -2591,20 +2591,20 @@ model = "missing-type"
             max_days: 7,
         };
         let rendered = render_datalog_section(&cfg);
-        assert!(rendered.contains("\ndir = \"~/.jeikcode/datalog\"\n"));
+        assert!(rendered.contains("\ndir = \"~/.zap/datalog\"\n"));
     }
 
     #[test]
     fn render_datalog_section_with_dir_emits_real_value() {
         let cfg = DatalogConfig {
             enabled: false,
-            dir: Some("~/.jeikcode/logs".to_string()),
+            dir: Some("~/.zap/logs".to_string()),
             max_total_mb: 512,
             max_days: 7,
         };
         let rendered = render_datalog_section(&cfg);
         assert!(rendered.contains("enabled = false"));
-        assert!(rendered.contains("dir = \"~/.jeikcode/logs\""));
+        assert!(rendered.contains("dir = \"~/.zap/logs\""));
     }
 
     #[test]
@@ -2936,7 +2936,7 @@ model = "missing-type"
     #[test]
     fn parses_default_config_asset_with_hyphen_language() {
         let content = include_str!("../../../zap-cli/assets/default-config.toml");
-        let path = std::path::Path::new("/root/.jeikcode/config.toml");
+        let path = std::path::Path::new("/root/.zap/config.toml");
         let (cfg, warnings) = Config::parse_disk_content_tolerant(content, path).unwrap();
         assert_eq!(cfg.language, Some(crate::locale::Locale::En));
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");

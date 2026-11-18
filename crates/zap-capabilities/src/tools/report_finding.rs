@@ -9,10 +9,10 @@
 
 use super::{err, ok};
 use async_trait::async_trait;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 /// One recorded review finding. `Serialize` so the embedder can emit the aggregate.
 #[derive(Clone, Debug, PartialEq, Serialize)]

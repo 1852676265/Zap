@@ -2,12 +2,12 @@
 //! reasoning content, and a `finish_reason=length` truncation are all first-class
 //! — none silently degrades into an empty SUCCESSFUL turn.
 
+use std::sync::Arc;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::message::{Message, Role};
 use zap_kernel::stream::{ProviderError, StreamEvent};
 use zap_kernel::testkit::{MockProvider, RecorderHook, ScriptedProvider};
 use zap_kernel::tool::ToolRegistry;
-use std::sync::Arc;
 
 // A `chat_stream` that fails to OPEN (Err) must surface an Error event and a
 // TurnComplete, fire the on_error hook, and NOT fabricate a bogus assistant
@@ -321,9 +321,9 @@ fn spawn_agent(
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use std::sync::atomic::{AtomicU32, Ordering};
 use zap_kernel::provider::ChatOptions;
 use zap_kernel::tool::ToolDef;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A provider whose open FAILS the first `fail_first` times (returning a clone of
 /// `err`), then SUCCEEDS with a content-bearing response (`TextDelta`+`Done`).

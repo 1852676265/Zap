@@ -62,6 +62,9 @@ pub fn scan(binary_path: &Path, jeikcode_dir: &Path) -> Result<Plan> {
         }
 
         for (name, note) in [
+            (".zap.rolling", "self-update rename slot"),
+            (".zap.download", "self-update partial download"),
+            (".zap.writable-probe", "self-update probe leftover"),
             (".jeikcode.rolling", "self-update rename slot"),
             (".jeikcode.download", "self-update partial download"),
             (".jeikcode.writable-probe", "self-update probe leftover"),
@@ -179,9 +182,9 @@ mod tests {
         fs::write(&exe, b"\x7fELF......").unwrap();
         // self-update artifacts
         fs::write(bin_dir.join("jeikcode.bak"), b"old").unwrap();
-        fs::write(bin_dir.join(".jeikcode.rolling"), b"r").unwrap();
+        fs::write(bin_dir.join(".zap.rolling"), b"r").unwrap();
 
-        let data = tmp.path().join(".jeikcode");
+        let data = tmp.path().join(".zap");
         fs::create_dir(&data).unwrap();
         fs::write(data.join("auth.toml"), b"k=1").unwrap();
         fs::write(data.join("config.toml"), b"x=1").unwrap();
@@ -205,7 +208,7 @@ mod tests {
             .collect();
         assert!(bin_paths.contains(&exe));
         assert!(bin_paths.contains(&exe.with_file_name("jeikcode.bak")));
-        assert!(bin_paths.contains(&exe.with_file_name(".jeikcode.rolling")));
+        assert!(bin_paths.contains(&exe.with_file_name(".zap.rolling")));
     }
 
     #[test]

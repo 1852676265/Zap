@@ -290,6 +290,10 @@ pub struct CodingAgentConfig {
     /// no_fold_tools`). Their results reach the model verbatim regardless of
     /// size, like the intrinsic `never_truncate_result()` contract.
     pub tool_output_no_fold_tools: Vec<String>,
+    /// 宿主驱动额外挂载的只读/扩展工具列表（例如 daemon 侧的 `memory_recall`）。
+    pub extra_tools: Vec<Arc<dyn zap_kernel::tool::Tool>>,
+    /// 宿主驱动额外挂载的生命周期 Hook（例如 daemon 侧的 `NeuralMemoryHook`，用于 `pre_request` 瞬态注入）。
+    pub extra_hooks: Vec<Arc<dyn zap_kernel::hook::LifecycleHooks>>,
 }
 
 /// Host-resolved inputs shared by CLI and daemon runtime construction.
@@ -361,6 +365,10 @@ pub struct CodingRuntimeConfig {
     /// When provided and `mcp == true`, the runtime reuses this pre-connected
     /// registry directly rather than spawning fresh MCP client child processes.
     pub shared_mcp_registry: Option<Arc<zap_capabilities::mcp::McpRegistry>>,
+    /// 宿主驱动额外挂载的工具列表（透传给 [`CodingAgentConfig::extra_tools`]）。
+    pub extra_tools: Vec<Arc<dyn zap_kernel::tool::Tool>>,
+    /// 宿主驱动额外挂载的生命周期 Hook（透传给 [`CodingAgentConfig::extra_hooks`]）。
+    pub extra_hooks: Vec<Arc<dyn zap_kernel::hook::LifecycleHooks>>,
 }
 
 impl CodingRuntimeConfig {
@@ -461,6 +469,8 @@ impl CodingRuntimeConfig {
             .or(config.tools.tool_output.terminal_max_bytes),
             tool_output_no_fold_tools: config.tools.tool_output.no_fold_tools.clone(),
             shared_mcp_registry: None,
+            extra_tools: Vec::new(),
+            extra_hooks: Vec::new(),
         }
     }
 
@@ -513,6 +523,8 @@ impl CodingRuntimeConfig {
         config.tool_output_max_bytes = self.tool_output_max_bytes;
         config.tool_output_terminal_max_bytes = self.tool_output_terminal_max_bytes;
         config.tool_output_no_fold_tools = self.tool_output_no_fold_tools.clone();
+        config.extra_tools = self.extra_tools.clone();
+        config.extra_hooks = self.extra_hooks.clone();
         config
     }
 }
@@ -620,10 +632,7 @@ impl TierProvider {
         built
     }
 
-    pub fn set_usage_recorder(
-        &self,
-        recorder: zap_capabilities::session::DetachedUsageRecorder,
-    ) {
+    pub fn set_usage_recorder(&self, recorder: zap_capabilities::session::DetachedUsageRecorder) {
         let mut g = self.inner.lock().unwrap();
         g.usage_recorder = Some(recorder);
         // A model/provider reload may change attribution. Rebuild lazily so a
@@ -829,6 +838,8 @@ impl CodingAgentConfig {
             tool_output_max_bytes: None,
             tool_output_terminal_max_bytes: None,
             tool_output_no_fold_tools: Vec::new(),
+            extra_tools: Vec::new(),
+            extra_hooks: Vec::new(),
         }
     }
 }
@@ -953,10 +964,7 @@ mod tests {
         assert!(!runtime.todo.enabled);
         let agent = runtime.agent_config();
         assert!(!agent.todo.enabled);
-        assert_eq!(
-            agent.todo.eager,
-            zap_config::config::TodoEagerness::Always
-        );
+        assert_eq!(agent.todo.eager, zap_config::config::TodoEagerness::Always);
     }
 
     #[test]

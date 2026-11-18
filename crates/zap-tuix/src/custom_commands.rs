@@ -3,8 +3,8 @@
 // Custom slash-command registry. Users define commands as `.md` files with
 // YAML-style frontmatter in two locations:
 //
-//   1. `$JEIKCODE_HOME/commands/`          — global (apply to every project)
-//   2. `<project>/.jeikcode/commands/`  — project-level (override global
+//   1. `$ZAP_HOME/commands/`            — global (apply to every project)
+//   2. `<project>/.zap/commands/`       — project-level (override global
 //                                          when names collide)
 //
 // Each file has the shape:
@@ -101,8 +101,8 @@ pub struct CustomCommandRegistry {
 }
 
 impl CustomCommandRegistry {
-    /// Scan both global (`$JEIKCODE_HOME/commands/`) and project-level
-    /// (`<project_root>/.jeikcode/commands/`) directories, merging results.
+    /// Scan both global (`$ZAP_HOME/commands/`) and project-level
+    /// (`<project_root>/.zap/commands/`) directories, merging results.
     /// Project entries win on name collision.
     pub fn load(project_root: &Path) -> Self {
         let config_dir = zap_config::config::Config::config_dir();
@@ -111,6 +111,11 @@ impl CustomCommandRegistry {
         Self::load_from_dir(&config_dir.join("commands"), None, &mut commands);
         Self::load_from_dir(
             &project_root.join(".jeikcode/commands"),
+            None,
+            &mut commands,
+        );
+        Self::load_from_dir(
+            &project_root.join(".zap/commands"),
             None,
             &mut commands,
         );
@@ -342,7 +347,7 @@ mod tests {
     #[test]
     fn render_replaces_arguments() {
         let dir = tempfile::tempdir().unwrap();
-        let cmd_dir = dir.path().join(".jeikcode/commands");
+        let cmd_dir = dir.path().join(".zap/commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
         std::fs::write(
             cmd_dir.join("review.md"),
@@ -357,7 +362,7 @@ mod tests {
     #[test]
     fn render_empty_args() {
         let dir = tempfile::tempdir().unwrap();
-        let cmd_dir = dir.path().join(".jeikcode/commands");
+        let cmd_dir = dir.path().join(".zap/commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
         std::fs::write(
             cmd_dir.join("test.md"),
@@ -439,7 +444,7 @@ mod tests {
         // 线程级 home（不再全局写 env）。
         let _home = zap_config::test_util::IsolatedHome::at(home.path());
         let dir = tempfile::tempdir().unwrap();
-        let cmd_dir = dir.path().join(".jeikcode/commands");
+        let cmd_dir = dir.path().join(".zap/commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
         std::fs::write(
             cmd_dir.join("zebra.md"),

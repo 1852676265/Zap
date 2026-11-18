@@ -391,7 +391,7 @@ fn load_config_file(path: &Path, source: McpConfigSource) -> Result<Vec<McpServe
         .with_context(|| format!("Failed to read MCP config from {}", path.display()))?;
 
     // Empty / whitespace-only project files are common (editor created a stub).
-    // Treat them as "no config at this level" so user-level `~/.jeikcode/mcp.json`
+    // Treat them as "no config at this level" so user-level `~/.zap/mcp.json`
     // still loads instead of failing the whole merge.
     if content.trim().is_empty() {
         return Ok(Vec::new());

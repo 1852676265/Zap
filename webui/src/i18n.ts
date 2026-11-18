@@ -459,6 +459,10 @@ const zh = {
   'tool.expandAll': '展开全部',
   'tool.collapseAll': '收起全部',
   'chat.thinking': '思考过程',
+  'chat.thinkingStage1': '正在理解问题并梳理思路',
+  'chat.thinkingStage2': '正在深入推理并拆解细节',
+  'chat.thinkingStage3': '正在校验逻辑并组织回答',
+  'chat.thinkingStageTool': '正在检索上下文与执行步骤',
   'subtask.summary': '子代理 · {done}/{total} 完成 · {running} 运行中 · {pending} 等待 · {failed} 失败',
 
   // Settings panel
@@ -1467,6 +1471,10 @@ export const en: Record<MsgKey, string> = {
   'tool.expandAll': 'Expand all',
   'tool.collapseAll': 'Collapse all',
   'chat.thinking': 'Thinking',
+  'chat.thinkingStage1': 'Understanding your request and planning approach',
+  'chat.thinkingStage2': 'Reasoning through details step by step',
+  'chat.thinkingStage3': 'Verifying logic and structuring response',
+  'chat.thinkingStageTool': 'Gathering context and running steps',
   'subtask.summary': 'Subtasks · {done}/{total} done · {running} running · {pending} pending · {failed} failed',
 
   'settings.title': 'Settings',

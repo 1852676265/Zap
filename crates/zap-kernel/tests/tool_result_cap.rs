@@ -15,11 +15,11 @@
 //! (prefix-cache friendly).
 
 use async_trait::async_trait;
+use std::sync::Arc;
 use zap_kernel::agent::{Agent, AutoRespond};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::RecordingProvider;
 use zap_kernel::tool::{Tool, ToolCall, ToolContext, ToolRegistry, ToolResult};
-use std::sync::Arc;
 
 /// A tool whose `execute` returns a giant `content` (a runaway third-party tool
 /// that does NOT self-cap). `size` bytes of 'a'.

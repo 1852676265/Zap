@@ -17,10 +17,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::Deserialize;
 use zap_kernel::provider::LlmProvider;
 use zap_telemetry::config::{resolve, CliOverride, ProcessEnv, TelemetryConfig};
 use zap_telemetry::Telemetry;
-use serde::Deserialize;
 
 /// How long to wait for the disk queue to drain when flushing on exit.
 pub const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -41,7 +41,7 @@ struct TelFile {
     telemetry: TelemetryConfig,
 }
 
-/// Read the `[telemetry]` section from the config file (default `~/.jeikcode/config.toml`,
+/// Read the `[telemetry]` section from the config file (default `~/.zap/config.toml`,
 /// or `config_override`). Any read/parse failure → defaults — telemetry is non-fatal, exactly
 /// as zap-cli treats it (a broken config must not break `review`/`code`).
 fn load_telemetry_config(config_override: Option<&Path>) -> TelemetryConfig {

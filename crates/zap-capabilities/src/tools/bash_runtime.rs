@@ -5,13 +5,13 @@
 //! (`<id>.bashkw.json`) so `/resume` after a JeikCode restart still sees it.
 //! `config.toml` is only touched when the model passes `global: true`.
 
-use zap_kernel::tool::ProgressSink;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
+use zap_kernel::tool::ProgressSink;
 
 /// Marker in bash output / tool result: the process is still running and the
 /// model must promote or kill it. WebUI/TUI keep the original pane inflight.

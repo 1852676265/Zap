@@ -3,13 +3,13 @@
 //! seam an L2 sub-agent / parallel-edit tool builds on for child-task progress.
 
 use async_trait::async_trait;
+use serde_json::{json, Value};
+use std::sync::Arc;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::MockProvider;
 use zap_kernel::tool::{Tool, ToolCall, ToolContext, ToolRegistry, ToolResult};
-use serde_json::{json, Value};
-use std::sync::Arc;
 
 struct ProgressTool;
 

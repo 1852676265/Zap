@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
 use zap_capabilities::mcp::config::{McpConfigSource, McpServerConfig, McpTransportConfig};
 use zap_capabilities::mcp::{
     ensure_session_mcp_schema, refresh_session_mcp_schema, McpRegistry, McpToolAdapter,
@@ -14,7 +15,6 @@ use zap_capabilities::mcp::{
 };
 use zap_kernel::conformance;
 use zap_kernel::tool::{ProgressSink, RiskLevel, Tool, ToolContext};
-use tokio_util::sync::CancellationToken;
 
 // Redirect JEIKCODE_HOME to a throwaway temp dir before any test in this binary runs,
 // so a test that resolves the user mcp.json without setting its own JEIKCODE_HOME never

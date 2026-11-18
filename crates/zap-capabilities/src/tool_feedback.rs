@@ -6,10 +6,10 @@
 //! model emits bad tool args or wrong paths, feed back **actionable** detail
 //! so the next turn fixes the call instead of retrying blindly.
 
-use zap_kernel::tool::ToolResult;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use zap_kernel::tool::ToolResult;
 
 // ── Structured invalid-arguments ──────────────────────────────────────────
 

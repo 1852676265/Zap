@@ -21,13 +21,13 @@ use super::sign::{RequestSigner, RequestSigningError};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use serde::Deserialize;
+use serde_json::{json, Map, Value};
+use std::time::Duration;
 use zap_kernel::message::{Message, Role};
 use zap_kernel::provider::{ChatOptions, LlmProvider, ReasoningEffort, ToolChoice};
 use zap_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
 use zap_kernel::tool::{ToolCall, ToolDef};
-use serde::Deserialize;
-use serde_json::{json, Map, Value};
-use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Config + provider
@@ -2035,9 +2035,7 @@ mod tests {
         assert!(local.message.contains("auth store unavailable"));
     }
 
-    async fn open_429_request_count(
-        owner: zap_kernel::provider::RateLimitRetryOwner,
-    ) -> usize {
+    async fn open_429_request_count(owner: zap_kernel::provider::RateLimitRetryOwner) -> usize {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))

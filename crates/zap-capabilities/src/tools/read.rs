@@ -7,11 +7,11 @@ use crate::tool_feedback::{format_path_not_found, parse_tool_args};
 use crate::tools::output_artifact::ArtifactStore;
 use async_trait::async_trait;
 use base64::Engine;
-use zap_kernel::message::ImageContent;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+use zap_kernel::message::ImageContent;
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 /// Hard safety ceiling for the current in-memory decoder. Default pagination
 /// controls model-visible output, but decoding still needs the complete file for
@@ -1363,8 +1363,8 @@ fn sanitize_target_snippet(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::ToolContext;
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::ToolContext;
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext {
@@ -1476,14 +1476,11 @@ mod tests {
     #[tokio::test]
     async fn reads_gitignored_upload_store_file() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join(".gitignore"), ".jeikcode_store/\n").unwrap();
-        std::fs::create_dir_all(d.path().join(".jeikcode_store")).unwrap();
-        std::fs::write(d.path().join(".jeikcode_store/notes.md"), "uploaded\n").unwrap();
+        std::fs::write(d.path().join(".gitignore"), ".zap_store/\n").unwrap();
+        std::fs::create_dir_all(d.path().join(".zap_store")).unwrap();
+        std::fs::write(d.path().join(".zap_store/notes.md"), "uploaded\n").unwrap();
         let r = ReadFileTool::default()
-            .execute(
-                r#"{"file_path":".jeikcode_store/notes.md"}"#,
-                &ctx(d.path()),
-            )
+            .execute(r#"{"file_path":".zap_store/notes.md"}"#, &ctx(d.path()))
             .await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("uploaded"), "{}", r.content);

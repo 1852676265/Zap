@@ -2,9 +2,9 @@
 //! match crates/zap-cli/src/uninstall/paths.rs::uninstall_manifest().
 //! Any drift breaks symmetry between the subcommand and fallback scripts.
 
-use zap::uninstall::paths::uninstall_manifest;
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use zap::uninstall::paths::uninstall_manifest;
 
 // Redirect JEIKCODE_HOME to a throwaway temp dir before any test in this binary
 // runs, so tests never persist into the developer's real home. isolate_home is a

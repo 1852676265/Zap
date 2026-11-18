@@ -19,11 +19,11 @@ pub fn is_todo_tool_name(name: &str) -> bool {
 
 use super::{err, ok};
 use async_trait::async_trait;
-use zap_kernel::message::Message;
-use zap_kernel::tool::{Tool, ToolContext, ToolRegistry, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::{Arc, Mutex, Weak};
+use zap_kernel::message::Message;
+use zap_kernel::tool::{Tool, ToolContext, ToolRegistry, ToolResult};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1682,9 +1682,7 @@ pub fn session_sticky_todos(messages: &[Message], turn_running: bool) -> Vec<Tod
 fn current_turn_wrote_todos(messages: &[Message]) -> bool {
     let start = messages
         .iter()
-        .rposition(|message| {
-            message.role == zap_kernel::message::Role::User && !message.synthetic
-        })
+        .rposition(|message| message.role == zap_kernel::message::Role::User && !message.synthetic)
         .map(|index| index + 1)
         .unwrap_or(0);
     messages[start..].iter().any(|message| {
@@ -2532,9 +2530,9 @@ fn summarize_todo_action(v: &serde_json::Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_util::sync::CancellationToken;
     use zap_kernel::message::Message;
     use zap_kernel::tool::ToolCall;
-    use tokio_util::sync::CancellationToken;
 
     fn ctx() -> ToolContext {
         ToolContext {

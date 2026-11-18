@@ -1168,10 +1168,11 @@ pub async fn ensure_headless_runtime(
         &working_dir,
         requested_session_id.as_deref(),
     );
-    crate::neural_memory::apply_session_static_system_append(
+    let recall_tool = crate::neural_memory::apply_session_static_system_append(
         &mut runtime_config,
         requested_session_id.as_deref(),
     );
+    let was_fresh = requested_session_id.is_none();
     let (session_mode, initial_snapshot) = match requested_session_id {
         Some(id) => {
             let snapshot = load_snapshot(&working_dir, &id)?;
@@ -1209,6 +1210,10 @@ pub async fn ensure_headless_runtime(
     let session_id = session
         .map(|session| session.id)
         .ok_or_else(|| "live runtime started without a persistent session".to_string())?;
+    recall_tool.bind_session_id(&session_id);
+    if was_fresh {
+        crate::neural_memory::note_fresh_session_static_agent(&session_id, &working_dir);
+    }
     let binding = bind_after_mcp_ready(
         handle.wait_mcp_ready(zap_capabilities::mcp::FIRST_TURN_SOFT_WAIT),
         || {

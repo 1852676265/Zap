@@ -24,7 +24,7 @@ pub struct BundledFileEntry {
     pub description: &'static str,
 }
 
-/// 全量内置资产列表：包含 ~/.jeikcode 下的所有默认配置文件与提示词目录
+/// 全量内置资产列表：包含 ~/.zap 下的所有默认配置文件与提示词目录
 pub const BUNDLED_ASSETS: &[BundledFileEntry] = &[
     BundledFileEntry {
         relative_path: "prompts/init.yaml",
@@ -123,16 +123,12 @@ pub const BUNDLED_ASSETS: &[BundledFileEntry] = &[
     },
     BundledFileEntry {
         relative_path: "teaches/01_prompts_and_context.md",
-        content: include_str!(
-            "../../zap-capabilities/assets/teaches/01_prompts_and_context.md"
-        ),
+        content: include_str!("../../zap-capabilities/assets/teaches/01_prompts_and_context.md"),
         description: "提示词与上下文指南 (teaches/01_prompts_and_context.md)",
     },
     BundledFileEntry {
         relative_path: "teaches/02_models_and_providers.md",
-        content: include_str!(
-            "../../zap-capabilities/assets/teaches/02_models_and_providers.md"
-        ),
+        content: include_str!("../../zap-capabilities/assets/teaches/02_models_and_providers.md"),
         description: "模型与提供商指南 (teaches/02_models_and_providers.md)",
     },
     BundledFileEntry {
@@ -149,16 +145,12 @@ pub const BUNDLED_ASSETS: &[BundledFileEntry] = &[
     },
     BundledFileEntry {
         relative_path: "teaches/05_tools_and_timeouts.md",
-        content: include_str!(
-            "../../zap-capabilities/assets/teaches/05_tools_and_timeouts.md"
-        ),
+        content: include_str!("../../zap-capabilities/assets/teaches/05_tools_and_timeouts.md"),
         description: "工具超时与策略指南 (teaches/05_tools_and_timeouts.md)",
     },
     BundledFileEntry {
         relative_path: "teaches/06_directories_and_system.md",
-        content: include_str!(
-            "../../zap-capabilities/assets/teaches/06_directories_and_system.md"
-        ),
+        content: include_str!("../../zap-capabilities/assets/teaches/06_directories_and_system.md"),
         description: "系统目录与文件全景指南 (teaches/06_directories_and_system.md)",
     },
     BundledFileEntry {
@@ -170,9 +162,7 @@ pub const BUNDLED_ASSETS: &[BundledFileEntry] = &[
     },
     BundledFileEntry {
         relative_path: "teaches/08_updates_and_releases.md",
-        content: include_str!(
-            "../../zap-capabilities/assets/teaches/08_updates_and_releases.md"
-        ),
+        content: include_str!("../../zap-capabilities/assets/teaches/08_updates_and_releases.md"),
         description: "升级与发版指南 (teaches/08_updates_and_releases.md)",
     },
 ];
@@ -326,7 +316,7 @@ pub fn default_selected_for(relative_path: &str, kind: DiffKind) -> bool {
     }
 }
 
-/// 扫描 ~/.jeikcode 目录下所有涉及的内置非模型配置变更项（新增、更新修改、废弃清理）
+/// 扫描 ~/.zap 目录下所有涉及的内置非模型配置变更项（新增、更新修改、废弃清理）
 pub fn scan_zap_config_diffs(jeikcode_home: &Path) -> Vec<ConfigDiffItem> {
     let mut diffs = Vec::new();
 

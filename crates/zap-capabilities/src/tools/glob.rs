@@ -18,11 +18,11 @@ use super::{err, for_each_project_entry, is_absolute_path, not_found_hint, ok, r
 use crate::tool_feedback::{format_path_not_found, parse_tool_args};
 use async_trait::async_trait;
 use globset::GlobBuilder;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 const DEFAULT_MAX_RESULTS: usize = 300;
 const MAX_RESULTS_CAP: usize = 2000;
@@ -346,7 +346,7 @@ fn run_glob_walk(
     let mut timed_out = false;
     let mut hits: Vec<(String, std::time::SystemTime)> = Vec::new();
     // hidden=false: glob searches hidden files by default. `.gitignore` is not
-    // applied to search; `.jeikcode_store` is always visited.
+    // applied to search; `.zap_store` is always visited.
     for_each_project_entry(
         base,
         false,
@@ -494,8 +494,8 @@ pub(crate) fn split_absolute_base(pattern: &str) -> Option<(PathBuf, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::ToolContext;
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::ToolContext;
 
     #[test]
     fn strips_dot_slash_prefix_before_matching() {
@@ -973,14 +973,10 @@ mod tests {
     async fn finds_gitignored_upload_store() {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join(".git")).unwrap();
-        std::fs::write(
-            d.path().join(".gitignore"),
-            ".jeikcode_store/\nsecret.txt\n",
-        )
-        .unwrap();
+        std::fs::write(d.path().join(".gitignore"), ".zap_store/\nsecret.txt\n").unwrap();
         std::fs::write(d.path().join("secret.txt"), "").unwrap();
-        std::fs::create_dir_all(d.path().join(".jeikcode_store")).unwrap();
-        std::fs::write(d.path().join(".jeikcode_store/notes.md"), "hello").unwrap();
+        std::fs::create_dir_all(d.path().join(".zap_store")).unwrap();
+        std::fs::write(d.path().join(".zap_store/notes.md"), "hello").unwrap();
         std::fs::write(d.path().join("keep.rs"), "").unwrap();
         let r = GlobTool.execute(r#"{"pattern":"*"}"#, &ctx(d.path())).await;
         assert!(!r.is_error, "{}", r.content);

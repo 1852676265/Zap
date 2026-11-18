@@ -1,12 +1,12 @@
-use zap_telemetry::event::*;
-use zap_telemetry::queue::Queue;
-use zap_telemetry::sender::{http::HttpSender, SenderRuntime};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use zap_telemetry::event::*;
+use zap_telemetry::queue::Queue;
+use zap_telemetry::sender::{http::HttpSender, SenderRuntime};
 
 fn rec() -> Record {
     Record {

@@ -2237,6 +2237,10 @@ body {
   min-width: 0;
   background-color: var(--app-primary-background);
   position: relative;
+  contain: layout style;
+  transform: translateZ(0);
+  will-change: scroll-position;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Message column. Without the outline, keep the centered max-width column.
@@ -4832,11 +4836,11 @@ body {
   white-space: nowrap;
 }
 
-/* === Reasoning / thinking block (DeepSeek style: clean, understated disclosure) === */
+/* === Reasoning / thinking block (Soft rounded capsule + live rolling ticker) === */
 .reasoning-block {
-  margin: 6px 0 8px;
+  margin: 4px 0 10px;
   border: none;
-  border-radius: var(--corner-radius-small, 6px);
+  border-radius: 8px;
   background: transparent;
   overflow: hidden;
   max-width: 100%;
@@ -4852,34 +4856,42 @@ body {
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  padding: 3px 8px;
-  min-height: 26px;
-  border: 0;
-  border-radius: var(--corner-radius-small, 6px);
-  background: transparent;
-  color: var(--app-muted-foreground, #8a8f98);
-  font-size: 12px;
+  padding: 5px 11px;
+  min-height: 28px;
+  border: 1px solid var(--zap-thinking-pill-border, rgba(15, 23, 42, 0.045));
+  border-radius: 8px;
+  background: var(--zap-thinking-pill-bg, rgba(15, 23, 42, 0.048));
+  color: var(--app-secondary-foreground, #4b5563);
+  font-size: 12.5px;
   cursor: pointer;
   text-align: left;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
   user-select: none;
 }
-.reasoning-toggle:hover {
-  background: var(--app-list-hover-background, rgba(127, 127, 127, 0.08));
-  color: var(--app-primary-foreground, #e5e7eb);
+.reasoning-toggle.is-non-expandable {
+  cursor: default;
+}
+.reasoning-toggle:not(.is-non-expandable):hover {
+  background: var(--zap-thinking-pill-hover-bg, rgba(15, 23, 42, 0.08));
+  color: var(--app-primary-foreground, #111827);
 }
 .reasoning-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  opacity: 0.8;
+  opacity: 0.85;
   flex-shrink: 0;
+}
+.reasoning-icon.is-live {
+  color: var(--app-brand, #2563eb);
+  opacity: 1;
+  animation: reasoningStarPulse 1.6s ease-in-out infinite;
 }
 .reasoning-label {
   font-weight: 500;
   letter-spacing: 0.01em;
-  color: inherit;
+  color: var(--app-primary-foreground, #1f2937);
   flex-shrink: 0;
 }
 .reasoning-separator {
@@ -4888,14 +4900,85 @@ body {
   flex-shrink: 0;
 }
 .reasoning-summary {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  max-width: min(500px, 52vw);
+  font-size: 12px;
+  font-weight: 400;
+  min-width: 0;
+}
+.reasoning-summary-inner {
   display: inline-block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: min(480px, 50vw);
-  font-size: 11.5px;
-  opacity: 0.65;
-  font-weight: 400;
+  max-width: 100%;
+  opacity: 0.78;
+}
+.reasoning-summary-inner.is-live {
+  opacity: 1;
+  background: linear-gradient(
+    90deg,
+    var(--zap-thinking-shimmer-base, #64748b) 0%,
+    var(--zap-thinking-shimmer-peak, #0f172a) 48%,
+    var(--zap-thinking-shimmer-base, #64748b) 96%
+  );
+  background-size: 220% 100%;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation:
+    reasoningTickerSlideIn 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    codexShimmer 2s linear infinite;
+}
+.reasoning-live-dots {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 1px;
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--zap-thinking-shimmer-base, #64748b);
+}
+.reasoning-live-dots > span {
+  display: inline-block;
+  animation: reasoningDotWave 1.2s ease-in-out infinite;
+}
+.reasoning-live-dots > span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.reasoning-live-dots > span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes reasoningStarPulse {
+  0%, 100% {
+    transform: scale(0.92) rotate(0deg);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.14) rotate(18deg);
+    opacity: 1;
+  }
+}
+@keyframes reasoningTickerSlideIn {
+  0% {
+    transform: translateY(5px);
+    opacity: 0.25;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes reasoningDotWave {
+  0%, 80%, 100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-1.5px);
+  }
 }
 .reasoning-chevron {
   margin-left: 4px;
@@ -4908,7 +4991,7 @@ body {
   transform: rotate(180deg);
 }
 .reasoning-body {
-  margin: 4px 0 6px 6px;
+  margin: 6px 0 6px 6px;
   padding: 6px 14px 8px 14px;
   border-left: 2px solid var(--app-border-color, rgba(127, 127, 127, 0.25));
   color: var(--app-muted-foreground, #8a8f98);
@@ -4920,10 +5003,13 @@ body {
   overflow-y: auto;
 }
 :root[data-theme='light'] .reasoning-toggle {
-  color: #6b7280;
+  color: #4b5563;
 }
-:root[data-theme='light'] .reasoning-toggle:hover {
-  background: rgba(0, 0, 0, 0.04);
+:root[data-theme='light'] .reasoning-label {
+  color: #374151;
+}
+:root[data-theme='light'] .reasoning-toggle:not(.is-non-expandable):hover {
+  background: var(--zap-thinking-pill-hover-bg, rgba(15, 23, 42, 0.08));
   color: #111827;
 }
 :root[data-theme='light'] .reasoning-body {
@@ -6656,9 +6742,9 @@ body {
   width: var(--sidebar-width, clamp(248px, 16vw, 272px));
   min-width: 236px;
   max-width: 480px;
-  background: var(--zap-glass-bg, rgba(255, 255, 255, 0.56));
-  backdrop-filter: blur(var(--zap-glass-blur, 28px));
-  -webkit-backdrop-filter: blur(var(--zap-glass-blur, 28px));
+  background: var(--zap-sidebar-surface-bg, rgba(255, 255, 255, 0.8));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border: 1px solid var(--zap-glass-border, rgba(255, 255, 255, 0.85));
   border-radius: 24px;
   box-shadow: var(--zap-glass-shadow);
@@ -6958,6 +7044,9 @@ body {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  contain: layout style;
+  transform: translateZ(0);
+  will-change: scroll-position;
 }
 
 /* --- "Recent" section label --- */
@@ -7265,6 +7354,9 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 2px;
+  contain: layout style;
+  transform: translateZ(0);
+  will-change: scroll-position;
 }
 .sidebar-recents-section.has-projects-below {
   max-height: 45%;
@@ -7276,6 +7368,9 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 2px;
+  contain: layout style;
+  transform: translateZ(0);
+  will-change: scroll-position;
 }
 .sidebar-recents-section .project-sessions-list {
   margin-left: 0;
@@ -7581,7 +7676,9 @@ body {
   color: var(--app-secondary-foreground);
   background: transparent;
   border: 1px solid transparent;
-  transition: all 0.15s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 36px;
 }
 
 .session-item:hover {
@@ -17818,22 +17915,18 @@ body {
   background: var(--zap-glass-card-hover-bg);
 }
 
-/* 用户提问卡片：靠右毛玻璃圆角卡片 */
+/* 用户提问卡片：采用高透滚动表面令牌，避免外层毛玻璃容器内嵌套二次高斯模糊造成滚动掉帧 */
 .user-message-bubble {
-  background: var(--zap-glass-card-hover-bg);
+  background: var(--zap-scroll-user-card-bg, var(--zap-glass-card-hover-bg));
   border: 1px solid var(--zap-glass-border);
   border-radius: 18px;
   box-shadow: var(--zap-glass-shadow);
   color: var(--app-primary-foreground);
-  backdrop-filter: blur(var(--zap-glass-blur, 28px));
-  -webkit-backdrop-filter: blur(var(--zap-glass-blur, 28px));
 }
 
-/* 助手回复卡片：高斯模糊苹果毛玻璃卡片 */
+/* 助手回复卡片：采用高透滚动表面令牌，消除逐气泡 28px 高斯模糊重采样开销 */
 .timeline-message {
-  background: var(--zap-glass-card-bg);
-  backdrop-filter: blur(var(--zap-glass-blur, 28px));
-  -webkit-backdrop-filter: blur(var(--zap-glass-blur, 28px));
+  background: var(--zap-scroll-card-bg, var(--zap-glass-card-bg));
   border: 1px solid var(--zap-glass-border);
   border-radius: var(--zap-chat-card-radius, 22px);
   box-shadow: var(--zap-glass-shadow);

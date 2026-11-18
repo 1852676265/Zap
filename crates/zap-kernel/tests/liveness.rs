@@ -16,6 +16,8 @@
 //! whole suite. (Mentally revert the fix and the inner timeout never fires → the
 //! drive loop never returns → the outer `timeout` elapses → `expect` panics.)
 
+use std::sync::Arc;
+use std::time::Duration;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
@@ -24,8 +26,6 @@ use zap_kernel::testkit::{
     StallThenProvider,
 };
 use zap_kernel::tool::{ToolCall, ToolRegistry};
-use std::sync::Arc;
-use std::time::Duration;
 
 // The injected liveness timeout used by the two hang-case tests. Short but safe:
 // the provider/driver never make progress, so 50ms is deterministic (nothing can

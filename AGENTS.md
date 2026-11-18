@@ -4,7 +4,7 @@
 
 ## 1. Core Mechanics & Knowledge Base Maintenance
 
-- **Prompt Lifecycle**: User directory `~/.jeikcode/prompts/` supports hot-reloading. Production baseline prompts are maintained exclusively in `crates/zap-coding/assets/prompts/` and distributed via binaries.
+- **Prompt Lifecycle**: User directory `~/.zap/prompts/` supports hot-reloading. Production baseline prompts are maintained exclusively in `crates/zap-coding/assets/prompts/` and distributed via binaries.
 - **Teaches Sync**: `crates/zap-capabilities/assets/teaches/` serves as the authoritative source for `zap_config` (`action="guide"`). Always sync documentation here when adjusting model configuration logic or tool parameters.
 
 ---

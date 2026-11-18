@@ -270,7 +270,7 @@ export interface ExternalPluginPackage {
     key: string;
     label: string;
     description: string;
-    type: 'boolean' | 'string' | 'number' | 'select';
+    type: 'boolean' | 'string' | 'number' | 'select' | 'model';
     default?: any;
     options?: { label: string; value: string }[];
   }[];
@@ -335,7 +335,7 @@ export interface ZapPluginManifest {
         key: string;
         label: string;
         description?: string;
-        type: 'boolean' | 'string' | 'number' | 'select';
+        type: 'boolean' | 'string' | 'number' | 'select' | 'model';
         options?: { label: string; value: string }[];
         default?: any;
       }[];

@@ -25,11 +25,11 @@
 //! round-trips the driver for a decision.
 
 use ignore::WalkBuilder;
-use zap_kernel::tool::{ToolRegistry, ToolResult};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use zap_kernel::tool::{ToolRegistry, ToolResult};
 
 /// Last-resort per-turn high-water mark for composed child agents. Products can
 /// override it, including `0` for unbounded; exact no-progress loops are handled
@@ -49,10 +49,10 @@ pub mod edit_history;
 pub mod encoding;
 pub mod glob;
 pub mod grep;
-pub mod zap_config_guide;
 pub mod output_artifact;
 pub mod output_sanitizer;
 pub mod read;
+pub mod zap_config_guide;
 pub use crate::argument_repair as repair;
 pub mod report_finding;
 pub mod request_user_input;
@@ -89,7 +89,6 @@ pub use bash_workspace_gate::BashWorkspaceGate;
 pub use edit::EditFileTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
-pub use zap_config_guide::{JeikcodeConfigGuideTool, JeikcodeConfigTool};
 pub use output_artifact::{
     artifact_id, ArtifactMiddleware, ArtifactStore, ARTIFACT_TRUNCATION_MARKER_PREFIX,
     TERMINAL_THRESHOLD_BYTES, THRESHOLD_BYTES,
@@ -116,6 +115,7 @@ pub use write_state::{
     check_write_permitted, record_edit, record_read, record_read_confirmed, record_write_success,
     WritePermission, WriteStateHook,
 };
+pub use zap_config_guide::{JeikcodeConfigGuideTool, JeikcodeConfigTool};
 
 /// Names of the full neutral coding toolset — pass to
 /// [`ToolRegistry::mount`](zap_kernel::tool::ToolRegistry::mount).
@@ -462,13 +462,13 @@ pub(crate) fn is_skip_dir(name: &str) -> bool {
 /// WebUI user-upload store. Gitignored so it stays out of project VCS, but
 /// `read` / `grep` / `glob` must still see it — these files
 /// are attachments the model is expected to open, not project source.
-pub const USER_UPLOAD_STORE_DIR: &str = ".jeikcode_store";
+pub const USER_UPLOAD_STORE_DIR: &str = ".zap_store";
 
 pub(crate) fn is_upload_store_dir(name: &str) -> bool {
-    name.eq_ignore_ascii_case(USER_UPLOAD_STORE_DIR)
+    name.eq_ignore_ascii_case(USER_UPLOAD_STORE_DIR) || name.eq_ignore_ascii_case(".jeikcode_store")
 }
 
-/// True when `path` is `.jeikcode_store` itself or lives under one.
+/// True when `path` is `.zap_store` (or legacy `.jeikcode_store`) itself or lives under one.
 pub(crate) fn path_in_upload_store(path: &Path) -> bool {
     path.components().any(|c| {
         c.as_os_str()
@@ -549,7 +549,7 @@ fn gitignore_off_walk(root: &Path) -> WalkBuilder {
     builder
 }
 
-/// Search-visibility-aware project walk that still visits `.jeikcode_store`.
+/// Search-visibility-aware project walk that still visits `.zap_store`.
 ///
 /// Search tools intentionally do **not** apply `.gitignore` / `.ignore`: VCS
 /// ignore rules describe what should be committed, not what the user may ask
@@ -671,6 +671,7 @@ fn search_ignore_matcher(base: &Path, sensitive: bool) -> Option<ignore::gitigno
     for name in names {
         for path in [
             base.join(name),
+            base.join(".zap").join(name),
             base.join(".jeikcode").join(name),
             cfg.join(name),
         ] {
@@ -832,7 +833,7 @@ pub(crate) fn err(content: impl Into<String>) -> ToolResult {
     }
 }
 
-/// Load `[tools.timeouts]` from `~/.jeikcode/config.toml`, else recommended defaults.
+/// Load `[tools.timeouts]` from `~/.zap/config.toml`, else recommended defaults.
 pub(crate) fn tool_timeouts() -> zap_config::config::ToolTimeoutsConfig {
     zap_config::config::ToolTimeoutsConfig::load_effective()
 }

@@ -1,8 +1,8 @@
+use serde::{Deserialize, Serialize};
 use zap_kernel::message::{
     ImageContent, Message as KernelMessage, Role as KernelRole, LEGACY_COLD_SUMMARY_ORIGIN,
     LEGACY_COLD_SUMMARY_PREFIX,
 };
-use serde::{Deserialize, Serialize};
 
 use zap_capabilities::session::manager::SessionOrigin;
 use zap_capabilities::session::manager::{NativeImportCommitOutcome, META_VERSION};
@@ -1615,10 +1615,7 @@ fn rename_catalog_entry_in_root(
     };
     if ai {
         let old_name = manager.update_meta(&entry.id, |meta| {
-            if !zap_coding::session_title::should_accept_ai_name(
-                meta.user_renamed,
-                meta.ai_named,
-            ) {
+            if !zap_coding::session_title::should_accept_ai_name(meta.user_renamed, meta.ai_named) {
                 return None;
             }
             let old_name = std::mem::replace(&mut meta.name, new_name.to_string());
@@ -1672,9 +1669,7 @@ fn rebase_converted_turn_ids(
             .ok_or_else(|| anyhow::anyhow!("imported turn id overflow"))?;
     }
     for entry in &mut converted.presentation.entries {
-        if let zap_capabilities::session::DisplayAnchor::AfterTurn { turn_id } =
-            &mut entry.anchor
-        {
+        if let zap_capabilities::session::DisplayAnchor::AfterTurn { turn_id } = &mut entry.anchor {
             *turn_id = turn_id
                 .checked_add(base)
                 .ok_or_else(|| anyhow::anyhow!("presentation turn id overflow"))?;
@@ -2312,9 +2307,8 @@ mod tests {
         let manager = SessionManager::with_root(dir.path());
         let session = full_legacy_session();
         let id = session.id.as_str();
-        let native = zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(
-            "native wins",
-        )]);
+        let native =
+            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user("native wins")]);
         manager.save_snapshot(id, &native).unwrap();
         manager
             .write_meta(&SessionMeta::new(id, "/native", 7))
@@ -2474,9 +2468,7 @@ mod tests {
         let legacy_bytes = include_bytes!("../tests/fixtures/session/legacy_full.json");
         let legacy: LegacySession = serde_json::from_slice(legacy_bytes).unwrap();
         let native_snapshot =
-            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(
-                "native wins",
-            )]);
+            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user("native wins")]);
         let native_presentation = PresentationFile {
             v: PRESENTATION_VERSION,
             entries: vec![PresentationEntry {
@@ -2629,9 +2621,7 @@ mod tests {
         let legacy_bytes = include_bytes!("../tests/fixtures/session/legacy_full.json");
         let legacy: LegacySession = serde_json::from_slice(legacy_bytes).unwrap();
         let native_snapshot =
-            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(
-                "native wins",
-            )]);
+            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user("native wins")]);
         manager.save_snapshot(&legacy.id, &native_snapshot).unwrap();
         std::fs::write(manager.legacy_path(&legacy.id).unwrap(), legacy_bytes).unwrap();
         let lease = manager.acquire_lease(&legacy.id).unwrap();
@@ -2766,9 +2756,7 @@ mod tests {
 
     #[test]
     fn importer_v1_metadata_only_sidecars_are_repaired_without_losing_stats() {
-        use zap_capabilities::session::{
-            ImportInfo, ImportKind, SessionManager, StorageOwner,
-        };
+        use zap_capabilities::session::{ImportInfo, ImportKind, SessionManager, StorageOwner};
 
         let dir = tempfile::tempdir().unwrap();
         let manager = SessionManager::with_root(dir.path());
@@ -2778,9 +2766,7 @@ mod tests {
         rebase_converted_turn_ids(&mut converted, 5).unwrap();
         let id = legacy.id.as_str();
         let mut snapshot =
-            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(
-                "native wins",
-            )]);
+            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user("native wins")]);
         snapshot.turn_counter = converted.snapshot.turn_counter;
         let mut meta = converted.meta;
         meta.owner = StorageOwner::Native;
@@ -3601,9 +3587,8 @@ mod tests {
         let id = "native-placeholder";
         let manager = SessionManager::with_root(dir.path().join(bucket));
         let lease = manager.acquire_lease(id).unwrap();
-        let snapshot = zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(
-            "恢复自动命名",
-        )]);
+        let snapshot =
+            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user("恢复自动命名")]);
         let presentation = PresentationFile::default();
         let mut meta = SessionMeta::new(id, "/project", 1);
         meta.owner = StorageOwner::Native;
@@ -3642,9 +3627,8 @@ mod tests {
         let id = "catalog-placeholder";
         let manager = SessionManager::with_root(dir.path().join(&bucket));
         let lease = manager.acquire_lease(id).unwrap();
-        let snapshot = zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(
-            "首次展示名称",
-        )]);
+        let snapshot =
+            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user("首次展示名称")]);
         let mut meta = SessionMeta::new(id, working_dir.to_string_lossy(), 1);
         meta.owner = StorageOwner::Native;
         manager
@@ -3678,8 +3662,7 @@ mod tests {
         ] {
             let manager = SessionManager::with_root(dir.path().join(bucket));
             let lease = manager.acquire_lease(id).unwrap();
-            let snapshot =
-                zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(id)]);
+            let snapshot = zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(id)]);
             let mut meta = SessionMeta::new(id, stored_working_dir.to_string_lossy(), 1);
             meta.name = id.into();
             meta.owner = StorageOwner::Native;
@@ -3964,9 +3947,8 @@ mod tests {
         let bucket = "0123456789abcdef";
         let id = "native-ui";
         let manager = SessionManager::with_root(dir.path().join(bucket));
-        let snapshot = zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user(
-            "runtime-only",
-        )]);
+        let snapshot =
+            zap_kernel::message::SessionSnapshot::new(vec![KernelMessage::user("runtime-only")]);
         let mut meta = SessionMeta::new(id, "/project", 1);
         meta.owner = StorageOwner::Native;
         meta.message_count = 1;

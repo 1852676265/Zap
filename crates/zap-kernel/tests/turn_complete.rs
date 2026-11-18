@@ -7,6 +7,7 @@
 //! ran does NOT fire it (no turn → no terminal).
 
 use async_trait::async_trait;
+use std::sync::{Arc, Mutex};
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
@@ -14,7 +15,6 @@ use zap_kernel::message::Conversation;
 use zap_kernel::stream::{ProviderError, StreamEvent};
 use zap_kernel::testkit::{MockProvider, RejectPromptHook, ScriptedProvider};
 use zap_kernel::tool::ToolRegistry;
-use std::sync::{Arc, Mutex};
 
 /// Captures the `StopReason` of every `turn_complete` it observes.
 #[derive(Default)]

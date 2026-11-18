@@ -1,6 +1,6 @@
 //! Custom prompt loader and in-memory cache with hot-reloading for JeikCode.
 //!
-//! Loads configuration from `$JEIKCODE_HOME/prompts/` (or `~/.jeikcode/prompts/`):
+//! Loads configuration from `$ZAP_HOME/prompts/` (or `~/.zap/prompts/`):
 //! - `init.yaml` (**live**): identity, precedence, security, environment. Every key in
 //!   the seed is deserialized and rendered into the System persona.
 //! - `rules.yaml` (**live**): workflow, tools discipline, locating code, doing tasks,
@@ -143,7 +143,7 @@ pub fn invalidate_cache_for_test() {
 
 /// Resolve the user prompts dir.
 ///
-/// Env (`JEIKCODE_HOME`) first, then `~/.jeikcode/prompts`. Not routed through
+/// Env (`ZAP_HOME` / `JEIKCODE_HOME`) first, then `~/.zap/prompts`. Not routed through
 /// `Config::config_dir()` so sudo-without-home keeps the documented raw rule.
 /// `cc_hooks` keeps the same shape for the same reason.
 fn resolve_prompts_dir() -> Option<PathBuf> {
@@ -151,12 +151,17 @@ fn resolve_prompts_dir() -> Option<PathBuf> {
     if let Some(home) = zap_config::test_util::overridden_home() {
         return Some(home.join("prompts"));
     }
+    if let Ok(p) = std::env::var("ZAP_HOME") {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p).join("prompts"));
+        }
+    }
     if let Ok(p) = std::env::var("JEIKCODE_HOME") {
         if !p.is_empty() {
             return Some(PathBuf::from(p).join("prompts"));
         }
     }
-    // Unit tests must not leak the developer's `~/.jeikcode/prompts` into persona
+    // Unit tests must not leak the developer's `~/.zap/prompts` into persona
     // snapshots. Production still loads the user home.
     #[cfg(test)]
     {
@@ -165,7 +170,7 @@ fn resolve_prompts_dir() -> Option<PathBuf> {
     #[cfg(not(test))]
     {
         let home = dirs::home_dir()?;
-        Some(home.join(".jeikcode").join("prompts"))
+        Some(home.join(".zap").join("prompts"))
     }
 }
 
@@ -173,14 +178,14 @@ fn strip_utf8_bom(content: &str) -> &str {
     content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
-/// Bundled first-run templates for `~/.jeikcode/prompts/`. Existing files are never
+/// Bundled first-run templates for `~/.zap/prompts/`. Existing files are never
 /// overwritten — the user owns their copies after the first write.
 const PROMPT_SEEDS: &[(&str, &str)] = &[
     ("init.yaml", include_str!("../assets/prompts/init.yaml")),
     ("rules.yaml", include_str!("../assets/prompts/rules.yaml")),
 ];
 
-/// Idempotent first-run seed of `~/.jeikcode/prompts/` (or `$JEIKCODE_HOME/prompts/`).
+/// Idempotent first-run seed of `~/.zap/prompts/` (or `$ZAP_HOME/prompts/`).
 ///
 /// Called from persona assembly so a fresh install gets editable templates without
 /// requiring a separate `jeikcode setup`. Failures are silent (read-only home must

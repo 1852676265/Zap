@@ -4,10 +4,10 @@
 use super::registry::SkillRegistry;
 use super::{err, ok};
 use async_trait::async_trait;
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 pub struct UseSkillTool {
     registry: Arc<SkillRegistry>,
@@ -76,8 +76,8 @@ impl Tool for UseSkillTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::ToolContext;
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::ToolContext;
 
     fn ctx() -> ToolContext {
         ToolContext {

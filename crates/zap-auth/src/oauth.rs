@@ -69,9 +69,7 @@ fn apply_blocking_proxy_policy(
     force_tls12: bool,
 ) -> reqwest::blocking::ClientBuilder {
     zap_config::proxy::ensure_runtime_initialized();
-    let builder = if std::env::var(zap_config::proxy::MODE_ENV)
-        .ok()
-        .as_deref()
+    let builder = if std::env::var(zap_config::proxy::MODE_ENV).ok().as_deref()
         == Some(zap_config::proxy::ProxyMode::NoProxy.as_str())
     {
         builder.no_proxy()

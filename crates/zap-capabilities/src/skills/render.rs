@@ -50,10 +50,10 @@ pub struct CatalogEntry {
 
 /// Source-priority tier from a skill's `source_path`. Curated, product-native
 /// dirs survive a budget squeeze over community bulk. Kept as approved:
-/// `.jeikcode` > `.claude` > `.agents` > everything else.
+/// `.zap` > `.claude` > `.agents` > everything else.
 pub fn source_rank(path: &Path) -> u8 {
     let s = path.to_string_lossy();
-    if s.contains(".jeikcode") {
+    if s.contains(".zap") || s.contains(".jeikcode") {
         0
     } else if s.contains(".claude") {
         1
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn source_rank_tiers() {
         assert_eq!(
-            source_rank(&PathBuf::from("/home/u/.jeikcode/skills/x/SKILL.md")),
+            source_rank(&PathBuf::from("/home/u/.zap/skills/x/SKILL.md")),
             0
         );
         assert_eq!(

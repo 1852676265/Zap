@@ -3131,9 +3131,9 @@ use zap_kernel::request::RequestCtx;
 use zap_kernel::tool::{Tool, ToolCall};
 // Referenced only by the `#[cfg(test)]` stubs below (via `use super::*`); importing it
 // unconditionally is dead code in a non-test build.
+use std::sync::Arc;
 #[cfg(test)]
 use zap_kernel::tool::ToolResult;
-use std::sync::Arc;
 
 /// Repairs a tool call's JSON arguments in place before the call executes.
 ///

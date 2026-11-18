@@ -24,7 +24,6 @@ use super::bash_runtime::{
 use super::{err, ok};
 use async_trait::async_trait;
 use base64::Engine;
-use zap_kernel::tool::{ProgressSink, RiskLevel, Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::borrow::Cow;
@@ -34,11 +33,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use zap_kernel::tool::{ProgressSink, RiskLevel, Tool, ToolContext, ToolResult};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-/// Resolves the effective bash timeouts from `~/.jeikcode/config.toml` (or workspace config),
+/// Resolves the effective bash timeouts from `~/.zap/config.toml` (or workspace config),
 /// falling back to defaults if config cannot be loaded.
 pub(crate) fn resolve_bash_timeout_config() -> zap_config::config::BashToolConfig {
     let default_path = zap_config::config::Config::default_path();
@@ -334,17 +334,15 @@ impl Tool for BashTool {
         let cwd = effective_cwd.clone();
         let rewritten_command = effective_command.clone();
         let advisory_note = cwd_advisory.clone();
-        let annotate =
-            move |r: zap_kernel::tool::ToolResult| -> zap_kernel::tool::ToolResult {
-                let mut r =
-                    annotate_platform_failure(r, &cwd, &original_command, &rewritten_command);
-                if let Some(ref adv) = advisory_note {
-                    if !r.is_error {
-                        r.content = format!("{adv}{}", r.content);
-                    }
+        let annotate = move |r: zap_kernel::tool::ToolResult| -> zap_kernel::tool::ToolResult {
+            let mut r = annotate_platform_failure(r, &cwd, &original_command, &rewritten_command);
+            if let Some(ref adv) = advisory_note {
+                if !r.is_error {
+                    r.content = format!("{adv}{}", r.content);
                 }
-                r
-            };
+            }
+            r
+        };
 
         if a.background {
             // A turn-level cancel that arrived before spawn must not create a
@@ -6637,9 +6635,8 @@ mod tests {
     fn platform_failure_annotates_cwd_and_missing_rg() {
         use std::path::Path;
         let cwd = Path::new(r"E:/code/Antigravity-Manager");
-        let missing = super::err(
-            "Error: file `crates/zap-capabilities/src/tools/edit.rs` does not exist",
-        );
+        let missing =
+            super::err("Error: file `crates/zap-capabilities/src/tools/edit.rs` does not exist");
         let missing = super::annotate_platform_failure(
             missing,
             cwd,

@@ -18,14 +18,14 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::json;
 use zap_kernel::agent::{AutoRespond, ToolLoopPolicy};
 use zap_kernel::event::StopReason;
 use zap_kernel::hook::{LifecycleHooks, TurnCtx};
 use zap_kernel::message::Message;
 use zap_kernel::provider::LlmProvider;
 use zap_kernel::tool::{ProgressSink, Tool, ToolContext, ToolResult};
-use serde::Deserialize;
-use serde_json::json;
 
 use crate::config::ReviewAgentConfig;
 use crate::diff::annotate_diff_line_numbers;
@@ -713,11 +713,11 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream::{self, BoxStream};
     use futures::StreamExt;
+    use std::sync::Mutex;
     use zap_kernel::message::{Message, Role};
     use zap_kernel::provider::ChatOptions;
     use zap_kernel::stream::{ProviderError, StreamEvent};
     use zap_kernel::tool::{ToolCall, ToolDef};
-    use std::sync::Mutex;
 
     #[test]
     fn embedded_review_limits_are_bounded_configurable_and_zero_disables() {

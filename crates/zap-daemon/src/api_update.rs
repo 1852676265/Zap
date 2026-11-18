@@ -588,11 +588,7 @@ pub async fn execute_update(
                 bytes: 0,
                 total: 0,
                 error: Some(format!("更新二进制失败: {e}")),
-                error_code: Some(
-                    zap_updater::UpgradeFailureKind::Other
-                        .as_str()
-                        .to_string(),
-                ),
+                error_code: Some(zap_updater::UpgradeFailureKind::Other.as_str().to_string()),
             });
             IS_UPDATING.store(false, Ordering::SeqCst);
         }
@@ -671,8 +667,7 @@ async fn run_cli_update(
                     error_code: None,
                 });
             }
-            zap_updater::UpgradeEvent::Verifying
-            | zap_updater::UpgradeEvent::Replacing => {
+            zap_updater::UpgradeEvent::Verifying | zap_updater::UpgradeEvent::Replacing => {
                 set_update_status(UpdateStatus {
                     status: "installing".to_string(),
                     progress: 99,

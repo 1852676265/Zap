@@ -3,12 +3,12 @@
 //! `StreamEvent::Usage` events field-wise (max), so the stored / emitted `MessageMeta`
 //! carries BOTH the prompt and the completion, not just whichever arrived last.
 
+use std::sync::Arc;
 use zap_kernel::agent::Agent;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::{StreamEvent, TokenUsage};
 use zap_kernel::testkit::MockProvider;
 use zap_kernel::tool::ToolRegistry;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn split_usage_events_merge_field_wise() {

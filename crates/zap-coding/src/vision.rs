@@ -5,10 +5,10 @@
 //! and the outcome mapping. Both the CLI and the daemon call `run_vl_caption`.
 
 use futures::StreamExt;
+use std::sync::Arc;
 use zap_kernel::message::{ImageContent, Message};
 use zap_kernel::provider::{ChatOptions, LlmProvider};
 use zap_kernel::stream::StreamEvent;
-use std::sync::Arc;
 
 /// Outcome of a VL preprocessing attempt. Same three variants (and the
 /// `apply_outcome` contract) as the retired `core` version.
@@ -124,11 +124,11 @@ pub async fn run_vl_caption(
 mod tests {
     use super::*;
     use futures::stream;
+    use std::sync::Arc;
     use zap_kernel::message::Message;
     use zap_kernel::provider::{ChatOptions, LlmProvider};
     use zap_kernel::stream::{ProviderError, StreamEvent};
     use zap_kernel::tool::ToolDef;
-    use std::sync::Arc;
 
     // 脚本化的测试替身：chat_stream 回放预置的 StreamEvent 序列。
     struct ScriptedProvider {

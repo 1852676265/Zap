@@ -2,13 +2,13 @@
 //! so a run's snapshots are byte-reproducible for eval / replay — the kernel's only
 //! non-deterministic value is time (ids are counters, cwd is pinnable, no randomness).
 
+use std::sync::Arc;
 use zap_kernel::agent::Agent;
 use zap_kernel::clock::FixedClock;
 use zap_kernel::event::{AgentCommand, AgentEvent};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::MockProvider;
 use zap_kernel::tool::ToolRegistry;
-use std::sync::Arc;
 
 #[tokio::test]
 async fn fixed_clock_makes_elapsed_ms_deterministic() {

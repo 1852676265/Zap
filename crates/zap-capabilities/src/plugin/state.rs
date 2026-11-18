@@ -8,12 +8,12 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallScope {
-    /// User-global: installed to `~/.jeikcode/plugins/`, visible in all projects.
+    /// User-global: installed to `~/.zap/plugins/`, visible in all projects.
     User,
-    /// Project-shared: installed to `.jeikcode/plugins/`, committed to git,
+    /// Project-shared: installed to `.zap/plugins/`, committed to git,
     /// visible to all collaborators.
     Project,
-    /// Local-only: installed to `.jeikcode/plugins/local/`, git-ignored,
+    /// Local-only: installed to `.zap/plugins/local/`, git-ignored,
     /// visible only to the current user in the current project.
     Local,
 }

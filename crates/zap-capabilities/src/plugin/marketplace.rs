@@ -630,8 +630,8 @@ mod tests {
             .status()
             .unwrap();
         if let Some(m) = manifest {
-            std::fs::create_dir_all(repo.join(".jeikcode-plugin")).unwrap();
-            std::fs::write(repo.join(".jeikcode-plugin/marketplace.json"), m).unwrap();
+            std::fs::create_dir_all(repo.join(".zap-plugin")).unwrap();
+            std::fs::write(repo.join(".zap-plugin/marketplace.json"), m).unwrap();
         }
         std::fs::write(repo.join("README"), "x").unwrap();
         Command::new("git")
@@ -739,10 +739,7 @@ mod tests {
         let _home = isolated_home(); // no auth.toml under the temp JEIKCODE_HOME
                                      // The trusted list is CONFIGURED (empty by default in this build) — the trusted-
                                      // branch wording can only exist where a domain is actually trusted.
-        let Some(domain) = zap_config::endpoints::trusted_domains()
-            .first()
-            .cloned()
-        else {
+        let Some(domain) = zap_config::endpoints::trusted_domains().first().cloned() else {
             return;
         };
         let m = auth_required_message("克隆", &format!("https://{domain}/o/r"), "fatal: auth");
@@ -758,14 +755,11 @@ mod tests {
         // Logged in (auth.toml present) but no usable token (expired + refresh
         // failed) → must say the session expired, not "just log in" as if the
         // user never had. JEIKCODE_HOME is isolated, so this writes to a
-        // tempdir, never the real ~/.jeikcode/auth.toml.
+        // tempdir, never the real ~/.zap/auth.toml.
         let _home = isolated_home();
         // Same gate as the sibling test: no trusted domain configured ⇒ the trusted branch
         // cannot be exercised (and `host_is_trusted` correctly stays false for github).
-        let Some(domain) = zap_config::endpoints::trusted_domains()
-            .first()
-            .cloned()
-        else {
+        let Some(domain) = zap_config::endpoints::trusted_domains().first().cloned() else {
             return;
         };
         let dir = zap_config::config::Config::config_dir();

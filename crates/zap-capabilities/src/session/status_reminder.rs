@@ -20,10 +20,10 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Local};
-use zap_kernel::hook::{LifecycleHooks, TurnCtx};
-use zap_kernel::message::{Conversation, Role};
 #[cfg(feature = "tools")]
 use std::sync::Arc;
+use zap_kernel::hook::{LifecycleHooks, TurnCtx};
+use zap_kernel::message::{Conversation, Role};
 
 #[cfg(feature = "tools")]
 use crate::tools::bash_runtime::{

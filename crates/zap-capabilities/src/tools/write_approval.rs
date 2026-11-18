@@ -35,10 +35,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use zap_kernel::middleware::{BeforeOutcome, ToolMiddleware};
 use zap_kernel::request::RequestCtx;
 use zap_kernel::tool::{Tool, ToolCall};
-use serde::Deserialize;
 
 use super::approval::{
     ApprovalRequest, InMemoryPermissionStore, PermissionDecision, PermissionStore, APPROVAL_KIND,
@@ -379,9 +379,9 @@ impl ToolMiddleware for WriteApprovalGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::event::AgentEvent;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
+    use zap_kernel::event::AgentEvent;
 
     fn edit_tool() -> Arc<dyn Tool> {
         Arc::new(crate::tools::edit::EditFileTool)

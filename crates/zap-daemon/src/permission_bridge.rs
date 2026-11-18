@@ -4,10 +4,10 @@
 //! route is consumed before a decision is delivered, so duplicate/stale POSTs
 //! cannot fall through to a later approval in the same session.
 
-use zap_capabilities::tools::PermissionDecision;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
+use zap_capabilities::tools::PermissionDecision;
 
 struct PendingPermissionResponder {
     tx: oneshot::Sender<PermissionSubmissionEnvelope>,
@@ -112,9 +112,7 @@ pub fn decision_wire(decision: PermissionDecision) -> &'static str {
 /// checkpoint before publishing the request, so the same id can be reconstructed
 /// after refresh/restart while a later turn that reuses the provider call id gets
 /// a different id from `created_at`.
-pub fn approval_id_for_pending(
-    pending: &zap_capabilities::session::PendingPermission,
-) -> String {
+pub fn approval_id_for_pending(pending: &zap_capabilities::session::PendingPermission) -> String {
     use sha2::{Digest, Sha256};
 
     let mut digest = Sha256::new();

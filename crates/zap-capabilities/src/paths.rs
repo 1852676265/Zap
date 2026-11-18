@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-/// The jeikcode config/data root: `$JEIKCODE_HOME` if set & non-empty, else
-/// `~/.jeikcode`. Mirrors `jeikcode_core::config::Config::config_dir` so everything
+/// The config/data root: `$ZAP_HOME` / `$JEIKCODE_HOME` if set & non-empty, else
+/// `~/.zap`. Mirrors `zap_config::Config::config_dir` so everything
 /// L1 persists (`sessions/`, `memory.md`, MCP OAuth tokens) lands in the SAME tree
 /// as production's.
 ///

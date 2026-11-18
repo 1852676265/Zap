@@ -10,13 +10,13 @@
 //! `ctx.cancel.cancel()` from inside its own `execute` — no timing races.
 
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use zap_kernel::message::{Message, Role};
 use zap_kernel::stream::StreamEvent;
 use zap_kernel::testkit::{EchoTool, RecordingProvider};
 use zap_kernel::tool::{Tool, ToolCall, ToolContext, ToolRegistry, ToolResult};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 /// A provider whose `chat_stream` — the OPEN — never resolves: it models a
 /// connection that hangs establishing / awaiting the first response byte (e.g. a
@@ -34,10 +34,8 @@ impl zap_kernel::provider::LlmProvider for HangingOpenProvider {
         _: &[Message],
         _: &[zap_kernel::tool::ToolDef],
         _: &zap_kernel::provider::ChatOptions,
-    ) -> Result<
-        futures::stream::BoxStream<'static, StreamEvent>,
-        zap_kernel::stream::ProviderError,
-    > {
+    ) -> Result<futures::stream::BoxStream<'static, StreamEvent>, zap_kernel::stream::ProviderError>
+    {
         futures::future::pending().await
     }
 }

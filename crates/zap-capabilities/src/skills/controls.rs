@@ -1,8 +1,8 @@
 //! Persisted enable/disable state for skills, split into two standardized scopes that
 //! mirror the MCP model:
 //!
-//! - **GLOBAL**: `$JEIKCODE_HOME/skills.json`
-//! - **PROJECT**: `<project>/.jeikcode/skills.json`
+//! - **GLOBAL**: `$ZAP_HOME/skills.json`
+//! - **PROJECT**: `<project>/.zap/skills.json`
 //!
 //! A skill is DISABLED when EITHER scope lists its registry name (e.g. `skills:foo`).
 //! Both files share ONE standard schema:
@@ -33,9 +33,9 @@ pub fn global_state_path() -> PathBuf {
     config_dir().join("skills.json")
 }
 
-/// `<project>/.jeikcode/skills.json`
+/// `<project>/.zap/skills.json`
 pub fn project_state_path(project_dir: &Path) -> PathBuf {
-    project_dir.join(".jeikcode").join("skills.json")
+    project_dir.join(".zap").join("skills.json")
 }
 
 fn read_set(path: &Path) -> BTreeSet<String> {
@@ -51,9 +51,13 @@ pub fn load_global() -> BTreeSet<String> {
     read_set(&global_state_path())
 }
 
-/// Disabled skill ids recorded in the PROJECT scope file.
+/// Disabled skill ids recorded in the PROJECT scope file (with legacy `.jeikcode/skills.json` fallback).
 pub fn load_project(project_dir: &Path) -> BTreeSet<String> {
-    read_set(&project_state_path(project_dir))
+    let primary = project_state_path(project_dir);
+    if primary.exists() {
+        return read_set(&primary);
+    }
+    read_set(&project_dir.join(".jeikcode").join("skills.json"))
 }
 
 /// The union the runtime applies: a skill disabled at EITHER scope is disabled.

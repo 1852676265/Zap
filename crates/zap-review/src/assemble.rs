@@ -3,11 +3,11 @@
 
 use crate::config::ReviewAgentConfig;
 use crate::persona::review_persona;
-use zap_capabilities::codeintel::lang::Lang;
-use zap_capabilities::codeintel::{codeintel_tool_names, register_codeintel_tools};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use zap_capabilities::codeintel::lang::Lang;
+use zap_capabilities::codeintel::{codeintel_tool_names, register_codeintel_tools};
 
 /// Whether to mount the code-graph tools: only when the repo has AT MOST `max` indexable
 /// source files. `max = usize::MAX` (the config default) ⇒ always mount (bare-CLI behavior);
@@ -37,6 +37,7 @@ fn count_indexed_sources(working_dir: &Path) -> usize {
         .filter(|p| Lang::detect(Path::new(p)).is_some_and(|l| l.is_indexed()))
         .count()
 }
+use std::sync::Arc;
 use zap_capabilities::provider::{OpenAiCompatConfig, OpenAiCompatProvider};
 use zap_capabilities::tools::{
     register_coding_tools, AstGrepTool, ReportFindingTool, WebSearchTool,
@@ -44,7 +45,6 @@ use zap_capabilities::tools::{
 use zap_kernel::agent::Agent;
 use zap_kernel::provider::LlmProvider;
 use zap_kernel::tool::{MountedTools, ToolRegistry};
-use std::sync::Arc;
 
 /// The READ-ONLY tools the reviewer sees. Deliberately NO write/edit/bash/change_dir — a
 /// reviewer investigates and reports, it never mutates. (The diff itself is injected as
@@ -218,9 +218,7 @@ fn mount_review_tools(
                                             // Each dir scanned for SKILL.md (directory skill) or <name>.md (single-file).
     let mut names: Vec<&str> = review_tool_names(no_web, mount_graph).to_vec();
     if !skill_dirs.is_empty() {
-        let skills = Arc::new(zap_capabilities::skills::SkillRegistry::load(
-            skill_dirs,
-        ));
+        let skills = Arc::new(zap_capabilities::skills::SkillRegistry::load(skill_dirs));
         zap_capabilities::skills::register_skill_tools(&mut reg, skills);
         names.extend_from_slice(zap_capabilities::skills::skill_tool_names());
     }

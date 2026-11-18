@@ -346,11 +346,7 @@ mod tests {
         };
         let view = zap_daemon::legacy_convert::CatalogSessionView {
             snapshot: SessionSnapshot::new(vec![Message::user("修复登录错误")]),
-            meta: zap_capabilities::session::SessionMeta::new(
-                "reminder-session",
-                "/project",
-                1,
-            ),
+            meta: zap_capabilities::session::SessionMeta::new("reminder-session", "/project", 1),
             presentation: PresentationFile {
                 v: PRESENTATION_VERSION,
                 entries: vec![

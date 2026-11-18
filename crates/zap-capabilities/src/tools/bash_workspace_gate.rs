@@ -791,9 +791,9 @@ impl ToolMiddleware for BashWorkspaceGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::event::AgentEvent;
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
+    use zap_kernel::event::AgentEvent;
 
     // ---- scanner unit tests ----------------------------------------------------------------
 

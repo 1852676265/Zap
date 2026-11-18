@@ -1,8 +1,8 @@
 //! Two-block instruction loader — the v2 port of v1 `config/instructions.rs`.
 //!
-//! - **GLOBAL tier** (`~/.jeikcode/AGENTS.md` → `~/.jeikcode/JEIKCODE.md`) renders as an
+//! - **GLOBAL tier** (`~/.zap/AGENTS.md` → `~/.zap/ZAP.md` → `~/.zap/JEIKCODE.md`) renders as an
 //!   independent `<user_preferences>` block (cross-project personal preferences).
-//! - **PROJECT tier** (`AGENTS.md` / `.jeikcode.md` / `JEIKCODE.md` / `CLAUDE.md` /
+//! - **PROJECT tier** (`AGENTS.md` / `.zap.md` / `ZAP.md` / `.jeikcode.md` / `JEIKCODE.md` / `CLAUDE.md` /
 //!   `claude.md`, first match wins) plus the additive knowledge packs renders as an
 //!   independent `<project_instructions>` block.
 //!
@@ -59,6 +59,8 @@ Use this glossary when the user speaks in business terms: expand each term into 
 listed code aliases, then search those aliases (and the original term) in parallel. \
 Prefer code_explore once you have an exact type/method name from the glossary.",
         candidates: &[
+            ".zap/glossary.md",
+            ".zap/domain-glossary.md",
             ".jeikcode/glossary.md",
             ".jeikcode/domain-glossary.md",
             "docs/domain-glossary.md",
@@ -74,6 +76,8 @@ Domain / org / process rules for this product (organization structure, approval 
 business constraints). Treat as authoritative project knowledge when implementing or \
 explaining features. Prefer these over guessing product policy.",
         candidates: &[
+            ".zap/rules.md",
+            ".zap/business-rules.md",
             ".jeikcode/rules.md",
             ".jeikcode/business-rules.md",
             "docs/rules.md",
@@ -88,6 +92,9 @@ Common database tables, columns, and nicknames. Use when the user mentions data 
 or when writing SQL / ORM / migrations: map spoken names to real table/column identifiers \
 before searching code or inventing schema.",
         candidates: &[
+            ".zap/dbwords.md",
+            ".zap/db-words.md",
+            ".zap/schema.md",
             ".jeikcode/dbwords.md",
             ".jeikcode/db-words.md",
             ".jeikcode/schema.md",
@@ -98,10 +105,10 @@ before searching code or inventing schema.",
     },
 ];
 
-/// Render the GLOBAL tier (`~/.jeikcode/AGENTS.md` → `~/.jeikcode/JEIKCODE.md`) as an
+/// Render the GLOBAL tier (`~/.zap/AGENTS.md` → `~/.zap/ZAP.md` → `~/.zap/JEIKCODE.md`) as an
 /// independent `<user_preferences>` block. `None` when no non-empty global file exists.
 ///
-/// `home` = config root (`~/.jeikcode`).
+/// `home` = config root (`~/.zap`).
 pub fn render_user_preferences(home: &Path) -> Option<String> {
     // Prefer AGENTS.md (open standard); fall back to the JeikCode-native name. The order
     // comes from `zap-config` (single source of truth), shared with the display loader.
@@ -171,7 +178,7 @@ pub fn warn_legacy_user_tier_once(project: &Path) {
     if LEGACY_USER_TIER_WARNED.set(()).is_ok() {
         tracing::warn!(
             "[instructions] `{}` is no longer an instruction tier and is being IGNORED. \
-             Migrate its personal preferences into `~/.jeikcode/AGENTS.md` (cross-project) or \
+             Migrate its personal preferences into `~/.zap/AGENTS.md` (cross-project) or \
              the project `AGENTS.md` (team-shared).",
             project.join(LEGACY_USER_TIER_FILE).display()
         );
@@ -303,10 +310,10 @@ mod tests {
     fn domain_glossary_is_additive_with_agents_md() {
         let d = tempfile::tempdir().unwrap();
         let proj = d.path();
-        fs::create_dir_all(proj.join(".jeikcode")).unwrap();
+        fs::create_dir_all(proj.join(".zap")).unwrap();
         fs::write(proj.join("AGENTS.md"), "build with cargo").unwrap();
         fs::write(
-            proj.join(".jeikcode/glossary.md"),
+            proj.join(".zap/glossary.md"),
             "- 优惠券 → Coupon, PromoCode, Voucher\n- 结算 → Checkout, Settlement\n",
         )
         .unwrap();
@@ -338,15 +345,15 @@ mod tests {
     fn rules_and_dbwords_are_additive() {
         let d = tempfile::tempdir().unwrap();
         let proj = d.path();
-        fs::create_dir_all(proj.join(".jeikcode")).unwrap();
+        fs::create_dir_all(proj.join(".zap")).unwrap();
         fs::write(proj.join("AGENTS.md"), "use cargo").unwrap();
         fs::write(
-            proj.join(".jeikcode/rules.md"),
+            proj.join(".zap/rules.md"),
             "## 组织架构\n- 中台 / 交易中心 / 营销中心\n",
         )
         .unwrap();
         fs::write(
-            proj.join(".jeikcode/dbwords.md"),
+            proj.join(".zap/dbwords.md"),
             "| 业务 | 表名 |\n| 优惠券 | t_coupon |\n",
         )
         .unwrap();
@@ -365,11 +372,11 @@ mod tests {
     }
 
     #[test]
-    fn rules_prefers_jeikcode_dir_over_root() {
+    fn rules_prefers_zap_dir_over_root() {
         let d = tempfile::tempdir().unwrap();
         let proj = d.path();
-        fs::create_dir_all(proj.join(".jeikcode")).unwrap();
-        fs::write(proj.join(".jeikcode/rules.md"), "nested-rules").unwrap();
+        fs::create_dir_all(proj.join(".zap")).unwrap();
+        fs::write(proj.join(".zap/rules.md"), "nested-rules").unwrap();
         fs::write(proj.join("rules.md"), "root-rules-should-lose").unwrap();
         let out = render_project_instructions(proj).expect("block");
         assert!(out.contains("nested-rules"));

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Top-level marketplace manifest (`.jeikcode-plugin/marketplace.json` or
+/// Top-level marketplace manifest (`.zap-plugin/marketplace.json`, `.jeikcode-plugin/marketplace.json`, or
 /// `.claude-plugin/marketplace.json`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MarketplaceManifest {
@@ -241,11 +241,12 @@ impl PluginManifest {
 }
 
 /// Try to load a marketplace manifest from a marketplace clone root.
-/// Order: `.jeikcode-plugin/marketplace.json` → `.claude-plugin/marketplace.json`.
+/// Order: `.zap-plugin/marketplace.json` → `.jeikcode-plugin/marketplace.json` → `.claude-plugin/marketplace.json`.
 /// Returns `Ok(None)` when neither file exists (single-plugin fallback caller).
 /// Returns `Err` when a file exists but cannot be parsed (fail closed).
 pub fn load_marketplace_manifest(marketplace_root: &Path) -> Result<Option<MarketplaceManifest>> {
     for rel in [
+        ".zap-plugin/marketplace.json",
         ".jeikcode-plugin/marketplace.json",
         ".claude-plugin/marketplace.json",
     ] {
@@ -262,13 +263,15 @@ pub fn load_marketplace_manifest(marketplace_root: &Path) -> Result<Option<Marke
 }
 
 /// Load a plugin manifest. Search order mirrors the marketplace manifest:
-///   1. `<plugin-dir>/.jeikcode-plugin/plugin.json`  jeikcode native
-///   2. `<plugin-dir>/.claude-plugin/plugin.json`    Claude Code compat
-///   3. `<plugin-dir>/plugin.json`                   legacy flat layout
+///   1. `<plugin-dir>/.zap-plugin/plugin.json`       zap native
+///   2. `<plugin-dir>/.jeikcode-plugin/plugin.json`  jeikcode legacy
+///   3. `<plugin-dir>/.claude-plugin/plugin.json`    Claude Code compat
+///   4. `<plugin-dir>/plugin.json`                   legacy flat layout
 /// First file that exists wins. Returns the default manifest when none
 /// exist; returns `Err` when a file exists but cannot be parsed (fail closed).
 pub fn load_plugin_manifest(plugin_dir: &Path) -> Result<PluginManifest> {
     for rel in [
+        ".zap-plugin/plugin.json",
         ".jeikcode-plugin/plugin.json",
         ".claude-plugin/plugin.json",
         "plugin.json",
@@ -292,10 +295,10 @@ mod tests {
     #[test]
     fn loads_jeikcode_manifest_with_priority_over_claude() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".jeikcode-plugin")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".zap-plugin")).unwrap();
         std::fs::create_dir_all(tmp.path().join(".claude-plugin")).unwrap();
         std::fs::write(
-            tmp.path().join(".jeikcode-plugin/marketplace.json"),
+            tmp.path().join(".zap-plugin/marketplace.json"),
             r#"{"name":"atom","plugins":[{"name":"a"}]}"#,
         )
         .unwrap();
@@ -318,9 +321,9 @@ mod tests {
     #[test]
     fn malformed_manifest_returns_err() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".jeikcode-plugin")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".zap-plugin")).unwrap();
         std::fs::write(
-            tmp.path().join(".jeikcode-plugin/marketplace.json"),
+            tmp.path().join(".zap-plugin/marketplace.json"),
             "{ not json",
         )
         .unwrap();

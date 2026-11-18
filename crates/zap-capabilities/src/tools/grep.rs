@@ -22,11 +22,11 @@ use globset::{GlobBuilder, GlobMatcher};
 use grep::matcher::Matcher as _;
 use grep::regex::{RegexMatcher, RegexMatcherBuilder};
 use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
-use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 const DEFAULT_MAX_RESULTS: usize = 200;
 const DEFAULT_CONTEXT: usize = 0;
@@ -1259,7 +1259,7 @@ fn search(
         .build();
 
     // hidden=false: search must find dotfiles such as `.env` when explicitly asked.
-    // `.jeikcode_store` is still visited even when gitignored, so uploaded
+    // `.zap_store` is still visited even when gitignored, so uploaded
     // attachments stay searchable.
     for_each_project_entry(
         root,
@@ -1393,8 +1393,8 @@ impl<'a> Sink for GrepSink<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zap_kernel::tool::ToolContext;
     use tokio_util::sync::CancellationToken;
+    use zap_kernel::tool::ToolContext;
 
     fn ctx(dir: &std::path::Path) -> ToolContext {
         ToolContext {
@@ -1735,19 +1735,11 @@ mod tests {
     async fn finds_gitignored_upload_store() {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join(".git")).unwrap();
-        std::fs::write(
-            d.path().join(".gitignore"),
-            ".jeikcode_store/\nhidden.txt\n",
-        )
-        .unwrap();
+        std::fs::write(d.path().join(".gitignore"), ".zap_store/\nhidden.txt\n").unwrap();
         std::fs::write(d.path().join("hidden.txt"), "NEEDLE hidden\n").unwrap();
         std::fs::write(d.path().join("keep.rs"), "NEEDLE keep\n").unwrap();
-        std::fs::create_dir_all(d.path().join(".jeikcode_store")).unwrap();
-        std::fs::write(
-            d.path().join(".jeikcode_store/upload.txt"),
-            "NEEDLE upload\n",
-        )
-        .unwrap();
+        std::fs::create_dir_all(d.path().join(".zap_store")).unwrap();
+        std::fs::write(d.path().join(".zap_store/upload.txt"), "NEEDLE upload\n").unwrap();
         let r = GrepTool
             .execute(r#"{"pattern":"NEEDLE"}"#, &ctx(d.path()))
             .await;
