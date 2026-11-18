@@ -1250,7 +1250,7 @@ export function App() {
             </div>
           ) : activeWorkbenchView !== 'chat' &&
             zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView) ? (
-            /* 桌面端插件工作台标题：当前切到外部扩展工作台（如 DevOrbit）时，顶栏直接联动展示插件名称 */
+            /* 桌面端插件工作台标题：当前切到外部扩展工作台时，顶栏直接联动展示插件名称 */
             <button
               type="button"
               class="session-title-btn active"

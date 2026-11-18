@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::NaiveDate;
@@ -341,13 +342,40 @@ pub(crate) fn excerpt_head_tail(text: &str, head_chars: usize, tail_chars: usize
     format!("{head}\n...[truncated middle]...\n{tail}")
 }
 
+struct InflightPrecheckGuard(&'static AtomicUsize);
+
+impl Drop for InflightPrecheckGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire_precheck_guard() -> Option<InflightPrecheckGuard> {
+    static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+    const MAX_INFLIGHT_PRECHECKS: usize = 16;
+    let prev = INFLIGHT.fetch_add(1, Ordering::AcqRel);
+    if prev >= MAX_INFLIGHT_PRECHECKS {
+        INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+        return None;
+    }
+    Some(InflightPrecheckGuard(&INFLIGHT))
+}
+
 /// 回合结束时触发后台异步记忆提炼（按 `(agent_id)` 串行排队，杜绝并发覆写）。
+/// 调用方（含持有 `LiveViewHub` 锁或等待回合 `Done` 收尾的异步任务）零阻塞：所有脱敏与 SQLite 锁访问均在后台 `spawn_blocking` 中执行。
 pub fn maybe_capture_turn_from_snapshot(
     session_id: &str,
     working_dir: &Path,
     messages: &[Message],
     provider_name: &str,
 ) {
+    let sid_trimmed = session_id.trim();
+    if sid_trimmed.is_empty() {
+        return;
+    }
+    let Ok(rt_handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
     let Some((last_user_idx, user_text_raw, ai_text_raw, touched_files)) =
         extract_last_turn_payload_with_idx(messages)
     else {
@@ -358,42 +386,54 @@ pub fn maybe_capture_turn_from_snapshot(
     {
         return;
     }
-
-    let user_text = redact_secrets(&user_text_raw);
-    let ai_text = redact_secrets(&ai_text_raw);
-
-    let store_info = with_store(|store| {
-        let cfg = get_config_conn(&store.conn);
-        if !cfg.timeline_auto_capture || cfg.distill_mode == "off" {
-            return Ok(None);
-        }
-        let Some(agent) = resolve_agent_for_session_conn(&store.conn, session_id) else {
-            return Ok(None);
-        };
-        Ok(Some((cfg, agent)))
-    });
-
-    let Ok(Some((cfg, agent))) = store_info else {
+    let Some(precheck_guard) = try_acquire_precheck_guard() else {
         return;
     };
 
-    let turn_id = deterministic_turn_id(&agent.id, session_id, last_user_idx, &user_text, &ai_text);
-
-    let Some(pending_guard) = try_acquire_pending_slot(&agent.id) else {
-        tracing::warn!(agent = %agent.id, "neural_memory: distill queue full, skipping turn capture");
-        return;
-    };
-
-    let ts = now_ts_minute();
-    let project = normalize_project_name(working_dir);
-    let project_key = normalize_project_key(working_dir);
-    let wd_str = working_dir.to_string_lossy().into_owned();
-    let sid = session_id.to_string();
-    let provider_owned = provider_name.to_string();
+    let sid = sid_trimmed.to_string();
     let wd_owned = working_dir.to_path_buf();
-    let allow_pin = user_explicitly_requests_pin(&user_text);
+    let provider_owned = provider_name.to_string();
 
-    tokio::spawn(async move {
+    rt_handle.spawn(async move {
+        let precheck = precheck_guard;
+        let sid_for_lookup = sid.clone();
+        let init_res = tokio::task::spawn_blocking(move || {
+            let user_text = redact_secrets(&user_text_raw);
+            let ai_text = redact_secrets(&ai_text_raw);
+            let store_info = with_store(|store| {
+                let cfg = get_config_conn(&store.conn);
+                if !cfg.timeline_auto_capture || cfg.distill_mode == "off" {
+                    return Ok(None);
+                }
+                let Some(agent) = resolve_agent_for_session_conn(&store.conn, &sid_for_lookup)
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((cfg, agent)))
+            })?;
+            Ok::<_, String>(store_info.map(|(cfg, agent)| (cfg, agent, user_text, ai_text)))
+        })
+        .await;
+        drop(precheck);
+
+        let Ok(Ok(Some((cfg, agent, user_text, ai_text)))) = init_res else {
+            return;
+        };
+
+        let turn_id =
+            deterministic_turn_id(&agent.id, &sid, last_user_idx, &user_text, &ai_text);
+
+        let Some(pending_guard) = try_acquire_pending_slot(&agent.id) else {
+            tracing::warn!(agent = %agent.id, "neural_memory: distill queue full, skipping turn capture");
+            return;
+        };
+
+        let ts = now_ts_minute();
+        let project = normalize_project_name(&wd_owned);
+        let project_key = normalize_project_key(&wd_owned);
+        let wd_str = wd_owned.to_string_lossy().into_owned();
+        let allow_pin = user_explicitly_requests_pin(&user_text);
+
         let _pending = pending_guard;
         let lock = agent_distill_lock(&agent.id);
         let _serial = lock.lock().await;

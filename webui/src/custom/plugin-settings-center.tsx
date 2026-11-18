@@ -9,7 +9,6 @@ import { h } from 'preact';
 import { createPortal } from 'preact/compat';
 import { useEffect, useMemo, useState, useRef } from 'preact/hooks';
 import { GlassThemeSettingsPanel } from './glass-theme-settings-panel';
-import { DshPetSettingsView } from './dsh-pet-settings';
 import {
   CapabilityItem,
   getCapabilities,
@@ -49,14 +48,6 @@ const IconPalette = ({ size = 18 }: { size?: number }) => (
     <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
     <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
     <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.563-2.512 5.563-5.563C22 6.5 17.5 2 12 2z" />
-  </svg>
-);
-
-const IconCube = ({ size = 18 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-    <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-    <line x1="12" y1="22.08" x2="12" y2="12" />
   </svg>
 );
 
@@ -613,7 +604,7 @@ function PluginsManagerSection({
             <input
               type="text"
               class="dsh-search-input"
-              placeholder="例如: D:/Projects/dev-orbit 或粘贴 manifest.json 内容"
+              placeholder="例如: ~/.zap/plugins/my-plugin 或粘贴 manifest.json 内容"
               value={importInput}
               onInput={(e) => setImportInput((e.target as HTMLInputElement).value)}
             />
@@ -922,9 +913,6 @@ export function DeepSeekSettingsCenterModal({
         title: slot.title || slot.label,
         description: slot.description || '',
         render: (props: any) => {
-          if (slot.id === 'ext-dsh-pet' || slot.id === 'pet-config' || slot.pluginPackage === '@dsh-community/pet') {
-            return <DshPetSettingsView />;
-          }
           const res = slot.render ? slot.render(props) : null;
           if (res) return res;
           if (pkg) return <DynamicPluginConfigForm pkg={pkg} />;

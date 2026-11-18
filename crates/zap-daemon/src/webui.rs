@@ -1,6 +1,6 @@
 /// 尝试从本地插件目录提供静态资源服务。
 ///
-/// 允许外部扩展插件（如 DevOrbit 等独立项目编译产物）直接由 Daemon 托管。
+/// 允许已安装的外部扩展插件静态编译产物直接由 Daemon 托管。
 /// 严格限定在插件根目录下，防范任意路径穿越；若文件不存在则严格返回 404，
 /// 绝对不回退至 Zap 自身的 index.html，防止破坏 iframe 内部脚本的 MIME 解析。
 pub async fn try_serve_plugin_asset(path: &str) -> Option<Response> {
@@ -81,13 +81,6 @@ pub async fn try_serve_plugin_asset(path: &str) -> Option<Response> {
         );
         candidate_roots.push(std::path::PathBuf::from(&custom_dir).join(plugin_id));
     }
-    #[cfg(windows)]
-    {
-        candidate_roots.push(std::path::PathBuf::from(format!(
-            "D:/Projects/{plugin_id}/dist"
-        )));
-        candidate_roots.push(std::path::PathBuf::from(format!("D:/Projects/{plugin_id}")));
-    }
 
     for root in candidate_roots {
         if !root.is_dir() {
@@ -127,7 +120,7 @@ pub async fn try_serve_plugin_asset(path: &str) -> Option<Response> {
             }
         }
 
-        // SPA 路由回退：如果未带扩展名（如 /plugins/dev-orbit/dashboard），且根目录下有 index.html
+        // SPA 路由回退：如果未带扩展名（如 /plugins/my-plugin/dashboard），且根目录下有 index.html
         if !clean_subpath.contains('.') {
             let index_file = root.join("index.html");
             if index_file.is_file() {

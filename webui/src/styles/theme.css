@@ -6,13 +6,14 @@
   /* ==============================================================================
      Zap Apple Glassmorphism Design Tokens (Light — 苹果毛玻璃浅色质感规范)
      ============================================================================== */
-  --zap-glass-blur: 28px;
-  --zap-glass-bg: rgba(255, 255, 255, 0.58);
-  --zap-glass-panel-bg: rgba(255, 255, 255, 0.5);
+  --zap-glass-blur: 14px;
+  --zap-glass-bg: rgba(255, 255, 255, 0.64);
+  --zap-glass-panel-bg: rgba(255, 255, 255, 0.58);
   --zap-glass-card-bg: rgba(255, 255, 255, 0.88);
   --zap-glass-card-hover-bg: rgba(255, 255, 255, 0.96);
   --zap-scroll-card-bg: rgba(255, 255, 255, 0.94);
   --zap-scroll-user-card-bg: rgba(255, 255, 255, 0.97);
+  --zap-composer-surface-bg: rgba(255, 255, 255, 0.94);
   --zap-sidebar-surface-bg: rgba(255, 255, 255, 0.8);
   --zap-thinking-pill-bg: rgba(15, 23, 42, 0.048);
   --zap-thinking-pill-hover-bg: rgba(15, 23, 42, 0.08);
@@ -74,13 +75,14 @@
 
 /* Dark Glassmorphism palette — deep midnight frosted slate over subtle aurora mesh */
 :root[data-theme='dark'] {
-  --zap-glass-blur: 28px;
-  --zap-glass-bg: rgba(15, 23, 42, 0.66);
-  --zap-glass-panel-bg: rgba(15, 23, 42, 0.56);
+  --zap-glass-blur: 14px;
+  --zap-glass-bg: rgba(15, 23, 42, 0.72);
+  --zap-glass-panel-bg: rgba(15, 23, 42, 0.64);
   --zap-glass-card-bg: rgba(30, 41, 59, 0.78);
   --zap-glass-card-hover-bg: rgba(30, 41, 59, 0.92);
   --zap-scroll-card-bg: rgba(30, 41, 59, 0.9);
   --zap-scroll-user-card-bg: rgba(30, 41, 59, 0.95);
+  --zap-composer-surface-bg: rgba(30, 41, 59, 0.92);
   --zap-sidebar-surface-bg: rgba(15, 23, 42, 0.84);
   --zap-thinking-pill-bg: rgba(255, 255, 255, 0.068);
   --zap-thinking-pill-hover-bg: rgba(255, 255, 255, 0.11);
@@ -132,13 +134,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']):not([data-theme='dark']) {
-    --zap-glass-blur: 28px;
-    --zap-glass-bg: rgba(15, 23, 42, 0.66);
-    --zap-glass-panel-bg: rgba(15, 23, 42, 0.56);
+    --zap-glass-blur: 14px;
+    --zap-glass-bg: rgba(15, 23, 42, 0.72);
+    --zap-glass-panel-bg: rgba(15, 23, 42, 0.64);
     --zap-glass-card-bg: rgba(30, 41, 59, 0.78);
     --zap-glass-card-hover-bg: rgba(30, 41, 59, 0.92);
     --zap-scroll-card-bg: rgba(30, 41, 59, 0.9);
     --zap-scroll-user-card-bg: rgba(30, 41, 59, 0.95);
+    --zap-composer-surface-bg: rgba(30, 41, 59, 0.92);
     --zap-sidebar-surface-bg: rgba(15, 23, 42, 0.84);
     --zap-thinking-pill-bg: rgba(255, 255, 255, 0.068);
     --zap-thinking-pill-hover-bg: rgba(255, 255, 255, 0.11);

@@ -182,32 +182,37 @@ pub fn build_static_system_block(session_id: &str) -> Option<String> {
 }
 
 /// 新建 Fresh 会话分配好 `session_id` 后补记静态智能体归属与已冻结档案快照（若 `bind_session_id` 尚未登记）。
-pub fn note_fresh_session_static_agent(session_id: &str, working_dir: &Path) {
+pub async fn note_fresh_session_static_agent(session_id: &str, working_dir: &Path) {
     let sid = session_id.trim();
     if sid.is_empty() || get_session_static_state(sid).is_some() {
         return;
     }
+    let sid_owned = sid.to_string();
     let proj_name = normalize_project_name(working_dir);
     let proj_key = normalize_project_key(working_dir);
-    let res = with_store(|store| {
-        let agent_id = resolve_agent_for_session_conn(&store.conn, sid)
-            .map(|a| a.id)
-            .unwrap_or_else(|| "none".to_string());
-        let frozen_profiles = if agent_id != "none" {
-            load_profiles_scoped_conn(&store.conn, &agent_id, &proj_key, &proj_name, 18)?
-                .into_iter()
-                .map(|f| {
-                    let line = format_profile_line(&f);
-                    (f.id, line)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Ok((agent_id, frozen_profiles))
-    });
-    if let Ok((agent_id, frozen_profiles)) = res {
-        record_session_static_state(sid, &agent_id, frozen_profiles);
+    let sid_for_db = sid_owned.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        with_store(|store| {
+            let agent_id = resolve_agent_for_session_conn(&store.conn, &sid_for_db)
+                .map(|a| a.id)
+                .unwrap_or_else(|| "none".to_string());
+            let frozen_profiles = if agent_id != "none" {
+                load_profiles_scoped_conn(&store.conn, &agent_id, &proj_key, &proj_name, 18)?
+                    .into_iter()
+                    .map(|f| {
+                        let line = format_profile_line(&f);
+                        (f.id, line)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Ok((agent_id, frozen_profiles))
+        })
+    })
+    .await;
+    if let Ok(Ok((agent_id, frozen_profiles))) = res {
+        record_session_static_state(&sid_owned, &agent_id, frozen_profiles);
     }
 }
 
@@ -235,16 +240,29 @@ impl NeuralMemoryBinding {
             if self.was_fresh && self.initial_agent_id != "none" {
                 let sid_owned = sid.to_string();
                 let aid_owned = self.initial_agent_id.clone();
-                let _ = with_store(|store| {
-                    bind_fresh_session_agent_if_unset_conn(&store.conn, &sid_owned, &aid_owned)
-                });
+                if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                    rt.spawn_blocking(move || {
+                        let _ = with_store(|store| {
+                            bind_fresh_session_agent_if_unset_conn(
+                                &store.conn,
+                                &sid_owned,
+                                &aid_owned,
+                            )
+                        });
+                    });
+                } else {
+                    let _ = with_store(|store| {
+                        bind_fresh_session_agent_if_unset_conn(&store.conn, &sid_owned, &aid_owned)
+                    });
+                }
             }
         }
     }
 }
 
 /// 挂载智能体静态系统前缀、`memory_recall` 工具（仅在存在可用智能体或已激活时挂载）与 `NeuralMemoryHook`（`pre_request` 瞬态注入）。
-pub fn apply_session_static_system_append(
+/// SQLite 查询通过 `spawn_blocking` 执行，绝不阻塞 Tokio 异步工作线程。
+pub async fn apply_session_static_system_append(
     runtime: &mut zap_coding::CodingRuntimeConfig,
     session_id: Option<&str>,
 ) -> NeuralMemoryBinding {
@@ -264,40 +282,45 @@ pub fn apply_session_static_system_append(
         .extra_hooks
         .push(Arc::clone(&hook) as Arc<dyn LifecycleHooks>);
 
-    let store_res = with_store(|store| {
-        let agent = resolve_agent_for_session_conn(&store.conn, &sid);
-        let should_mount_tool = agent.is_some() || has_any_agents_conn(&store.conn);
-        let (block, frozen_profiles) = build_static_system_block_with_ids_conn(
-            &store.conn,
-            &sid,
-            &current_proj_key,
-            &current_proj_name,
-            false,
-        )?;
-        let known_ids: HashSet<String> = if let Some(ref ag) = agent {
-            load_profiles_scoped_conn(
+    let sid_for_db = sid.clone();
+    let store_res = tokio::task::spawn_blocking(move || {
+        with_store(|store| {
+            let agent = resolve_agent_for_session_conn(&store.conn, &sid_for_db);
+            let should_mount_tool = agent.is_some() || has_any_agents_conn(&store.conn);
+            let (block, frozen_profiles) = build_static_system_block_with_ids_conn(
                 &store.conn,
-                &ag.id,
+                &sid_for_db,
                 &current_proj_key,
                 &current_proj_name,
-                64,
-            )?
-            .into_iter()
-            .map(|p| p.id)
-            .collect()
-        } else {
-            HashSet::new()
-        };
-        Ok((
-            agent.map(|a| a.id),
-            should_mount_tool,
-            block,
-            frozen_profiles,
-            known_ids,
-        ))
-    });
+                false,
+            )?;
+            let known_ids: HashSet<String> = if let Some(ref ag) = agent {
+                load_profiles_scoped_conn(
+                    &store.conn,
+                    &ag.id,
+                    &current_proj_key,
+                    &current_proj_name,
+                    64,
+                )?
+                .into_iter()
+                .map(|p| p.id)
+                .collect()
+            } else {
+                HashSet::new()
+            };
+            Ok((
+                agent.map(|a| a.id),
+                should_mount_tool,
+                block,
+                frozen_profiles,
+                known_ids,
+            ))
+        })
+    })
+    .await;
 
-    let Ok((agent_id, should_mount_tool, block_opt, frozen_profiles, known_ids)) = store_res else {
+    let Ok(Ok((agent_id, should_mount_tool, block_opt, frozen_profiles, known_ids))) = store_res
+    else {
         return NeuralMemoryBinding {
             recall_tool: None,
             hook,

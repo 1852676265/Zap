@@ -1,7 +1,7 @@
 import DOMPurify from 'dompurify';
 import { useMemo, useRef, useEffect, useState } from 'preact/hooks';
 import { render } from 'preact';
-import { createPortal } from 'preact/compat';
+import { createPortal, memo } from 'preact/compat';
 import { markdownToHtml } from '../lib/markdownRender';
 import { MermaidDiagram } from './MermaidDiagram';
 import { useSettings } from '../settings';
@@ -180,6 +180,7 @@ function resolveTargetFile(href: string, basePath?: string, cwd?: string): strin
 
 // 在 HTML 注入 DOM 之前，统一将相对图片 src 预重写为 /fs/raw 流式接口，根治离开久了图片 404 与休眠裂图问题！
 function rewriteImageSources(html: string, basePath?: string, cwd?: string): string {
+  if (!/<img\b/i.test(html)) return html;
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
   const imgNodes = doc.querySelectorAll('img');
@@ -195,15 +196,160 @@ function rewriteImageSources(html: string, basePath?: string, cwd?: string): str
   return doc.body.innerHTML;
 }
 
-export function Markdown({
-  content,
-  search,
-  basePath,
-  cwd,
-  activeSearchIndex,
-  onMatchCountChange,
-  targetContext = 'chat',
-}: {
+function escapeHtmlAttr(val: string): string {
+  return val
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function decodeHtmlEntities(raw: string): string {
+  if (!raw.includes('&')) return raw;
+  return raw
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+const inlineCodeKindCache = new Map<string, 'none' | 'web' | 'file'>();
+const MAX_INLINE_CODE_CACHE = 2000;
+
+function classifyInlineCodeText(text: string): 'none' | 'web' | 'file' {
+  if (!text || text.length > 360 || text.includes('\n')) return 'none';
+  const hit = inlineCodeKindCache.get(text);
+  if (hit !== undefined) return hit;
+  let kind: 'none' | 'web' | 'file' = 'none';
+  if (isWebUrlSnippet(text)) {
+    kind = 'web';
+  } else if (isFilePathSnippet(text)) {
+    kind = 'file';
+  }
+  if (inlineCodeKindCache.size >= MAX_INLINE_CODE_CACHE) {
+    const firstKey = inlineCodeKindCache.keys().next().value;
+    if (firstKey !== undefined) inlineCodeKindCache.delete(firstKey);
+  }
+  inlineCodeKindCache.set(text, kind);
+  return kind;
+}
+
+// 在字符串阶段预注入行内代码徽章与超链接胶囊样式，彻底免除挂载后 querySelectorAll 全子树扫描与二次样式重算
+function decorateBadgesAndLinks(
+  html: string,
+  openExternalLabel: string,
+  clickPreviewLabel: string,
+  openInMainLabel: string,
+): string {
+  if (!html.includes('<code') && !html.includes('<a ')) return html;
+  return html.replace(
+    /<pre\b[\s\S]*?<\/pre>|<a\s+([^>]*?\bhref="[^"]*"[^>]*)>([\s\S]*?)<\/a>|<code>([\s\S]*?)<\/code>/gi,
+    (match, anchorAttrs?: string, anchorInner?: string, codeInner?: string) => {
+      if (anchorAttrs !== undefined) {
+        let attrs = anchorAttrs;
+        if (/\bclass="/i.test(attrs)) {
+          attrs = attrs.replace(/\bclass="([^"]*)"/i, (_m, cls: string) =>
+            cls.includes('markdown-link-pill') ? `class="${cls}"` : `class="${cls} markdown-link-pill"`,
+          );
+        } else {
+          attrs += ' class="markdown-link-pill"';
+        }
+        if (!/\bdraggable=/i.test(attrs)) {
+          attrs += ' draggable="false"';
+        }
+        return `<a ${attrs}>${anchorInner ?? ''}</a>`;
+      }
+      if (codeInner !== undefined) {
+        if (codeInner.includes('<')) return match;
+        const plain = decodeHtmlEntities(codeInner).trim();
+        const kind = classifyInlineCodeText(plain);
+        if (kind === 'web') {
+          const title = escapeHtmlAttr(`${plain} (${openExternalLabel})`);
+          return `<code class="file-path-badge web-link-badge" title="${title}" tabindex="0" role="link" draggable="false">${codeInner}</code>`;
+        }
+        if (kind === 'file') {
+          const title = escapeHtmlAttr(`${plain} (${clickPreviewLabel}, Ctrl+Click: ${openInMainLabel})`);
+          return `<code class="file-path-badge" title="${title}" tabindex="0" role="button" draggable="false">${codeInner}</code>`;
+        }
+        return match;
+      }
+      return match;
+    },
+  );
+}
+
+const MAX_RENDERED_MD_CACHE = 600;
+const renderedMarkdownCache = new Map<string, string>();
+
+function compileBaseMarkdownHtml(
+  content: string,
+  basePath: string | undefined,
+  cwd: string | undefined,
+  lang: string,
+  openExternalLabel: string,
+  clickPreviewLabel: string,
+  openInMainLabel: string,
+): string {
+  const text = content ?? '';
+  // 超长单篇文档（>120KB）不占长驻缓存，常规对话消息走 O(1) LRU 命中
+  const cacheable = text.length <= 120_000;
+  const cacheKey = cacheable ? `${lang}\0${basePath ?? ''}\0${cwd ?? ''}\0${text}` : '';
+  if (cacheable) {
+    const cached = renderedMarkdownCache.get(cacheKey);
+    if (cached !== undefined) {
+      renderedMarkdownCache.delete(cacheKey);
+      renderedMarkdownCache.set(cacheKey, cached);
+      return cached;
+    }
+  }
+
+  const raw = markdownToHtml(text, { highlight: true });
+  // SECURITY: model output is untrusted — sanitize before injecting as HTML.
+  const sanitized = DOMPurify.sanitize(raw, {
+    ADD_TAGS: ['mark', 'math', 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'ms', 'mtext', 'mspace', 'mfrac', 'msqrt', 'mroot', 'msub', 'msup', 'msubsup', 'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'mstyle'],
+    ADD_ATTR: ['data-match-idx', 'id', 'data-alt-id', 'data-copy', 'data-mermaid-code', 'class', 'checked', 'disabled', 'type', 'align', 'start', 'colspan', 'rowspan', 'style', 'aria-hidden', 'encoding', 'target', 'rel'],
+  });
+  const withImages = rewriteImageSources(sanitized, basePath, cwd);
+  const decorated = decorateBadgesAndLinks(
+    withImages,
+    openExternalLabel,
+    clickPreviewLabel,
+    openInMainLabel,
+  );
+
+  if (cacheable) {
+    if (renderedMarkdownCache.size >= MAX_RENDERED_MD_CACHE) {
+      const oldestKey = renderedMarkdownCache.keys().next().value;
+      if (oldestKey !== undefined) renderedMarkdownCache.delete(oldestKey);
+    }
+    renderedMarkdownCache.set(cacheKey, decorated);
+  }
+  return decorated;
+}
+
+/** 供后台空闲预热会话 Markdown 渲染缓存，使切入历史会话时直接 O(1) 命中已编译 HTML */
+export function warmMarkdownCache(
+  content: string,
+  cwd: string | undefined,
+  lang: string,
+  labels: { openExternal: string; clickPreview: string; openInMain: string },
+): void {
+  if (!content || content.length > 120_000) return;
+  const cacheKey = `${lang}\0\0${cwd ?? ''}\0${content}`;
+  if (renderedMarkdownCache.has(cacheKey)) return;
+  compileBaseMarkdownHtml(
+    content,
+    undefined,
+    cwd,
+    lang,
+    labels.openExternal,
+    labels.clickPreview,
+    labels.openInMain,
+  );
+}
+
+export interface MarkdownProps {
   content: string;
   search?: string;
   basePath?: string;
@@ -211,39 +357,53 @@ export function Markdown({
   activeSearchIndex?: number;
   onMatchCountChange?: (count: number) => void;
   targetContext?: 'main' | 'right' | 'chat';
-}) {
+}
+
+export const Markdown = memo(function Markdown({
+  content,
+  search,
+  basePath,
+  cwd,
+  activeSearchIndex,
+  onMatchCountChange,
+  targetContext = 'chat',
+}: MarkdownProps) {
   const { theme, lang, t } = useSettings();
   const isDark = (theme === 'dark') ||
     (theme === 'system' && typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches) ||
     (typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark');
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const openExternalLabel = t('preview.clickToOpenExternal');
+  const clickPreviewLabel = t('preview.clickToPreview');
+  const openInMainLabel = t('preview.openInMain');
 
   const { renderedHtml, matchCount } = useMemo(() => {
-    const raw = markdownToHtml(content ?? '', { highlight: true });
-    // SECURITY: model output is untrusted — sanitize before injecting as HTML.
-    const sanitized = DOMPurify.sanitize(raw, {
-      ADD_TAGS: ['mark', 'math', 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'ms', 'mtext', 'mspace', 'mfrac', 'msqrt', 'mroot', 'msub', 'msup', 'msubsup', 'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'mstyle'],
-      ADD_ATTR: ['data-match-idx', 'id', 'data-alt-id', 'data-copy', 'data-mermaid-code', 'class', 'checked', 'disabled', 'type', 'align', 'start', 'colspan', 'rowspan', 'style', 'aria-hidden', 'encoding', 'target', 'rel'],
-    });
-
-    // 在 HTML 渲染前将相对图片直转为 /fs/raw 绝对地址
-    const prepped = rewriteImageSources(sanitized, basePath, cwd);
+    const prepped = compileBaseMarkdownHtml(
+      content ?? '',
+      basePath,
+      cwd,
+      lang,
+      openExternalLabel,
+      clickPreviewLabel,
+      openInMainLabel,
+    );
 
     if (search && search.trim()) {
       const res = highlightHtml(prepped, search);
       return { renderedHtml: res.html, matchCount: res.count };
     }
     return { renderedHtml: prepped, matchCount: 0 };
-  }, [content, search, basePath, cwd]);
+  }, [content, search, basePath, cwd, lang, openExternalLabel, clickPreviewLabel, openInMainLabel]);
 
   useEffect(() => {
-    onMatchCountChange?.(matchCount);
+    if (!onMatchCountChange) return;
+    onMatchCountChange(matchCount);
   }, [matchCount, onMatchCountChange]);
 
   // 当前激活选中的匹配项切换时，添加 .is-current-match 并平滑滚动居中定位！
   useEffect(() => {
-    if (!rootRef.current) return;
+    if (!rootRef.current || !renderedHtml.includes('msg-search-highlight')) return;
     const marks = rootRef.current.querySelectorAll<HTMLElement>('.msg-search-highlight');
     marks.forEach((m, idx) => {
       if (activeSearchIndex !== undefined && idx === activeSearchIndex) {
@@ -257,7 +417,7 @@ export function Markdown({
 
   // 水合挂载 MermaidDiagram 交互矢量图组件
   useEffect(() => {
-    if (!rootRef.current) return;
+    if (!rootRef.current || !renderedHtml.includes('mermaid-diagram-mount')) return;
 
     const mountNodes = rootRef.current.querySelectorAll<HTMLElement>('.mermaid-diagram-mount');
     const mountedElements: HTMLElement[] = [];
@@ -287,89 +447,55 @@ export function Markdown({
   }, [renderedHtml, isDark, lang, basePath]);
 
   const lastDragTimeRef = useRef(0);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
 
-  // 智能扫描并标记画布上的文件引用胶囊徽章与 Web 链接，赋予高级胶囊动效、手形与无障碍聚焦
   useEffect(() => {
-    if (!rootRef.current) return;
-    const codes = rootRef.current.querySelectorAll<HTMLElement>(':not(pre) > code');
-    codes.forEach((code) => {
-      const text = (code.textContent || '').trim();
-      if (isWebUrlSnippet(text)) {
-        code.classList.add('file-path-badge', 'web-link-badge');
-        code.setAttribute('title', `${text} (${t('preview.clickToOpenExternal')})`);
-        code.setAttribute('tabindex', '0');
-        code.setAttribute('role', 'link');
-        code.setAttribute('draggable', 'false');
-      } else if (isFilePathSnippet(text)) {
-        code.classList.add('file-path-badge');
-        code.setAttribute('title', `${text} (${t('preview.clickToPreview')}, Ctrl+Click: ${t('preview.openInMain')})`);
-        code.setAttribute('tabindex', '0');
-        code.setAttribute('role', 'button');
-        code.setAttribute('draggable', 'false');
-      }
-    });
+    return () => {
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+    };
+  }, []);
 
-    const links = rootRef.current.querySelectorAll<HTMLElement>('a[href]');
-    links.forEach((a) => {
-      a.classList.add('markdown-link-pill');
-      a.setAttribute('draggable', 'false');
-    });
-  }, [renderedHtml]);
+  // 按需监听鼠标长按拖拽划词事件：仅在点中徽章/链接时临时挂载 window 监听，松开即卸载，消除常驻监听器风暴
+  function onMouseDown(e: MouseEvent) {
+    if (e.button !== 0) return;
+    const badge = (e.target as HTMLElement)?.closest('.file-path-badge, a[href]') as HTMLElement | null;
+    if (!badge) return;
 
-  // 监听鼠标长按拖拽划词事件：拖选文字时光标自适应切换为点击形 (text)，松开即恢复
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-
-    let isMouseDown = false;
+    dragCleanupRef.current?.();
     let didDrag = false;
-    let downX = 0;
-    let downY = 0;
-    let activeBadge: HTMLElement | null = null;
+    const downX = e.clientX;
+    const downY = e.clientY;
 
-    const handleMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      const badge = (e.target as HTMLElement)?.closest('.file-path-badge, a[href]') as HTMLElement | null;
-      if (badge) {
-        isMouseDown = true;
-        didDrag = false;
-        downX = e.clientX;
-        downY = e.clientY;
-        activeBadge = badge;
+    const handleMouseMove = (moveEv: MouseEvent) => {
+      const dx = Math.abs(moveEv.clientX - downX);
+      const dy = Math.abs(moveEv.clientY - downY);
+      if (dx > 3 || dy > 3) {
+        didDrag = true;
+        badge.classList.add('is-selecting');
       }
     };
 
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isMouseDown || !activeBadge) return;
-      const dx = Math.abs(e.clientX - downX);
-      const dy = Math.abs(e.clientY - downY);
-      if (dx > 3 || dy > 3) {
-        didDrag = true;
-        activeBadge.classList.add('is-selecting');
+    const cleanup = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      badge.classList.remove('is-selecting');
+      if (dragCleanupRef.current === cleanup) {
+        dragCleanupRef.current = null;
       }
     };
 
     const handleMouseUp = () => {
-      isMouseDown = false;
       if (didDrag) {
         lastDragTimeRef.current = Date.now();
       }
-      if (activeBadge) {
-        activeBadge.classList.remove('is-selecting');
-        activeBadge = null;
-      }
+      cleanup();
     };
 
-    root.addEventListener('mousedown', handleMouseDown);
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      root.removeEventListener('mousedown', handleMouseDown);
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [renderedHtml]);
+    dragCleanupRef.current = cleanup;
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
+    window.addEventListener('mouseup', handleMouseUp, { passive: true });
+  }
 
   function onClick(e: MouseEvent) {
     const targetEl = e.target as HTMLElement;
@@ -628,6 +754,7 @@ export function Markdown({
       <div
         ref={rootRef}
         class="markdown-root assistant-message-content"
+        onMouseDown={onMouseDown}
         onClick={onClick}
         onContextMenu={onContextMenu}
         onKeyDown={onKeyDown}
@@ -753,4 +880,4 @@ export function Markdown({
       )}
     </>
   );
-}
+});

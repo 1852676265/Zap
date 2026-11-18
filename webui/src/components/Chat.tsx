@@ -33,6 +33,11 @@ import { createTimelineFollow } from '../lib/timelineFollow';
 
 /** First paint / page size for long transcripts. Older messages load on demand. */
 const HISTORY_PAGE = 48;
+/** 会话切换首帧优先挂载的底部视口消息数，随后按帧静默向前补齐，消除单帧挂载 48 条富文本的主线程阻塞 */
+const INITIAL_TAIL_MOUNT = 12;
+const PROGRESSIVE_EXPAND_STEP = 18;
+/** 后台运行会话保留专用 SSE 流的数量上限，避免叠加全局 /events 与 /live 耗尽浏览器 HTTP/1.1 同源 6 连接池导致假死 */
+const MAX_BACKGROUND_SESSION_WATCHERS = 2;
 /** 「立即发送」程序化停止标记的有效期：后端 /chat/stop 的 stop_and_wait 上限仅 2.5s。 */
 const PROGRAMMATIC_STOP_MARK_TTL_MS = 15000;
 /**
@@ -63,7 +68,7 @@ import {
   FRONTEND_COMMANDS,
   type SlashHandlers,
 } from '../lib/slashCommands';
-import { buildTurnNavItems, buildTurnNavItemsFromOutline, compactTurnNavText, filterTurnNavItems, resolveActiveTurnId, turnNavId, turnNavScrollTop } from '../lib/turnNav';
+import { buildTurnNavItems, buildTurnNavItemsFromOutline, compactTurnNavText, filterTurnNavItems, resolveActiveTurnId, resolveTurnTokenState, turnNavId, turnNavScrollTop } from '../lib/turnNav';
 import { TurnNavigator } from './TurnNavigator';
 import { resolvePendingAfterDecision } from '../lib/pendingPermission';
 import { beginModeSwitch, completeModeSwitch, failModeSwitch, initModeState, modeForSessionOrigin } from '../lib/modeSwitch';
@@ -75,8 +80,8 @@ import {
   recordUserManualStop,
   recordUserSteer,
 } from '../lib/sessionNotify';
-import { createPortal, lazy, Suspense } from 'preact/compat';
-import { Markdown } from './Markdown';
+import { createPortal, lazy, memo, Suspense } from 'preact/compat';
+import { Markdown, warmMarkdownCache } from './Markdown';
 import { ModelSelector } from './ModelSelector';
 import { ModeSelector } from './ModeSelector';
 import { getPageZoom } from '../lib/pageZoom';
@@ -95,7 +100,7 @@ import {
   type GitCommitFile,
   type GitStatusItem,
 } from '../api';
-import { useT } from '../settings';
+import { useSettings, useT } from '../settings';
 import type { MsgKey } from '../i18n';
 import {
   MAX_IMAGES,
@@ -293,6 +298,69 @@ interface Message {
   /** Stable ordinal among real user questions. Browser-local optimistic turns
    * carry this until the daemon's authoritative outline arrives. */
   turnNavOrdinal?: number;
+}
+
+function areMessagePartsEquivalent(a: MsgPart[], b: MsgPart[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const pa = a[i]!;
+    const pb = b[i]!;
+    if (pa.kind !== pb.kind) return false;
+    if (pa.kind === 'text' || pa.kind === 'reasoning' || pa.kind === 'notice' || pa.kind === 'rate_limited') {
+      if (pa.text !== (pb as typeof pa).text) return false;
+    } else if (pa.kind === 'tool') {
+      const tb = (pb as typeof pa).tool;
+      if (
+        pa.tool.status === 'pending' ||
+        pa.tool.id !== tb.id ||
+        pa.tool.status !== tb.status ||
+        pa.tool.output !== tb.output ||
+        pa.tool.args !== tb.args
+      ) {
+        return false;
+      }
+    } else if (pa.kind === 'todo_list') {
+      const ib = (pb as typeof pa).items;
+      if (pa.items.length !== ib.length) return false;
+      for (let j = 0; j < pa.items.length; j++) {
+        if (pa.items[j]!.content !== ib[j]!.content || pa.items[j]!.status !== ib[j]!.status) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+function areMessagesEquivalent(a: Message, b: Message): boolean {
+  if (
+    a.role !== b.role ||
+    a.id !== b.id ||
+    a.sourceIndex !== b.sourceIndex ||
+    a.elapsedMs !== b.elapsedMs ||
+    (a.images?.length ?? 0) !== (b.images?.length ?? 0)
+  ) {
+    return false;
+  }
+  return areMessagePartsEquivalent(a.parts, b.parts);
+}
+
+/** 对账合并磁盘历史与内存消息：未发生变化的历史条目直接保留原对象引用，避免击穿气泡 memo 引发全树重绘 */
+function reconcileLoadedMessages(prev: Message[], next: Message[]): Message[] {
+  if (prev.length === 0) return next;
+  let allSame = prev.length === next.length;
+  const merged = new Array<Message>(next.length);
+  for (let i = 0; i < next.length; i++) {
+    const cur = prev[i];
+    const incoming = next[i]!;
+    if (cur && areMessagesEquivalent(cur, incoming)) {
+      merged[i] = cur;
+    } else {
+      merged[i] = incoming;
+      allSame = false;
+    }
+  }
+  return allSame ? prev : merged;
 }
 
 /**
@@ -1056,7 +1124,7 @@ export function Chat({
   onLiveReview,
   onBindReviewDismiss,
 }: ChatProps) {
-  const t = useT();
+  const { lang, t } = useSettings();
   const activeInspector = useActiveInspector();
   const [messages, setMessages] = useState<Message[]>([]);
   const initialDraft = loadComposerDraft(sessionId);
@@ -1078,7 +1146,6 @@ export function Chat({
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const turnStartedAtRef = useRef<number | null>(null);
   const turnStartedAtBySessionRef = useRef<Map<string, number>>(new Map());
-  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const STEER_STORAGE_PREFIX = 'jeikcode:pending_steers:';
   const CLOCK_STORAGE_PREFIX = 'jeikcode:turn_clock:';
@@ -1206,13 +1273,6 @@ export function Chat({
   const chatRecoveryRef = useRef<ChatRecoveryState>('ready');
   chatRecoveryRef.current = chatRecovery;
   const recoveryPolicy = chatRecoveryPolicy(chatRecovery);
-
-  useEffect(() => {
-    if (!busy || turnStartedAt == null) return;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [busy, turnStartedAt]);
 
   function transitionChatRecovery(event: ChatRecoveryEvent): ChatRecoveryState {
     const next = reduceChatRecovery(chatRecoveryRef.current, event);
@@ -1874,6 +1934,11 @@ export function Chat({
     assignedNewSessionIdRef.current = null;
     renderedSessionIdRef.current = sessionId;
   }
+  // 会话切换渐进挂载窗口：首帧仅挂载底部 INITIAL_TAIL_MOUNT 条消息，随后逐帧无感向前展开至 Infinity
+  const [mountedTailLimit, setMountedTailLimit] = useState<number>(INITIAL_TAIL_MOUNT);
+  const mountedLimitGenRef = useRef<number>(timelineScopeGenRef.current);
+  const prependAnchorHeightRef = useRef<number | null>(null);
+  const warmedMarkdownSessionsRef = useRef<Set<string>>(new Set());
   const viewedTodoSessionId = sessionId ?? assignedNewSessionIdRef.current;
   const activeTodos = resolveRenderedTodos({
     viewedSessionId: viewedTodoSessionId,
@@ -1934,6 +1999,31 @@ export function Chat({
   }
   function clearManualStopGuard(sid: string) {
     if (sid) terminalSettleGuardUntilRef.current.delete(sid);
+  }
+  function registerSessionWatcher(targetSid: string, ctrl: AbortController) {
+    sessionWatchersRef.current.delete(targetSid);
+    sessionWatchersRef.current.set(targetSid, ctrl);
+    const foregroundSid = activeIdRef.current ?? renderedSessionIdRef.current;
+    let bgCount = 0;
+    for (const [sid, existing] of sessionWatchersRef.current.entries()) {
+      if (sid === foregroundSid) continue;
+      if (existing.signal.aborted) {
+        sessionWatchersRef.current.delete(sid);
+        localActiveStreamsBySessionRef.current.delete(sid);
+        continue;
+      }
+      bgCount += 1;
+    }
+    if (bgCount <= MAX_BACKGROUND_SESSION_WATCHERS) return;
+    let toEvict = bgCount - MAX_BACKGROUND_SESSION_WATCHERS;
+    for (const [sid, existing] of sessionWatchersRef.current.entries()) {
+      if (toEvict <= 0) break;
+      if (sid === foregroundSid || sid === targetSid) continue;
+      existing.abort();
+      sessionWatchersRef.current.delete(sid);
+      localActiveStreamsBySessionRef.current.delete(sid);
+      toEvict -= 1;
+    }
   }
   function stopDetachedHistoryPoll(targetSid?: string) {
     if (detachedPollTimerRef.current != null) {
@@ -2082,7 +2172,7 @@ export function Chat({
     // Live reattach via event bus fan-out.
     const watchAbort = new AbortController();
     detachedWatchAbortRef.current = watchAbort;
-    sessionWatchersRef.current.set(loadId, watchAbort);
+    registerSessionWatcher(loadId, watchAbort);
     localActiveStreamsBySessionRef.current.set(loadId, {
       abortController: watchAbort,
       requestId: loadId,
@@ -2595,7 +2685,7 @@ export function Chat({
           idleWatchFlashDisconnectsRef.current.delete(loadId);
           idleWatchAbortRef.current = null;
           detachedWatchAbortRef.current = abort;
-          sessionWatchersRef.current.set(loadId, abort);
+          registerSessionWatcher(loadId, abort);
           transitionChatRecovery({ type: 'active_check_succeeded', active: true });
           requestIdRef.current = loadId;
           setBusyAndClock(true);
@@ -3261,19 +3351,11 @@ export function Chat({
               hasOlderBySessionRef.current.set(sessionId, olderExists);
 
               const loaded = sessionMessagesToDisplay(res.messages, res.offset ?? 0);
-              const lastCur = messagesRef.current[messagesRef.current.length - 1];
-              const lastLoaded = loaded[loaded.length - 1];
-              const hasUnfinishedTool = lastCur?.parts?.some(
-                (p) => p.kind === 'tool' && p.tool?.status === 'pending'
-              );
-              const shouldUpdate =
-                loaded.length !== messagesRef.current.length ||
-                hasUnfinishedTool ||
-                JSON.stringify(lastLoaded?.parts) !== JSON.stringify(lastCur?.parts);
-              if (shouldUpdate) {
-                messageCacheRef.current.set(sessionId, loaded);
-                messagesRef.current = loaded;
-                setMessages(loaded);
+              const reconciled = reconcileLoadedMessages(messagesRef.current, loaded);
+              if (reconciled !== messagesRef.current) {
+                messageCacheRef.current.set(sessionId, reconciled);
+                messagesRef.current = reconciled;
+                setMessages(reconciled);
                 if (res.turns && res.turns.length > 0) {
                   turnOutlineBySessionRef.current.set(sessionId, res.turns);
                   setTurnOutline(res.turns);
@@ -3283,12 +3365,12 @@ export function Chat({
                   setTurnStats(res.turn_stats);
                 }
                 if (res.token_usage) {
-                  applySessionTokens(sessionId, loaded, res.token_usage);
+                  applySessionTokens(sessionId, reconciled, res.token_usage);
                 }
                 void saveSessionCache(
                   effectiveHash,
                   sessionId,
-                  loaded,
+                  reconciled,
                   res.todos,
                   undefined,
                   res.turns,
@@ -3496,14 +3578,19 @@ export function Chat({
               const shouldAdoptDisk = !cacheHasInFlightUser && !diskShrank && (cacheMissingUser || cacheMissingSettled || (!turnActive && !cacheInFlight && diskHasUser && diskHasNewContent) || cacheContentStale);
 
               if (shouldAdoptDisk) {
-                displayMessages = loaded;
-                messagesRef.current = loaded;
-                messageCacheRef.current.set(loadId, loaded);
-                setMessages(loaded);
-                if (scrollRef.current) {
-                  scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                const reconciled = reconcileLoadedMessages(messagesRef.current, loaded);
+                displayMessages = reconciled;
+                if (reconciled !== messagesRef.current) {
+                  messagesRef.current = reconciled;
+                  messageCacheRef.current.set(loadId, reconciled);
+                  setMessages(reconciled);
+                  if (scrollRef.current) {
+                    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                  }
+                  timelineFollow.jump();
+                } else {
+                  messageCacheRef.current.set(loadId, reconciled);
                 }
-                timelineFollow.jump();
               } else {
                 displayMessages = currentCached;
                 // 仅当当前画布尚未与缓存对齐时才更新，杜绝重复 setMessages 造成的 DOM 重绘与跳动
@@ -3733,45 +3820,107 @@ export function Chat({
     if (reconnectTimerRef.current !== null) clearTimeout(reconnectTimerRef.current);
   }, []);
 
-  // ── 空闲智能预热器 (Idle Prefetcher)：当前无会话运行/打字时，静默预加载前 3~5 个高频会话 ──
+  // ── 空闲智能预热器 (Idle Prefetcher)：将近期会话从 IDB/磁盘装入内存并分帧预编译 Markdown HTML ──
   useEffect(() => {
     const curHash = activeSession?.project_hash || projectHashBySessionRef.current.get(sessionId || '') || viewedProjectHashRef.current;
     if (!curHash || loading || busy) return;
     let timer: number | null = null;
     let cancelled = false;
 
+    const mdLabels = {
+      openExternal: t('preview.clickToOpenExternal'),
+      clickPreview: t('preview.clickToPreview'),
+      openInMain: t('preview.openInMain'),
+    };
+
+    const warmSessionMarkdown = async (sid: string, msgs: Message[], sessionCwd?: string) => {
+      if (warmedMarkdownSessionsRef.current.has(sid)) return;
+      const chunks: string[] = [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]!;
+        if (m.role !== 'assistant') continue;
+        for (const p of m.parts) {
+          if (p.kind === 'text' && p.text) chunks.push(p.text);
+        }
+      }
+      for (let i = 0; i < chunks.length; i += 3) {
+        if (cancelled || busyRef.current) return;
+        const end = Math.min(chunks.length, i + 3);
+        for (let j = i; j < end; j++) {
+          warmMarkdownCache(chunks[j]!, sessionCwd, lang, mdLabels);
+        }
+        await new Promise((r) => window.setTimeout(r, 16));
+      }
+      warmedMarkdownSessionsRef.current.add(sid);
+    };
+
     timer = window.setTimeout(async () => {
-      if (cancelled || busy || !curHash) return;
+      if (cancelled || busyRef.current || !curHash) return;
       try {
         const projectSessions = await listProjectSessions(curHash);
-        const candidates = (projectSessions || []).slice(0, 5);
+        const candidates = (projectSessions || []).slice(0, 8);
+        let networkFetched = 0;
         for (const cand of candidates) {
-          if (cancelled || busy) break;
+          if (cancelled || busyRef.current) break;
           if (cand.id === sessionId) continue;
-          if (messageCacheRef.current.has(cand.id)) continue;
-          const existing = await getSessionCache(curHash, cand.id);
-          if (existing) continue;
+          projectHashBySessionRef.current.set(cand.id, curHash);
+          const candCwd = cand.working_dir || cwd;
 
-          // 随机 5~10 秒延迟加载一个，防网络与 I/O 拥塞
-          const delay = 5000 + Math.random() * 5000;
-          await new Promise((r) => setTimeout(r, delay));
-          if (cancelled || busy) break;
+          const memCached = messageCacheRef.current.get(cand.id);
+          if (memCached && memCached.length > 0) {
+            await warmSessionMarkdown(cand.id, memCached, candCwd);
+            continue;
+          }
+
+          const existing = await getSessionCache(curHash, cand.id);
+          if (existing && existing.messages.length > 0) {
+            // 将 IndexedDB 缓存热加载进内存 Map，切会话首帧即可 0ms 同步直出
+            messageCacheRef.current.set(cand.id, existing.messages);
+            if (existing.turns && existing.turns.length > 0) {
+              turnOutlineBySessionRef.current.set(cand.id, existing.turns);
+            }
+            if (existing.historyOffset !== undefined) {
+              const diskOffset = existing.historyOffset;
+              const diskTotal = existing.historyTotal ?? (existing.messages.length + diskOffset);
+              historyOffsetBySessionRef.current.set(cand.id, diskOffset);
+              historyTotalBySessionRef.current.set(cand.id, diskTotal);
+              hasOlderBySessionRef.current.set(cand.id, diskOffset > 0);
+            }
+            await warmSessionMarkdown(cand.id, existing.messages, candCwd);
+            continue;
+          }
+
+          if (networkFetched >= 4) continue;
+          networkFetched += 1;
+          // 未命中本地缓存的会话延迟拉取，防网络与磁盘 I/O 拥塞
+          const delay = 2500 + Math.random() * 2500;
+          await new Promise((r) => window.setTimeout(r, delay));
+          if (cancelled || busyRef.current) break;
 
           const res = await getSession(curHash, cand.id, { tail: HISTORY_PAGE });
           if (res && Array.isArray(res.messages)) {
             const loaded = sessionMessagesToDisplay(res.messages, res.offset ?? 0);
             messageCacheRef.current.set(cand.id, loaded);
-            await saveSessionCache(curHash, cand.id, loaded, res.todos, undefined, res.turns, res.token_usage);
+            if (res.turns && res.turns.length > 0) {
+              turnOutlineBySessionRef.current.set(cand.id, res.turns);
+            }
+            const diskOffset = res.offset ?? 0;
+            const diskTotal = res.message_count ?? (loaded.length + diskOffset);
+            historyOffsetBySessionRef.current.set(cand.id, diskOffset);
+            historyTotalBySessionRef.current.set(cand.id, diskTotal);
+            hasOlderBySessionRef.current.set(cand.id, diskOffset > 0);
+            await saveSessionCache(curHash, cand.id, loaded, res.todos, undefined, res.turns, res.token_usage, diskOffset, diskTotal);
+            await warmSessionMarkdown(cand.id, loaded, candCwd);
           }
         }
       } catch {}
-    }, 4000);
+    }, 900);
 
     return () => {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [activeSession?.project_hash, sessionId, loading, busy]);
+  }, [activeSession?.project_hash, sessionId, loading, busy, lang, cwd, t]);
 
   // Ctrl + F5 强制清理所有本地会话缓存
   useEffect(() => {
@@ -5225,6 +5374,10 @@ export function Chat({
   async function jumpToTurn(id: string) {
     const item = turnNavItemsRef.current.find((candidate) => candidate.id === id);
     if (!item) return;
+    if (mountedTailLimit !== Infinity) {
+      mountedLimitGenRef.current = timelineScopeGenRef.current;
+      setMountedTailLimit(Infinity);
+    }
     const index = item.index;
     const sid = activeIdRef.current;
     const generation = sessionGenerationRef.current;
@@ -5281,14 +5434,14 @@ export function Chat({
     return () => cancelAnimationFrame(id);
   }, [turnNavItems]);
 
-  // After older messages load (or any messages change), scroll to the pending
+  // After older messages load (or progressive tail window expands), scroll to the pending
   // turn-jump target that couldn't be resolved immediately.
   useEffect(() => {
     const id = pendingJumpIdRef.current;
     if (id == null) return;
     if (!scrollToTurnId(id)) return;
     pendingJumpIdRef.current = null;
-  }, [messages]);
+  }, [messages, mountedTailLimit]);
 
   // Reload one session's transcript from disk into the view, guarded against a
   // session switch racing the async fetch. Mirrors the session-load effect's activeIdRef guard.
@@ -5296,6 +5449,10 @@ export function Chat({
     const projectHash = activeSession?.project_hash;
     const id = sessionId;
     if (!projectHash || !id || loadingOlder || historyOffsetRef.current <= 0) return;
+    if (mountedTailLimit !== Infinity) {
+      mountedLimitGenRef.current = timelineScopeGenRef.current;
+      setMountedTailLimit(Infinity);
+    }
     const generation = sessionGenerationRef.current;
     const prevOffset = historyOffsetRef.current;
     const page = Math.min(HISTORY_PAGE, prevOffset);
@@ -8188,7 +8345,22 @@ export function Chat({
         }, 60);
       },
       getTurnSnapshot: async (turnIndex) => {
-        return turnNavItems.find((it) => it.turn === turnIndex) || null;
+        const idx = turnNavItems.findIndex((it) => it.turn === turnIndex);
+        if (idx === -1) return null;
+        const item = turnNavItems[idx]!;
+        const tokenState = resolveTurnTokenState({
+          item,
+          isLastTurn: idx === turnNavItems.length - 1,
+          isBusy: item.id === busyTurnId,
+          sessionTotalTokens: tokens?.total,
+          activeTurnDeltaTokens: lastUserTokensRef.current > 0 ? lastUserTokensRef.current : undefined,
+        });
+        return {
+          ...item,
+          tokens: tokenState.turnTokens ?? item.tokens,
+          cumulativeTokens: tokenState.cumulativeTokens ?? item.cumulativeTokens,
+          tokenState,
+        };
       },
       getRawPromptSnapshot: async (turnIndex) => {
         const turn = turnNavItems.find((it) => it.turn === turnIndex);
@@ -8203,7 +8375,7 @@ export function Chat({
       },
       copyText: async (text) => copyTextToClipboard(text),
     });
-  }, [sessionId, activeSession?.id, onNewSession, sendMessage, turnNavItems, showToast]);
+  }, [sessionId, activeSession?.id, onNewSession, sendMessage, turnNavItems, busyTurnId, tokens?.total, showToast]);
 
   function handleDeleteUserMessage(sourceIndex: number, expectedText?: string) {
     const sid = activeIdRef.current || sessionId || activeSession?.id;
@@ -8854,11 +9026,69 @@ export function Chat({
     }
     return { turnLastTexts: lastMap, turnAllTexts: allMap, turnReasoningMap: reasoningMap };
   }, [effectiveMessages]);
-  const visibleMessages = useMemo(
+  const allVisibleMessages = useMemo(
     () => effectiveMessages.map((m, origIdx) => ({ msg: m, origIdx })),
     [effectiveMessages],
   );
+  // 切换会话同一帧重置渐进窗口至底部 INITIAL_TAIL_MOUNT 条，首屏极速上屏后逐帧无感补齐全部历史
+  const activeScopeGen = timelineScopeGenRef.current;
+  const effectiveTailLimit =
+    mountedLimitGenRef.current !== activeScopeGen
+      ? INITIAL_TAIL_MOUNT
+      : mountedTailLimit;
+  const bypassTailWindow =
+    effectiveTailLimit === Infinity ||
+    searchOpen ||
+    pendingJumpIdRef.current != null ||
+    allVisibleMessages.length <= effectiveTailLimit;
+  const visibleMessages = useMemo(() => {
+    if (bypassTailWindow) return allVisibleMessages;
+    return allVisibleMessages.slice(allVisibleMessages.length - effectiveTailLimit);
+  }, [allVisibleMessages, bypassTailWindow, effectiveTailLimit]);
   const lastVisibleIdx = visibleMessages.length - 1;
+
+  useEffect(() => {
+    if (mountedLimitGenRef.current !== activeScopeGen) {
+      mountedLimitGenRef.current = activeScopeGen;
+      if (mountedTailLimit !== INITIAL_TAIL_MOUNT) {
+        setMountedTailLimit(INITIAL_TAIL_MOUNT);
+        return;
+      }
+    }
+    if (effectiveTailLimit === Infinity || effectiveMessages.length === 0) return;
+    if (effectiveMessages.length <= effectiveTailLimit) {
+      setMountedTailLimit(Infinity);
+      return;
+    }
+    const raf = window.requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (el) {
+        prependAnchorHeightRef.current = el.scrollHeight;
+      }
+      setMountedTailLimit((cur) => {
+        const base = mountedLimitGenRef.current === timelineScopeGenRef.current ? cur : INITIAL_TAIL_MOUNT;
+        const next = base + PROGRESSIVE_EXPAND_STEP;
+        return next >= effectiveMessages.length ? Infinity : next;
+      });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [activeScopeGen, effectiveMessages.length, effectiveTailLimit, mountedTailLimit]);
+
+  useLayoutEffect(() => {
+    const prevHeight = prependAnchorHeightRef.current;
+    if (prevHeight == null) return;
+    prependAnchorHeightRef.current = null;
+    const el = scrollRef.current;
+    if (!el) return;
+    if (atBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      const delta = el.scrollHeight - prevHeight;
+      if (delta > 0) {
+        el.scrollTop += delta;
+      }
+    }
+  }, [visibleMessages]);
   // 全量内容搜索：涵盖用户提问、深度思考、正文文本、工具输入输出、通知错误等纯对话内所有元素
   function messageSearchableFullText(m: Message): string {
     const parts: string[] = [];
@@ -8890,8 +9120,138 @@ export function Chat({
     });
     return positions;
   }, [effectiveMessages, searchTrim, searchOpen]);
-  // 匹配消息 origIdx → DOM 节点,供 ↑/↓/Enter 滚动定位。每次渲染重填。
+  // 匹配消息 origIdx → DOM 节点,供 ↑/↓/Enter 滚动定位。稳定缓存每个索引的 ref setter，避免击穿气泡 memo。
   const matchRefs = useRef<Record<number, HTMLElement | null>>({});
+  const matchRefSettersRef = useRef<Map<number, (el: HTMLElement | null) => void>>(new Map());
+  const getMatchRefSetter = useCallback((origIdx: number) => {
+    let setter = matchRefSettersRef.current.get(origIdx);
+    if (!setter) {
+      setter = (el: HTMLElement | null) => {
+        matchRefs.current[origIdx] = el;
+      };
+      matchRefSettersRef.current.set(origIdx, setter);
+    }
+    return setter;
+  }, []);
+
+  // 稳定化消息气泡交互回调，杜绝输入框打字、滚动高亮、Token 更新时全量重渲染历史气泡
+  const bubbleHandlersRef = useRef({
+    onUserDraftChange: (turnIdx: number, draftText: string, draftImages: ImageData[], draftModel?: string) => {
+      handleBubbleDraftChange(turnIdx, draftText, draftImages, draftModel);
+    },
+    onUserStartEdit: (turnIdx: number, targetMsg: Message) => {
+      const initDraft: BubbleEditDraft = {
+        sourceIndex: turnIdx,
+        text: messageText(targetMsg),
+        images: targetMsg.images || [],
+        selectedModel: provider || defaultProviderName() || undefined,
+      };
+      setEditingSourceIndex(turnIdx);
+      setBubbleEditDraft(initDraft);
+      const sid = activeIdRef.current || sessionId || activeSession?.id;
+      if (sid) saveBubbleEditDraft(sid, initDraft);
+    },
+    onUserCancelEdit: () => {
+      setEditingSourceIndex(null);
+      setBubbleEditDraft(null);
+      const sid = activeIdRef.current || sessionId || activeSession?.id;
+      if (sid) clearBubbleEditDraft(sid);
+    },
+    onUserSaveRewrite: (turnIdx: number, newText: string, newImages: ImageData[]) => {
+      void handleSaveRewrite(turnIdx, newText, newImages);
+    },
+    onUserRollbackSubmit: (turnIdx: number, newText: string, newImages: ImageData[], tempModel?: string) => {
+      void handleRollbackSubmit(turnIdx, newText, newImages, tempModel);
+    },
+    onUserDelete: (turnIdx: number, expectedText: string) => {
+      void handleDeleteUserMessage(turnIdx, expectedText);
+    },
+    onAssistantRegenerate: (sourceIdx: number, origIdx: number) => {
+      void handleRegenerateAssistant(sourceIdx, origIdx);
+    },
+    onAssistantDelete: (sourceIdx: number, origIdx: number) => {
+      void handleDeleteAssistantMessage(sourceIdx, origIdx);
+    },
+    onNavigateTurn: (id: string) => {
+      jumpToTurn(id);
+    },
+  });
+  bubbleHandlersRef.current.onUserDraftChange = (turnIdx, draftText, draftImages, draftModel) => {
+    handleBubbleDraftChange(turnIdx, draftText, draftImages, draftModel);
+  };
+  bubbleHandlersRef.current.onUserStartEdit = (turnIdx, targetMsg) => {
+    const initDraft: BubbleEditDraft = {
+      sourceIndex: turnIdx,
+      text: messageText(targetMsg),
+      images: targetMsg.images || [],
+      selectedModel: provider || defaultProviderName() || undefined,
+    };
+    setEditingSourceIndex(turnIdx);
+    setBubbleEditDraft(initDraft);
+    const sid = activeIdRef.current || sessionId || activeSession?.id;
+    if (sid) saveBubbleEditDraft(sid, initDraft);
+  };
+  bubbleHandlersRef.current.onUserCancelEdit = () => {
+    setEditingSourceIndex(null);
+    setBubbleEditDraft(null);
+    const sid = activeIdRef.current || sessionId || activeSession?.id;
+    if (sid) clearBubbleEditDraft(sid);
+  };
+  bubbleHandlersRef.current.onUserSaveRewrite = (turnIdx, newText, newImages) => {
+    void handleSaveRewrite(turnIdx, newText, newImages);
+  };
+  bubbleHandlersRef.current.onUserRollbackSubmit = (turnIdx, newText, newImages, tempModel) => {
+    void handleRollbackSubmit(turnIdx, newText, newImages, tempModel);
+  };
+  bubbleHandlersRef.current.onUserDelete = (turnIdx, expectedText) => {
+    void handleDeleteUserMessage(turnIdx, expectedText);
+  };
+  bubbleHandlersRef.current.onAssistantRegenerate = (sourceIdx, origIdx) => {
+    void handleRegenerateAssistant(sourceIdx, origIdx);
+  };
+  bubbleHandlersRef.current.onAssistantDelete = (sourceIdx, origIdx) => {
+    void handleDeleteAssistantMessage(sourceIdx, origIdx);
+  };
+  bubbleHandlersRef.current.onNavigateTurn = (id) => {
+    jumpToTurn(id);
+  };
+
+  const onUserDraftChangeStable = useCallback(
+    (turnIdx: number, draftText: string, draftImages: ImageData[], draftModel?: string) =>
+      bubbleHandlersRef.current.onUserDraftChange(turnIdx, draftText, draftImages, draftModel),
+    [],
+  );
+  const onUserStartEditStable = useCallback(
+    (turnIdx: number, targetMsg: Message) => bubbleHandlersRef.current.onUserStartEdit(turnIdx, targetMsg),
+    [],
+  );
+  const onUserCancelEditStable = useCallback(() => bubbleHandlersRef.current.onUserCancelEdit(), []);
+  const onUserSaveRewriteStable = useCallback(
+    (turnIdx: number, newText: string, newImages: ImageData[]) =>
+      bubbleHandlersRef.current.onUserSaveRewrite(turnIdx, newText, newImages),
+    [],
+  );
+  const onUserRollbackSubmitStable = useCallback(
+    (turnIdx: number, newText: string, newImages: ImageData[], tempModel?: string) =>
+      bubbleHandlersRef.current.onUserRollbackSubmit(turnIdx, newText, newImages, tempModel),
+    [],
+  );
+  const onUserDeleteStable = useCallback(
+    (turnIdx: number, expectedText: string) => bubbleHandlersRef.current.onUserDelete(turnIdx, expectedText),
+    [],
+  );
+  const onAssistantRegenerateStable = useCallback(
+    (sourceIdx: number, origIdx: number) => bubbleHandlersRef.current.onAssistantRegenerate(sourceIdx, origIdx),
+    [],
+  );
+  const onAssistantDeleteStable = useCallback(
+    (sourceIdx: number, origIdx: number) => bubbleHandlersRef.current.onAssistantDelete(sourceIdx, origIdx),
+    [],
+  );
+  const onTurnNavigateStable = useCallback(
+    (item: { id: string }) => bubbleHandlersRef.current.onNavigateTurn(item.id),
+    [],
+  );
   const [matchIdx, setMatchIdxState] = useState(0);
   // P3 修复: 用 ref 镜像 matchIdx,让事件处理器在快速连击时永远读到最新值
   const matchIdxRef = useRef(0);
@@ -9904,7 +10264,7 @@ export function Chat({
           </div>
         )}
 
-        {hasOlder && (
+        {hasOlder && (visibleMessages.length === 0 || visibleMessages[0]?.origIdx === 0) && (
           <div class="history-load-older">
             <button
               type="button"
@@ -9932,10 +10292,11 @@ export function Chat({
 
           return visibleMessages.map(({ msg, origIdx }, idx) => {
             const isLast = idx === lastVisibleIdx;
-            const setMatchRef = (el: HTMLElement | null) => { matchRefs.current[origIdx] = el; };
+            const setMatchRef = getMatchRefSetter(origIdx);
             const timeLabel = formatMsgTime(msg.ts, t);
             const timeFull = formatMsgTimeFull(msg.ts);
             const isActiveSearchMatch = searchOpen && searchTrim ? (origIdx === matchPositions[matchIdx]) : false;
+            const resolvedCwd = effectiveWorkingDir || cwd;
 
             if (msg.role === 'user') {
               const turnIndex = msg.sourceIndex ?? historyOffsetRef.current + origIdx;
@@ -9960,34 +10321,16 @@ export function Chat({
                   draftText={hasActiveDraft ? bubbleEditDraft.text : undefined}
                   draftImages={hasActiveDraft ? bubbleEditDraft.images : undefined}
                   draftModel={hasActiveDraft ? bubbleEditDraft.selectedModel : undefined}
-                  onDraftChange={(draftText, draftImages, draftModel) => {
-                    handleBubbleDraftChange(turnIndex, draftText, draftImages, draftModel);
-                  }}
-                  onStartEdit={() => {
-                    const initDraft: BubbleEditDraft = {
-                      sourceIndex: turnIndex,
-                      text: messageText(msg),
-                      images: msg.images || [],
-                      selectedModel: provider || defaultProviderName() || undefined,
-                    };
-                    setEditingSourceIndex(turnIndex);
-                    setBubbleEditDraft(initDraft);
-                    const sid = activeIdRef.current || sessionId || activeSession?.id;
-                    if (sid) saveBubbleEditDraft(sid, initDraft);
-                  }}
-                  onCancelEdit={() => {
-                    setEditingSourceIndex(null);
-                    setBubbleEditDraft(null);
-                    const sid = activeIdRef.current || sessionId || activeSession?.id;
-                    if (sid) clearBubbleEditDraft(sid);
-                  }}
-                  onSaveRewrite={(newText, newImages) => void handleSaveRewrite(turnIndex, newText, newImages)}
-                  onRollbackSubmit={(newText, newImages, tempModel) => void handleRollbackSubmit(turnIndex, newText, newImages, tempModel)}
-                  onDelete={() => void handleDeleteUserMessage(turnIndex, messageText(msg))}
-                  models={modelCatalog}
-                  currentModel={provider || defaultProviderName() || ''}
+                  onDraftChange={onUserDraftChangeStable}
+                  onStartEdit={onUserStartEditStable}
+                  onCancelEdit={onUserCancelEditStable}
+                  onSaveRewrite={onUserSaveRewriteStable}
+                  onRollbackSubmit={onUserRollbackSubmitStable}
+                  onDelete={onUserDeleteStable}
+                  models={isEditing ? modelCatalog : undefined}
+                  currentModel={isEditing ? (provider || defaultProviderName() || '') : undefined}
                   disabled={busy}
-                  cwd={effectiveWorkingDir || cwd}
+                  cwd={resolvedCwd}
                 />
               );
             }
@@ -10018,9 +10361,9 @@ export function Chat({
             const userTs = precedingUserTs(effectiveMessages, origIdx);
             // Live bubble: wall-clock from this turn's user send → now.
             // Intermediate tool results / thinking must not restart the clock.
-            const liveFromUser =
+            const liveStartedAt =
               isLastInTurn && busy && isLast
-                ? turnDurationMs(userTs ?? turnStartedAt ?? undefined, nowMs)
+                ? (userTs ?? turnStartedAt ?? undefined)
                 : undefined;
             const doneTotal = isLastInTurn && !busy
               ? turnTotalElapsedMs(userTs, msg.ts, msg.elapsedMs)
@@ -10031,8 +10374,7 @@ export function Chat({
                 key={msg.id ?? origIdx}
                 msg={msg}
                 isLast={isLast}
-                busy={busy}
-                lastIdx={lastIdx}
+                busy={isLast ? busy : false}
                 isLastInTurn={isLastInTurn}
                 turnLastText={turnLastTexts.get(origIdx) ?? ''}
                 turnAllText={turnAllTexts.get(origIdx) ?? ''}
@@ -10040,14 +10382,17 @@ export function Chat({
                 searchRef={setMatchRef}
                 timeLabel={isLastInTurn ? timeLabel : undefined}
                 timeFull={isLastInTurn ? timeFull : undefined}
-                liveElapsedMs={liveFromUser}
+                liveStartedAt={liveStartedAt}
                 turnTotalMs={doneTotal}
-                isCompacting={isCompacting}
+                isCompacting={isLast ? isCompacting : false}
                 search={search}
                 isActiveSearchMatch={isActiveSearchMatch}
-                onRegenerate={isLastInTurn && !busy ? () => void handleRegenerateAssistant(msg.sourceIndex ?? origIdx, origIdx) : undefined}
-                onDelete={isLastInTurn && !busy ? () => void handleDeleteAssistantMessage(msg.sourceIndex ?? origIdx, origIdx) : undefined}
-                cwd={effectiveWorkingDir || cwd}
+                origIdx={origIdx}
+                sourceIdx={msg.sourceIndex ?? origIdx}
+                canMutate={isLastInTurn && !busy}
+                onRegenerate={onAssistantRegenerateStable}
+                onDelete={onAssistantDeleteStable}
+                cwd={resolvedCwd}
               />
             );
           });
@@ -10153,9 +10498,7 @@ export function Chat({
         items={turnNavItems}
         activeId={activeTurnId}
         busyId={busyTurnId}
-        sessionTotalTokens={tokens?.total}
-        activeTurnDeltaTokens={lastUserTokensRef.current > 0 ? lastUserTokensRef.current : undefined}
-        onNavigate={(item) => jumpToTurn(item.id)}
+        onNavigate={onTurnNavigateStable}
       />
 
       {/* Floating Realtime Todo Panel (HUD on top-right) */}
@@ -10462,15 +10805,33 @@ export function Chat({
   );
 }
 
+const LiveTurnElapsed = memo(function LiveTurnElapsed({ startedAt }: { startedAt: number }) {
+  const t = useT();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+  const elapsed = turnDurationMs(startedAt, now);
+  if (elapsed == null) return null;
+  return (
+    <span class="msg-time is-live" aria-live="polite">
+      <span class="msg-turn-elapsed">
+        {t('chat.turnElapsedLive', { time: formatTurnElapsed(elapsed) })}
+      </span>
+    </span>
+  );
+});
+
 /** Render an assistant message's ordered parts in chronological order: each
  *  text run becomes Markdown; runs of consecutive tool calls share one
  *  `.tool-list` container. This is what preserves the text→tool→text→tool
  *  interleaving (matching the TUI) instead of grouping all tools at the head. */
-function AssistantMessageView({
+const AssistantMessageView = memo(function AssistantMessageView({
   msg,
   isLast,
   busy,
-  lastIdx: _lastIdx,
   isLastInTurn,
   turnLastText,
   turnAllText,
@@ -10478,11 +10839,14 @@ function AssistantMessageView({
   searchRef,
   timeLabel,
   timeFull,
-  liveElapsedMs,
+  liveStartedAt,
   turnTotalMs,
   isCompacting,
   search,
   isActiveSearchMatch,
+  origIdx,
+  sourceIdx,
+  canMutate,
   onRegenerate,
   onDelete,
   cwd,
@@ -10490,7 +10854,6 @@ function AssistantMessageView({
   msg: Message;
   isLast: boolean;
   busy: boolean;
-  lastIdx: number;
   isLastInTurn: boolean;
   turnLastText: string;
   turnAllText: string;
@@ -10498,14 +10861,17 @@ function AssistantMessageView({
   searchRef?: (el: HTMLElement | null) => void;
   timeLabel?: string;
   timeFull?: string;
-  liveElapsedMs?: number;
+  liveStartedAt?: number;
   /** User-bubble → this final answer. Only set on the last assistant of the turn. */
   turnTotalMs?: number;
   isCompacting?: boolean;
   search: string;
   isActiveSearchMatch: boolean;
-  onRegenerate?: () => void;
-  onDelete?: () => void;
+  origIdx: number;
+  sourceIdx: number;
+  canMutate: boolean;
+  onRegenerate?: (sourceIdx: number, origIdx: number) => void;
+  onDelete?: (sourceIdx: number, origIdx: number) => void;
   cwd?: string;
 }) {
   const t = useT();
@@ -10565,7 +10931,8 @@ function AssistantMessageView({
     });
   }
 
-  const copyBtn = isLastInTurn && !isError && !streaming && (turnLastText || turnAllText || onRegenerate || onDelete) ? (
+  const hasMutateActions = canMutate && Boolean(onRegenerate || onDelete);
+  const copyBtn = isLastInTurn && !isError && !streaming && (turnLastText || turnAllText || hasMutateActions) ? (
     <div class="msg-actions msg-actions-left assistant-footer-actions">
       {(turnLastText || turnAllText) && (
         <>
@@ -10606,11 +10973,11 @@ function AssistantMessageView({
           </button>
         </>
       )}
-      {onRegenerate && (
+      {canMutate && onRegenerate && (
         <button
           type="button"
           class="msg-action-btn btn-regenerate"
-          onClick={onRegenerate}
+          onClick={() => onRegenerate(sourceIdx, origIdx)}
           title={t('chat.regenerate')}
           aria-label={t('chat.regenerate')}
         >
@@ -10620,11 +10987,11 @@ function AssistantMessageView({
           </svg>
         </button>
       )}
-      {onDelete && (
+      {canMutate && onDelete && (
         <button
           type="button"
           class="msg-action-btn btn-delete"
-          onClick={onDelete}
+          onClick={() => onDelete(sourceIdx, origIdx)}
           title={t('chat.deleteMessage')}
           aria-label={t('chat.deleteMessage')}
         >
@@ -10755,18 +11122,14 @@ function AssistantMessageView({
             </span>
           </span>
         )}
-        {isLastInTurn && streaming && liveElapsedMs != null && (
-          <span class="msg-time is-live" aria-live="polite">
-            <span class="msg-turn-elapsed">
-              {t('chat.turnElapsedLive', { time: formatTurnElapsed(liveElapsedMs) })}
-            </span>
-          </span>
+        {isLastInTurn && streaming && liveStartedAt != null && (
+          <LiveTurnElapsed startedAt={liveStartedAt} />
         )}
         {copyBtn}
       </div>
     </div>
   );
-}
+});
 
 function renderAssistantParts(
   parts: MsgPart[],
@@ -11326,7 +11689,7 @@ function highlightText(text: string, search: string) {
   return parts;
 }
 
-function UserMessageView({
+const UserMessageView = memo(function UserMessageView({
   msg,
   anchorId,
   turnNavIdx,
@@ -11352,7 +11715,7 @@ function UserMessageView({
 }: {
   msg: Message;
   anchorId?: string;
-  turnNavIdx?: number;
+  turnNavIdx: number;
   searchRef?: (el: HTMLElement | null) => void;
   timeLabel?: string;
   timeFull?: string;
@@ -11362,12 +11725,12 @@ function UserMessageView({
   draftText?: string;
   draftImages?: ImageData[];
   draftModel?: string;
-  onDraftChange?: (text: string, images: ImageData[], selectedModel?: string) => void;
-  onStartEdit?: () => void;
+  onDraftChange?: (turnIdx: number, text: string, images: ImageData[], selectedModel?: string) => void;
+  onStartEdit?: (turnIdx: number, msg: Message) => void;
   onCancelEdit?: () => void;
-  onSaveRewrite?: (text: string, images: ImageData[]) => void;
-  onRollbackSubmit?: (text: string, images: ImageData[], tempModel?: string) => void;
-  onDelete?: () => void;
+  onSaveRewrite?: (turnIdx: number, text: string, images: ImageData[]) => void;
+  onRollbackSubmit?: (turnIdx: number, text: string, images: ImageData[], tempModel?: string) => void;
+  onDelete?: (turnIdx: number, expectedText: string) => void;
   models?: ModelInfo[];
   currentModel?: string;
   disabled?: boolean;
@@ -11451,10 +11814,10 @@ function UserMessageView({
           initialImages={draftImages ?? msg.images}
           models={models ?? []}
           currentModel={draftModel ?? currentModel ?? ''}
-          onSaveRewrite={onSaveRewrite}
-          onRollbackSubmit={onRollbackSubmit}
+          onSaveRewrite={(newText, newImages) => onSaveRewrite(turnNavIdx, newText, newImages)}
+          onRollbackSubmit={(newText, newImages, tempModel) => onRollbackSubmit(turnNavIdx, newText, newImages, tempModel)}
           onCancel={onCancelEdit}
-          onDraftChange={onDraftChange}
+          onDraftChange={onDraftChange ? (dText, dImages, dModel) => onDraftChange(turnNavIdx, dText, dImages, dModel) : undefined}
           disabled={disabled}
         />
       </div>
@@ -11509,7 +11872,7 @@ function UserMessageView({
             <button
               type="button"
               class="msg-action-btn btn-edit"
-              onClick={onStartEdit}
+              onClick={() => onStartEdit(turnNavIdx, msg)}
               title={t('chat.editMessage')}
               aria-label={t('chat.editMessage')}
             >
@@ -11523,7 +11886,7 @@ function UserMessageView({
             <button
               type="button"
               class="msg-action-btn btn-delete"
-              onClick={onDelete}
+              onClick={() => onDelete(turnNavIdx, text)}
               title={t('chat.deleteMessage')}
               aria-label={t('chat.deleteMessage')}
             >
@@ -11537,7 +11900,7 @@ function UserMessageView({
       </div>
     </div>
   );
-}
+});
 
 // Status glyph: a check when done, a cross on error, otherwise a spinner that
 // animates while the call is pending / awaiting approval.

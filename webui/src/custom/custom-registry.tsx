@@ -1,43 +1,13 @@
 /**
- * Zap 二开扩展注册表 (Custom Extension Registry)
- * -----------------------------------------------------------------------------
- * 挂载对标 DeepSeek (`deepseek-harness`) 架构的统一插件设置中心与 Cordis 风格插槽内核。
+ * Zap 统一设置中心与插件覆盖层宿主 (Plugin & Settings Host)
  */
 
-import { h, render } from 'preact';
+import { h } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { DeepSeekSettingsCenterModal } from './plugin-settings-center';
 import { zapPluginKernel, usePluginKernelVersion } from './plugin-kernel';
 import './custom.css';
 
-export interface CustomExtension {
-  id: string;
-  name: string;
-  version: string;
-  init: () => void;
-}
-
-class CustomExtensionRegistry {
-  private extensions: Map<string, CustomExtension> = new Map();
-
-  register(ext: CustomExtension) {
-    if (this.extensions.has(ext.id)) return;
-    this.extensions.set(ext.id, ext);
-    try {
-      ext.init();
-    } catch (err) {
-      console.error(`[CustomRegistry] Failed to init extension "${ext.id}":`, err);
-    }
-  }
-
-  getAll(): CustomExtension[] {
-    return Array.from(this.extensions.values());
-  }
-}
-
-export const customRegistry = new CustomExtensionRegistry();
-
-// Global event bus for opening the DeepSeek Settings & Plugin Center from anywhere
 const OPEN_CENTER_EVENT = 'zap:open-deepseek-settings-center';
 
 export function openDeepSeekSettingsCenter(initialSection: string = 'general') {
@@ -81,35 +51,3 @@ export function PluginCenterHostApp() {
     </>
   );
 }
-
-function injectTriggersIntoWorkspace() {
-  // 侧边栏与顶栏不再强制注入硬编码的「插件中心」按钮；统一由左下角「设置」入口承载，侧边栏仅保留插件预留插槽 (`sidebar.nav`)
-  const cleanupLegacyTriggers = () => {
-    document
-      .querySelectorAll('.zap-sidebar-plugins-btn, .zap-dsh-sidebar-plugins-btn, .zap-dsh-header-btn')
-      .forEach((el) => el.remove());
-  };
-  cleanupLegacyTriggers();
-}
-
-customRegistry.register({
-  id: 'zap-deepseek-plugin-center',
-  name: 'Zap DeepSeek-Style Plugin & Settings Center',
-  version: '1.0.0',
-  init() {
-    if (typeof document === 'undefined') return;
-    const mount = () => {
-      const legacyHost = document.getElementById('zap-dsh-plugin-center-root');
-      if (legacyHost) {
-        legacyHost.remove();
-      }
-      injectTriggersIntoWorkspace();
-    };
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', mount, { once: true });
-    } else {
-      mount();
-    }
-  },
-});

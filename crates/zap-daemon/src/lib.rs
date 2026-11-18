@@ -62,6 +62,7 @@ pub(crate) mod live_api;
 pub use live_api::live_set_mode;
 pub use live_api::live_set_working_dir;
 pub use live_api::live_switch_session;
+pub mod agent_teams;
 pub mod auth_token;
 pub mod neural_memory;
 pub mod permission_bridge;
@@ -7135,7 +7136,7 @@ fn is_system_temp_dir(path: &std::path::Path) -> bool {
 }
 
 /// List all projects (scans sessions directory)
-fn list_projects() -> std::io::Result<Vec<ProjectInfo>> {
+pub(crate) fn list_projects() -> std::io::Result<Vec<ProjectInfo>> {
     let sessions_root = NativeSessionManager::sessions_root();
     let scan = catalog_scan_in_root(&sessions_root)?;
     let active = active_catalog_location(&scan.entries);
@@ -15333,7 +15334,9 @@ pub(crate) async fn process_chat_request(
         crate::neural_memory::apply_session_static_system_append(
             &mut runtime_cfg,
             Some(&session_id),
-        );
+        )
+        .await;
+        crate::agent_teams::apply_session_team_tools(&mut runtime_cfg, Some(&session_id));
         runtime_cfg.session_display_name = req.session_title.clone();
         runtime_cfg.dangerously_skip_permissions = approval_mode
             == crate::approval_mode::ApprovalMode::Auto

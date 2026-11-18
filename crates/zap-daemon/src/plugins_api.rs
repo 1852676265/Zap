@@ -6,7 +6,7 @@
 use axum::{
     extract::Path,
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
     Router,
 };
@@ -63,7 +63,7 @@ fn parse_scope(s: Option<&str>) -> InstallScope {
     }
 }
 
-fn get_plugin_storage_file(plugin_id: &str) -> PathBuf {
+pub(crate) fn get_plugin_storage_file(plugin_id: &str) -> PathBuf {
     let sanitized: String = plugin_id
         .chars()
         .map(|c| {
@@ -75,13 +75,7 @@ fn get_plugin_storage_file(plugin_id: &str) -> PathBuf {
         })
         .collect();
 
-    let base = if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home)
-    } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        PathBuf::from(userprofile)
-    } else {
-        PathBuf::from(".")
-    };
+    let base = zap_config::util::real_home_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join(".zap")
         .join("plugin-storage")
         .join(sanitized)
@@ -109,8 +103,22 @@ pub fn router() -> Router<AppState> {
         .route("/api/plugins/storage/set", post(storage_set_handler))
 }
 
+async fn run_blocking_api<F>(f: F) -> Response
+where
+    F: FnOnce() -> Response + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(resp) => resp,
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "success": false, "error": format!("plugin task error: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
 async fn list_installed_handler() -> impl IntoResponse {
-    match installer::list_installed() {
+    run_blocking_api(|| match installer::list_installed() {
         Ok(plugins) => (
             StatusCode::OK,
             Json(json!({ "success": true, "plugins": plugins })),
@@ -121,43 +129,50 @@ async fn list_installed_handler() -> impl IntoResponse {
             Json(json!({ "success": false, "error": e.to_string() })),
         )
             .into_response(),
-    }
+    })
+    .await
 }
 
 async fn install_handler(Json(req): Json<InstallPluginRequest>) -> impl IntoResponse {
-    let scope = parse_scope(req.scope.as_deref());
-    let market = req.marketplace.as_deref().unwrap_or("");
+    run_blocking_api(move || {
+        let scope = parse_scope(req.scope.as_deref());
+        let market = req.marketplace.as_deref().unwrap_or("");
 
-    match installer::install(&req.plugin, market, scope) {
-        Ok(info) => (
-            StatusCode::OK,
-            Json(json!({ "success": true, "plugin": info })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "success": false, "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+        match installer::install(&req.plugin, market, scope) {
+            Ok(info) => (
+                StatusCode::OK,
+                Json(json!({ "success": true, "plugin": info })),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "success": false, "error": e.to_string() })),
+            )
+                .into_response(),
+        }
+    })
+    .await
 }
 
 async fn uninstall_handler(Json(req): Json<UninstallPluginRequest>) -> impl IntoResponse {
-    let scope = parse_scope(req.scope.as_deref());
-    let market = req.marketplace.as_deref().unwrap_or("");
+    run_blocking_api(move || {
+        let scope = parse_scope(req.scope.as_deref());
+        let market = req.marketplace.as_deref().unwrap_or("");
 
-    match installer::uninstall(&req.plugin, market, scope) {
-        Ok(()) => (StatusCode::OK, Json(json!({ "success": true }))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "success": false, "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+        match installer::uninstall(&req.plugin, market, scope) {
+            Ok(()) => (StatusCode::OK, Json(json!({ "success": true }))).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "success": false, "error": e.to_string() })),
+            )
+                .into_response(),
+        }
+    })
+    .await
 }
 
 async fn list_marketplaces_handler() -> impl IntoResponse {
-    match marketplace::list_marketplaces() {
+    run_blocking_api(|| match marketplace::list_marketplaces() {
         Ok(markets) => (
             StatusCode::OK,
             Json(json!({ "success": true, "marketplaces": markets })),
@@ -168,11 +183,12 @@ async fn list_marketplaces_handler() -> impl IntoResponse {
             Json(json!({ "success": false, "error": e.to_string() })),
         )
             .into_response(),
-    }
+    })
+    .await
 }
 
 async fn add_marketplace_handler(Json(req): Json<AddMarketplaceRequest>) -> impl IntoResponse {
-    match marketplace::add_marketplace(&req.url) {
+    run_blocking_api(move || match marketplace::add_marketplace(&req.url) {
         Ok(info) => (
             StatusCode::OK,
             Json(json!({ "success": true, "marketplace": info })),
@@ -183,13 +199,14 @@ async fn add_marketplace_handler(Json(req): Json<AddMarketplaceRequest>) -> impl
             Json(json!({ "success": false, "error": e.to_string() })),
         )
             .into_response(),
-    }
+    })
+    .await
 }
 
 async fn update_marketplace_handler(
     Json(req): Json<UpdateMarketplaceRequest>,
 ) -> impl IntoResponse {
-    match marketplace::update_marketplace(&req.name) {
+    run_blocking_api(move || match marketplace::update_marketplace(&req.name) {
         Ok(info) => (
             StatusCode::OK,
             Json(json!({ "success": true, "marketplace": info })),
@@ -200,87 +217,95 @@ async fn update_marketplace_handler(
             Json(json!({ "success": false, "error": e.to_string() })),
         )
             .into_response(),
-    }
+    })
+    .await
 }
 
 async fn remove_marketplace_handler(Path(name): Path<String>) -> impl IntoResponse {
-    match marketplace::remove_marketplace(&name) {
+    run_blocking_api(move || match marketplace::remove_marketplace(&name) {
         Ok(()) => (StatusCode::OK, Json(json!({ "success": true }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "success": false, "error": e.to_string() })),
         )
             .into_response(),
-    }
+    })
+    .await
 }
 
 async fn storage_get_handler(Json(req): Json<StorageGetRequest>) -> impl IntoResponse {
-    let p = get_plugin_storage_file(&req.plugin_id);
-    if !p.is_file() {
-        return (
-            StatusCode::OK,
-            Json(json!({ "success": true, "value": Value::Null })),
-        )
-            .into_response();
-    }
-    match std::fs::read_to_string(&p) {
-        Ok(s) => match serde_json::from_str::<Value>(&s) {
-            Ok(map) => {
-                let val = map.get(req.key.as_str()).cloned().unwrap_or(Value::Null);
-                (
-                    StatusCode::OK,
-                    Json(json!({ "success": true, "value": val })),
-                )
-                    .into_response()
-            }
-            Err(_) => (
+    run_blocking_api(move || {
+        let p = get_plugin_storage_file(&req.plugin_id);
+        if !p.is_file() {
+            return (
                 StatusCode::OK,
                 Json(json!({ "success": true, "value": Value::Null })),
             )
-                .into_response(),
-        },
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "success": false, "error": e.to_string() })),
-        )
-            .into_response(),
-    }
-}
-
-async fn storage_set_handler(Json(req): Json<StorageSetRequest>) -> impl IntoResponse {
-    let p = get_plugin_storage_file(&req.plugin_id);
-    if let Some(parent) = p.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut map = if p.is_file() {
-        std::fs::read_to_string(&p)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .unwrap_or_else(|| json!({}))
-    } else {
-        json!({})
-    };
-
-    if !map.is_object() {
-        map = json!({});
-    }
-
-    if let Some(obj) = map.as_object_mut() {
-        obj.insert(req.key, req.value);
-    }
-    match serde_json::to_string_pretty(&map) {
-        Ok(s) => match std::fs::write(&p, s) {
-            Ok(_) => (StatusCode::OK, Json(json!({ "success": true }))).into_response(),
+                .into_response();
+        }
+        match std::fs::read_to_string(&p) {
+            Ok(s) => match serde_json::from_str::<Value>(&s) {
+                Ok(map) => {
+                    let val = map.get(req.key.as_str()).cloned().unwrap_or(Value::Null);
+                    (
+                        StatusCode::OK,
+                        Json(json!({ "success": true, "value": val })),
+                    )
+                        .into_response()
+                }
+                Err(_) => (
+                    StatusCode::OK,
+                    Json(json!({ "success": true, "value": Value::Null })),
+                )
+                    .into_response(),
+            },
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "success": false, "error": e.to_string() })),
             )
                 .into_response(),
-        },
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "success": false, "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+        }
+    })
+    .await
+}
+
+async fn storage_set_handler(Json(req): Json<StorageSetRequest>) -> impl IntoResponse {
+    run_blocking_api(move || {
+        let p = get_plugin_storage_file(&req.plugin_id);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut map = if p.is_file() {
+            std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .unwrap_or_else(|| json!({}))
+        } else {
+            json!({})
+        };
+
+        if !map.is_object() {
+            map = json!({});
+        }
+
+        if let Some(obj) = map.as_object_mut() {
+            obj.insert(req.key, req.value);
+        }
+        match serde_json::to_string_pretty(&map) {
+            Ok(s) => match std::fs::write(&p, s) {
+                Ok(_) => (StatusCode::OK, Json(json!({ "success": true }))).into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "success": false, "error": e.to_string() })),
+                )
+                    .into_response(),
+            },
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "success": false, "error": e.to_string() })),
+            )
+                .into_response(),
+        }
+    })
+    .await
 }

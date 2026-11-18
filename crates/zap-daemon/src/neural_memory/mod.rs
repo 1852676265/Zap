@@ -34,6 +34,16 @@ pub use types::{
     TimelineEvent,
 };
 
+/// 供 `agent_teams` 等同进程协同模块安全读取当前全部隔离记忆智能体列表（复用同一连接锁）。
+pub fn list_neural_agents() -> Result<Vec<NeuralAgent>, String> {
+    store::with_store(|s| store::load_agents_conn(&s.conn))
+}
+
+/// 供 `agent_teams` 在拉起跨项目子会话前原子绑定会话专属隔离记忆智能体。
+pub fn bind_session_neural_agent(session_id: &str, agent_id: &str) -> Result<(), String> {
+    store::with_store(|s| store::set_session_agent_conn(&s.conn, session_id, agent_id))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
