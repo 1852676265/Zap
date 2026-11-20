@@ -172,6 +172,18 @@ pub fn format_agent_model_high_latency_terminal(retries: u32, secs: u64) -> Stri
     t(Msg::AgentModelHighLatencyTerminal { retries, secs }).into_owned()
 }
 
+pub fn format_agent_transition_timeout(secs: u64) -> String {
+    t(Msg::AgentTransitionTimeout { secs }).into_owned()
+}
+
+pub fn format_agent_truncated_empty_thinking() -> String {
+    t(Msg::AgentTruncatedEmptyThinking).into_owned()
+}
+
+pub fn format_agent_truncated_empty_output() -> String {
+    t(Msg::AgentTruncatedEmptyOutput).into_owned()
+}
+
 pub fn format_agent_exhausted_malformed(max: u32) -> String {
     t(Msg::AgentExhaustedMalformed { max }).into_owned()
 }

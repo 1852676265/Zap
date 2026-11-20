@@ -93,8 +93,8 @@ pub(crate) fn fallback_approval_decision(mode: ApprovalMode) -> PermissionDecisi
     }
 }
 
-/// Web/TUI 共同显示并下发给 Coding Runtime 的审批模式。
-static LIVE_APPROVAL_MODE: StdMutex<ApprovalMode> = StdMutex::new(ApprovalMode::Build);
+/// Web/TUI 共同显示并下发给 Coding Runtime 的审批模式（默认 Auto）。
+static LIVE_APPROVAL_MODE: StdMutex<ApprovalMode> = StdMutex::new(ApprovalMode::Auto);
 
 /// 按 session_id 隔离记录的审批模式表；未单独配置的会话回退到 `LIVE_APPROVAL_MODE`。
 static SESSION_APPROVAL_MODES: StdMutex<Option<HashMap<String, ApprovalMode>>> =
@@ -658,7 +658,7 @@ impl ScopedApprovalModeForTest {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         live_set_global_mode_enabled(false, None);
-        live_set_mode(ApprovalMode::Build);
+        live_set_mode(ApprovalMode::Auto);
         if let Ok(mut map) = SESSION_APPROVAL_MODES.lock() {
             *map = None;
         }
@@ -670,7 +670,7 @@ impl ScopedApprovalModeForTest {
 impl Drop for ScopedApprovalModeForTest {
     fn drop(&mut self) {
         live_set_global_mode_enabled(false, None);
-        live_set_mode(ApprovalMode::Build);
+        live_set_mode(ApprovalMode::Auto);
         if let Ok(mut map) = SESSION_APPROVAL_MODES.lock() {
             *map = None;
         }
@@ -4720,6 +4720,35 @@ mod tests {
         for (approval_mode, runtime_mode) in cases {
             assert_eq!(native_runtime_mode(approval_mode), runtime_mode);
         }
+    }
+
+    #[tokio::test]
+    async fn approval_mode_defaults_to_auto() {
+        let _mode_guard = ScopedApprovalModeForTest::new();
+        assert_eq!(live_current_approval_mode(), ApprovalMode::Auto);
+        assert_eq!(
+            live_session_approval_mode(Some("brand-new-session")),
+            ApprovalMode::Auto
+        );
+        assert_eq!(
+            live_display_approval_mode_wire("brand-new-session", None),
+            "bypass"
+        );
+
+        let response = approval_mode_get(axum::extract::Query(ApprovalModeQuery::default()))
+            .await
+            .into_response();
+        assert_eq!(response.status().as_u16(), 200);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).expect("approval mode response json");
+
+        assert_eq!(
+            value,
+            serde_json::json!({ "ok": true, "mode": "bypass", "global": false })
+        );
     }
 
     #[tokio::test]

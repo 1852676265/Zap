@@ -114,27 +114,43 @@ export function initPageZoom() {
   } catch {}
 
   // 1. Ctrl + 鼠标滚轮 (终端内部独立缩放，跳过全局网页缩放)
-  window.addEventListener(
-    'wheel',
-    (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        const target = e.target as HTMLElement | null;
-        if (target && target.closest('.terminal-panel-root, .terminal-screen, .xterm, .code-editor-root, .editor-code-container, .vscode-diff-view-stage')) {
-          return;
-        }
-        e.preventDefault();
-        if (e.deltaY < 0) {
-          zoomIn();
-        } else if (e.deltaY > 0) {
-          zoomOut();
-        }
-      }
-    },
-    { passive: false }
-  );
+  // 关键优化：不在 window 常驻 { passive: false } 的 wheel 监听！
+  // 常驻非被动监听会把整个页面的所有滚轮事件强制降级到 JS 主线程排队，主线程一忙就卡死滚轮。
+  // 改为仅在用户实际按住 Ctrl / Meta 时动态挂载非被动监听，松开或失焦立即卸载，平时保持 100% 原生合成线程滚动。
+  let wheelZoomAttached = false;
+  const onWheelZoom = (e: WheelEvent) => {
+    if (!e.ctrlKey && !e.metaKey) {
+      detachWheelZoom();
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (target && target.closest('.terminal-panel-root, .terminal-screen, .xterm, .code-editor-root, .editor-code-container, .vscode-diff-view-stage')) {
+      return;
+    }
+    e.preventDefault();
+    if (e.deltaY < 0) {
+      zoomIn();
+    } else if (e.deltaY > 0) {
+      zoomOut();
+    }
+  };
+  const attachWheelZoom = () => {
+    if (wheelZoomAttached) return;
+    wheelZoomAttached = true;
+    window.addEventListener('wheel', onWheelZoom, { passive: false });
+  };
+  const detachWheelZoom = () => {
+    if (!wheelZoomAttached) return;
+    wheelZoomAttached = false;
+    window.removeEventListener('wheel', onWheelZoom);
+  };
+  const syncModifierWheel = (pressed: boolean) => {
+    if (pressed) attachWheelZoom();
+    else detachWheelZoom();
+  };
 
-  // 2. 键盘快捷键 Ctrl + + / - / 0
   window.addEventListener('keydown', (e: KeyboardEvent) => {
+    syncModifierWheel(e.ctrlKey || e.metaKey);
     if (!e.ctrlKey && !e.metaKey) return;
 
     if (e.key === '=' || e.key === '+') {
@@ -147,5 +163,19 @@ export function initPageZoom() {
       e.preventDefault();
       resetZoom();
     }
+  });
+  window.addEventListener('keyup', (e: KeyboardEvent) => {
+    syncModifierWheel(e.ctrlKey || e.metaKey);
+  });
+  window.addEventListener('pointerdown', (e: PointerEvent) => {
+    syncModifierWheel(e.ctrlKey || e.metaKey);
+  }, { passive: true });
+  window.addEventListener('mouseover', (e: MouseEvent) => {
+    if (e.ctrlKey || e.metaKey) attachWheelZoom();
+    else if (wheelZoomAttached) detachWheelZoom();
+  }, { passive: true });
+  window.addEventListener('blur', detachWheelZoom);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') detachWheelZoom();
   });
 }

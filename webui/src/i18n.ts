@@ -324,11 +324,11 @@ const zh = {
   // Approval mode selector (Build / Accept Edits / Auto / Plan)
   'mode.label': '模式',
   'mode.build': 'Build',
-  'mode.build.desc': '改动前逐个审批（默认）',
+  'mode.build.desc': '改动前逐个审批',
   'mode.accept_edits': 'Accept Edits',
   'mode.accept_edits.desc': '自动批准文件改动，命令需审批',
   'mode.auto': 'Auto',
-  'mode.auto.desc': '⚠ 自动批准所有操作，含改文件/跑命令',
+  'mode.auto.desc': '⚠ 自动批准所有操作，含改文件/跑命令（默认）',
   'mode.plan': 'Plan',
   'mode.plan.desc': '只读探索，先出方案',
 
@@ -1336,11 +1336,11 @@ export const en: Record<MsgKey, string> = {
   // Approval mode selector (Build / Accept Edits / Auto / Plan)
   'mode.label': 'Mode',
   'mode.build': 'Build',
-  'mode.build.desc': 'Approve each change (default)',
+  'mode.build.desc': 'Approve each change',
   'mode.accept_edits': 'Accept Edits',
   'mode.accept_edits.desc': 'Auto-approve file edits, ask for commands',
   'mode.auto': 'Auto',
-  'mode.auto.desc': '⚠ Auto-approve everything, incl. edits/commands',
+  'mode.auto.desc': '⚠ Auto-approve everything, incl. edits/commands (default)',
   'mode.plan': 'Plan',
   'mode.plan.desc': 'Read-only — explore and plan first',
 

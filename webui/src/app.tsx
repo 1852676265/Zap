@@ -2,7 +2,7 @@
 // VSCode design system: timeline messages, violet brand, floating input.
 
 import { Component, type ComponentChildren } from 'preact';
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { lazy, Suspense } from 'preact/compat';
 import { Chat } from './components/Chat';
 import { Sidebar } from './components/Sidebar';
@@ -1070,6 +1070,8 @@ export function App() {
     }
   }
 
+  const extraRunningIds = useMemo(() => Array.from(liveRunningIds), [liveRunningIds]);
+
   return (
     <div class="app" id="app-root">
       {/* ===== Full-height sidebar (通栏)：品牌 + 收起按钮在其顶部 ===== */}
@@ -1092,7 +1094,7 @@ export function App() {
         onPickSkill={(name) => setSkillInsert({ name, seq: Date.now() })}
         onOpenCwd={() => setShowCwd(true)}
         onSwitchProject={handlePickCwd}
-        extraRunningIds={Array.from(liveRunningIds)}
+        extraRunningIds={extraRunningIds}
         onOpenFile={handleOpenFile}
         activeFilePath={diffTabs.find((t) => t.id === activeMainTabId)?.filePath}
         onOpenUpdate={openUpdateDialogWithFreshCheck}

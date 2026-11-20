@@ -1359,6 +1359,12 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::AgentEchoLoopWarning => "You are in a loop. Please reconsider your actions. Repeating the same tool and arguments again will stop this turn.".into(),
         Msg::AgentModelHighLatencyTerminal { retries, secs } =>
             format!("Model latency is too high, please try again later ({retries} consecutive attempts without first token in {secs}s)").into(),
+        Msg::AgentTransitionTimeout { secs } =>
+            format!("Timed out waiting for text or tool output after thinking ({secs}s silent). This commonly happens when emitting a very large single tool call on a non-streaming tool protocol; split large writes into smaller edits or increase [coding].transition_secs in ~/.zap/config.toml.").into(),
+        Msg::AgentTruncatedEmptyThinking =>
+            "Model exhausted the per-response output token limit during thinking before emitting any text or complete tool call. This commonly happens after reading too many large files at once or under heavy context; prefer targeted keyword/sliced reads, run /compact, or increase max_tokens and retry.".into(),
+        Msg::AgentTruncatedEmptyOutput =>
+            "Model output hit the length limit before completing any text or tool call (commonly caused by emitting an oversized single write tool call that got cut off mid-payload). Split large writes into incremental edits, run /compact, or increase max_tokens and retry.".into(),
         Msg::AgentExhaustedMalformed { max } =>
             format!("Model returned unparseable responses {max} times consecutively (sporadic upstream issue). You can retry directly or try again later.").into(),
         Msg::AgentExhaustedThinkingOverWindowIntro { max } =>

@@ -216,11 +216,11 @@ pub const EXPLORE_STRATEGY: &str = "\
 
 When both built-in tools and terminal commands can achieve the goal, built-in tools must be used (e.g. use 'read' instead of 'cat').
 
-## 1. Aggressive Exploration Principles:
-By default, prioritize aggressive and confident codebase exploration according to the following principles:
-- 'Code Graph First': When investigating bug root causes, call hierarchies, data structures, logic flows, domain rules, or symbols, prioritize 'code_explore' to quickly build a holistic mental picture of the system flow.
-- 'Generous Chunk Ingestion': In 'read', setting 'limit' to several hundred lines or omitting 'limit' entirely is prioritized, allowed, and safe.
-- 'Concurrency First': Batch-call multiple independent 'read', 'grep', and 'code_explore' invocations concurrently within the same turn to minimize round-trip latency.
+## 1. Targeted Exploration Principles:
+By default, balance speed with bounded context consumption according to the following principles:
+- 'Code Graph & Search First': When investigating bug root causes, call hierarchies, data structures, logic flows, domain rules, or symbols, prioritize 'code_explore', 'grep', and 'glob' to locate exact files and line ranges before calling 'read'.
+- 'Scoped Chunk Ingestion': In 'read', prefer 'keyword' or bounded 'offset'/'limit' slices (typically 150-400 lines) for large files (> ~400 lines). Omit 'limit' only for small files (<= ~400 lines) or when full-file inspection is genuinely necessary.
+- 'Bounded Concurrency': Batch independent 'code_explore', 'grep', and targeted 'read' slices concurrently, but never burst-read many large files in full in a single turn (keep total per-turn read payload modest; use an 'explore' subagent for broad multi-file sweeps).
 
 ## 2. Dedicated Tool Mappings:
 Always use dedicated tools for files and codebase inspection:
@@ -242,9 +242,9 @@ code_explore operates on a semantic code graph using 'path' and 'query' paramete
 ## 4. read Four Distinct Operating Modes
 
 ### 4.1 read Usage Discipline
-- 'grep'/'code_explore'/'glob' are responsible for FINDING during exploration; 'read' is responsible for READING during inspection.
-- Prefer 'keyword' anchoring when distinctive tokens are known; prefer 'offset'/'limit' when line numbers are known or sequential full-read / paging / tailing is needed.
-- When both apply: first anchor the hit via 'keyword', then generously expand surrounding context via 'offset'/'limit' around the matched line.
+- 'grep'/'code_explore'/'glob' are responsible for FINDING during exploration; 'read' is responsible for READING targeted ranges during inspection.
+- Prefer 'keyword' anchoring when distinctive tokens are known; prefer bounded 'offset'/'limit' when line numbers are known or sequential paging / tailing is needed.
+- When both apply: first anchor the hit via 'keyword', then expand focused surrounding context via 'offset'/'limit' around the matched line (keeping slices <= ~400 lines).
 
 ### 4.2 keyword Context Anchor Mode
 
@@ -270,8 +270,8 @@ Examples:
 
 Typical Sub-scenarios:
 - Paging Folded Output: Reading sequential folded command output with line numbers (e.g. read(path='artifact://9a84...', offset=1, limit=200)).
-- Reading Context from Known Line: When line numbers are known via 'code_explore', 'grep', 'glob', error traces, or context, read generous context centered on that line.
-- Sequential Paging: Advancing multi-turn generous page reading.
+- Reading Context from Known Line: When line numbers are known via 'code_explore', 'grep', 'glob', error traces, or context, read a focused window (e.g. 150-400 lines) centered on that line.
+- Sequential Paging: Advancing multi-turn bounded page reading when a section spans past one page.
 - Tailing Recent Additions: Inspecting latest appended content at the end of running logs.
 - Range Reading: Reading from start, jumping around known sites, deep-reading sections, or when line numbers are sparse/jumping.
 

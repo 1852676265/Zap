@@ -3153,6 +3153,7 @@ impl RunningAgent {
             let mut retry_this_round = false;
             let mut phase = crate::timeouts::StreamPhase::Ttft;
             let mut last_content = tokio::time::Instant::now();
+            let mut transition_wait_started_at: Option<tokio::time::Instant> = None;
             loop {
                 // MID-STREAM cancel checkpoint: cancellation stops stream
                 // consumption immediately. Carried from production runner.rs:420.
@@ -3186,6 +3187,7 @@ impl RunningAgent {
                     }
                     _ = async { tokio::time::sleep_until(phase_deadline.unwrap()).await }, if phase_deadline.is_some() => {
                         if phase == crate::timeouts::StreamPhase::Thinking && !saw_text_or_tool {
+                            transition_wait_started_at.get_or_insert(last_content);
                             phase = crate::timeouts::StreamPhase::Transition;
                             last_content = tokio::time::Instant::now();
                             continue;
@@ -3252,8 +3254,24 @@ impl RunningAgent {
                             self.finish_turn(convo, StopReason::Timeout, &turn_ctx).await;
                             return;
                         }
+                        // 思考后进入 Transition 阶段仍静默超时：明确作为 Timeout 终止，
+                        // 避免裸 break 掉进下方 thinking_only 的 6 次盲目重试循环。
                         if !saw_text_or_tool {
-                            break;
+                            let silent_secs = transition_wait_started_at
+                                .unwrap_or(last_content)
+                                .elapsed()
+                                .as_secs();
+                            let msg = i18n::format_agent_transition_timeout(silent_secs);
+                            self.hooks.on_error(&msg).await;
+                            self.rt.emit(AgentEvent::Error {
+                                message: msg.clone(),
+                                http_status: None,
+                                code: None,
+                            });
+                            Self::persist_turn_diagnostic(convo, &msg);
+                            self.finish_turn(convo, StopReason::Timeout, &turn_ctx)
+                                .await;
+                            return;
                         }
                         Self::persist_partial_assistant(
                             convo,
@@ -3280,11 +3298,13 @@ impl RunningAgent {
                     saw_stream_content = true;
                     phase = crate::timeouts::StreamPhase::Thinking;
                     last_content = tokio::time::Instant::now();
+                    transition_wait_started_at = None;
                 } else if ev.is_visible_output() {
                     saw_stream_content = true;
                     saw_text_or_tool = true;
                     phase = crate::timeouts::StreamPhase::Streaming;
                     last_content = tokio::time::Instant::now();
+                    transition_wait_started_at = None;
                 }
                 match &ev {
                     StreamEvent::Reasoning(_) | StreamEvent::ReasoningSignature { .. } => {
@@ -3696,6 +3716,29 @@ impl RunningAgent {
                     EMPTY_RESPONSE_MAX_RETRIES,
                     over_window_warned,
                 );
+                self.hooks.on_error(&msg).await;
+                self.rt.emit(AgentEvent::Error {
+                    message: msg.clone(),
+                    http_status: None,
+                    code: None,
+                });
+                Self::persist_turn_diagnostic(convo, &msg);
+                self.finish_turn(convo, StopReason::ProviderError, &turn_ctx)
+                    .await;
+                return;
+            }
+            // Output hit `finish_reason=length` BEFORE emitting any visible text or complete
+            // tool call (e.g. reasoning consumed the entire output budget on an oversized read
+            // batch, or a massive single write payload was cut off mid-JSON). Continuing with
+            // `TRUNCATION_RESUME_NUDGE` would store an empty assistant bubble and repeat the
+            // same oversized prompt up to `MAX_TRUNCATION_CONTINUATIONS` times. Fail fast with
+            // an actionable diagnostic instead.
+            if truncated && assistant_text.trim().is_empty() && pending_calls.is_empty() {
+                let msg = if !cleaned_reasoning.is_empty() {
+                    i18n::format_agent_truncated_empty_thinking()
+                } else {
+                    i18n::format_agent_truncated_empty_output()
+                };
                 self.hooks.on_error(&msg).await;
                 self.rt.emit(AgentEvent::Error {
                     message: msg.clone(),

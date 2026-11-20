@@ -1,5 +1,6 @@
 //! `zap-agent-teams` SQLite WAL 持久化存储、CAS 并发门禁、attempt_id 栅栏与进程重启孤儿自愈。
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -9,9 +10,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::schema::init_schema;
 use super::schema::open_connection;
 use super::types::{
-    new_team_id, normalize_domain, now_ts, truncate_chars_safe, RoleBindingPreset, TeamContract,
-    TeamEvent, TeamGlobalConfig, TeamRun, TeamRunDetail, TeamTask, HARD_CAP_MAX_REPAIRS,
-    MAX_CONTRACT_CHARS, MAX_EXCERPT_CHARS,
+    clean_path_str, new_team_id, normalize_domain, now_ts, truncate_chars_safe, RoleBindingPreset,
+    TeamContract, TeamEvent, TeamGlobalConfig, TeamImage, TeamProjectPreset, TeamRun,
+    TeamRunDetail, TeamTask, HARD_CAP_MAX_REPAIRS, MAX_CONTRACT_CHARS, MAX_EXCERPT_CHARS,
 };
 
 pub(crate) struct TeamStoreInner {
@@ -37,6 +38,12 @@ pub(crate) fn default_data_dir() -> PathBuf {
     }
     #[cfg(not(test))]
     {
+        if let Ok(custom) = std::env::var("ZAP_AGENT_TEAMS_DIR") {
+            let trimmed = custom.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
         zap_config::Config::config_dir().join("agent-teams")
     }
 }
@@ -67,21 +74,26 @@ pub(crate) fn setup_mem_team_db() -> Connection {
     conn
 }
 
-/// 进程启动孤儿自愈：上次宿主退出时若仍有 `running` 态编排单，平滑收敛为 `paused`，允许用户一键续跑。
+/// 进程启动孤儿自愈：上次宿主退出时若仍有 `running` 态任务单，平滑收敛为 `paused`，允许用户一键续跑或重新生成设计。
 fn reconcile_interrupted_runs_on_boot(conn: &Connection) {
     let now = now_ts();
-    let mut stmt = match conn.prepare("SELECT id FROM team_runs WHERE status = 'running'") {
+    let mut stmt = match conn.prepare("SELECT id, stage FROM team_runs WHERE status = 'running'") {
         Ok(s) => s,
         Err(_) => return,
     };
-    let ids: Vec<String> = match stmt.query_map([], |r| r.get(0)) {
+    let rows: Vec<(String, String)> = match stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
         Ok(rows) => rows.flatten().collect(),
         Err(_) => Vec::new(),
     };
-    for run_id in ids {
+    for (run_id, stage) in rows {
+        let next_status = if matches!(stage.as_str(), "planning" | "sql_designing") {
+            "paused"
+        } else {
+            "paused"
+        };
         let _ = conn.execute(
-            "UPDATE team_runs SET status = 'paused', revision = revision + 1, updated_at = ?1 WHERE id = ?2",
-            params![now, run_id],
+            "UPDATE team_runs SET status = ?1, revision = revision + 1, updated_at = ?2 WHERE id = ?3",
+            params![next_status, now, run_id],
         );
         let _ = conn.execute(
             "UPDATE team_tasks
@@ -95,7 +107,7 @@ fn reconcile_interrupted_runs_on_boot(conn: &Connection) {
             "run_paused_recovery",
             "",
             "system",
-            "检测到宿主重启，已自动保护现场并暂停流水线，点击「继续执行」即可从断点无缝恢复。",
+            "检测到宿主重启，已自动保护现场并暂停当前任务，点击继续即可无缝恢复。",
             "",
         );
     }
@@ -127,6 +139,9 @@ pub(crate) fn save_config_conn(conn: &Connection, cfg: &TeamGlobalConfig) -> Res
     let mut sanitized = cfg.clone();
     sanitized.max_repairs = sanitized.max_repairs.min(HARD_CAP_MAX_REPAIRS);
     sanitized.max_parallel_per_wave = sanitized.max_parallel_per_wave.clamp(1, 6);
+    sanitized
+        .prompt_templates
+        .retain(|k, v| !k.trim().is_empty() && !v.trim().is_empty());
     let raw = serde_json::to_string(&sanitized).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('team_config', ?1)
@@ -147,9 +162,10 @@ pub(crate) fn load_role_presets_conn(conn: &Connection) -> Result<Vec<RoleBindin
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
+            let wd: String = r.get(1)?;
             Ok(RoleBindingPreset {
                 domain: r.get(0)?,
-                working_dir: r.get(1)?,
+                working_dir: clean_path_str(&wd),
                 agent_id: r.get(2)?,
                 model: r.get(3)?,
                 updated_at: r.get(4)?,
@@ -159,12 +175,20 @@ pub(crate) fn load_role_presets_conn(conn: &Connection) -> Result<Vec<RoleBindin
     Ok(rows.flatten().collect())
 }
 
+pub(crate) fn delete_role_preset_conn(conn: &Connection, domain: &str) -> Result<(), String> {
+    let norm = normalize_domain(domain);
+    conn.execute("DELETE FROM role_presets WHERE domain = ?1", params![norm])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub(crate) fn upsert_role_preset_conn(
     conn: &Connection,
     preset: &RoleBindingPreset,
 ) -> Result<(), String> {
     let domain = normalize_domain(&preset.domain);
     let now = now_ts();
+    let clean_wd = clean_path_str(&preset.working_dir);
     conn.execute(
         "INSERT INTO role_presets (domain, working_dir, agent_id, model, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -175,7 +199,7 @@ pub(crate) fn upsert_role_preset_conn(
              updated_at = excluded.updated_at",
         params![
             domain,
-            preset.working_dir.trim(),
+            clean_wd,
             if preset.agent_id.trim().is_empty() {
                 "none"
             } else {
@@ -189,6 +213,114 @@ pub(crate) fn upsert_role_preset_conn(
     Ok(())
 }
 
+pub(crate) fn load_custom_projects_conn(
+    conn: &Connection,
+) -> Result<Vec<TeamProjectPreset>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, domain, working_dir, agent_id, avatar_id, model, notes, sort_order, updated_at
+             FROM team_projects
+             ORDER BY sort_order ASC, updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            let sort_i64: i64 = r.get(8)?;
+            Ok(TeamProjectPreset {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                domain: r.get(2)?,
+                working_dir: r.get(3)?,
+                agent_id: r.get(4)?,
+                avatar_id: r.get(5)?,
+                model: r.get(6)?,
+                notes: r.get(7)?,
+                sort_order: usize::try_from(sort_i64.max(0)).unwrap_or(0),
+                updated_at: r.get(9)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+pub(crate) fn upsert_custom_project_conn(
+    conn: &Connection,
+    proj: &TeamProjectPreset,
+) -> Result<TeamProjectPreset, String> {
+    let clean_name = proj.name.trim();
+    if clean_name.is_empty() {
+        return Err("请输入项目名称".to_string());
+    }
+    let id = if proj.id.trim().is_empty() {
+        new_team_id("prj")
+    } else {
+        proj.id.trim().to_string()
+    };
+    let domain = normalize_domain(&proj.domain);
+    let working_dir = clean_path_str(&proj.working_dir);
+    let agent_id = if proj.agent_id.trim().is_empty() {
+        "none".to_string()
+    } else {
+        proj.agent_id.trim().to_string()
+    };
+    let avatar_id = proj.avatar_id.trim().to_string();
+    let model = proj.model.trim().to_string();
+    let notes = proj.notes.trim().to_string();
+    let now = now_ts();
+    let sort_order = proj.sort_order;
+
+    conn.execute(
+        "INSERT INTO team_projects (
+            id, name, domain, working_dir, agent_id, avatar_id, model, notes, sort_order, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            domain = excluded.domain,
+            working_dir = excluded.working_dir,
+            agent_id = excluded.agent_id,
+            avatar_id = excluded.avatar_id,
+            model = excluded.model,
+            notes = excluded.notes,
+            sort_order = excluded.sort_order,
+            updated_at = excluded.updated_at",
+        params![
+            id,
+            clean_name,
+            domain,
+            working_dir,
+            agent_id,
+            avatar_id,
+            model,
+            notes,
+            sort_order as i64,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(TeamProjectPreset {
+        id,
+        name: clean_name.to_string(),
+        domain,
+        working_dir,
+        agent_id,
+        avatar_id,
+        model,
+        notes,
+        sort_order,
+        updated_at: now,
+    })
+}
+
+pub(crate) fn delete_custom_project_conn(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM team_projects WHERE id = ?1",
+        params![id.trim()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Runs, Tasks, Contracts & Events CRUD + CAS / Fencing Primitives
 // ---------------------------------------------------------------------------
@@ -197,12 +329,31 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamRun> {
     let rev: i64 = r.get(5)?;
     let auto_verify: i64 = r.get(6)?;
     let max_repairs: i64 = r.get(7)?;
+    let requires_db_i64: i64 = r.get(15)?;
+    let images_json: String = r.get(20)?;
+    let goal_images: Vec<TeamImage> = serde_json::from_str(&images_json).unwrap_or_default();
+    let sql_wd_raw: String = r.get(21)?;
+    let overrides_json: String = r.get(25)?;
+    let prompt_overrides: BTreeMap<String, String> =
+        serde_json::from_str(&overrides_json).unwrap_or_default();
     Ok(TeamRun {
         id: r.get(0)?,
         title: r.get(1)?,
         user_goal: r.get(2)?,
         mode: r.get(3)?,
         status: r.get(4)?,
+        stage: r.get(14)?,
+        requires_db: requires_db_i64 != 0,
+        execution_plan: r.get(16)?,
+        sql_schema_draft: r.get(17)?,
+        interface_spec: r.get(18)?,
+        delivery_sql: r.get(19)?,
+        sql_working_dir: clean_path_str(&sql_wd_raw),
+        sql_agent_id: r.get(22)?,
+        sql_model: r.get(23)?,
+        sql_session_id: r.get(24)?,
+        prompt_overrides,
+        goal_images,
         revision: u64::try_from(rev.max(0)).unwrap_or(1),
         auto_verify: auto_verify != 0,
         max_repairs: u32::try_from(max_repairs.max(0))
@@ -234,12 +385,16 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamTask> {
         depends_on: serde_json::from_str(&deps_json).unwrap_or_default(),
         wave: usize::try_from(wave_i64.max(1)).unwrap_or(1),
         sort_order: usize::try_from(sort_i64.max(0)).unwrap_or(0),
+        project_slot_id: r.get(27)?,
+        project_name: r.get(28)?,
+        avatar_id: r.get(29)?,
         working_dir: r.get(9)?,
         project_hash: r.get(10)?,
         agent_id: r.get(11)?,
         agent_label: r.get(12)?,
         model: r.get(13)?,
         session_id: r.get(14)?,
+        custom_prompt: r.get(30)?,
         status: r.get(23)?,
         attempt: u32::try_from(attempt_i64.max(0)).unwrap_or(0),
         attempt_id: r.get(16)?,
@@ -260,7 +415,9 @@ pub(crate) fn list_runs_conn(conn: &Connection, limit: usize) -> Result<Vec<Team
     let mut stmt = conn
         .prepare(
             "SELECT id, title, user_goal, mode, status, revision, auto_verify, max_repairs,
-                    lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at
+                    lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at,
+                    stage, requires_db, execution_plan, sql_schema_draft, interface_spec, delivery_sql, goal_images_json,
+                    sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json
              FROM team_runs
              ORDER BY updated_at DESC
              LIMIT ?1",
@@ -275,7 +432,9 @@ pub(crate) fn list_runs_conn(conn: &Connection, limit: usize) -> Result<Vec<Team
 pub(crate) fn load_run_conn(conn: &Connection, run_id: &str) -> Result<Option<TeamRun>, String> {
     conn.query_row(
         "SELECT id, title, user_goal, mode, status, revision, auto_verify, max_repairs,
-                lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at
+                lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at,
+                stage, requires_db, execution_plan, sql_schema_draft, interface_spec, delivery_sql, goal_images_json,
+                sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json
          FROM team_runs
          WHERE id = ?1",
         params![run_id],
@@ -295,7 +454,8 @@ pub(crate) fn load_tasks_for_run_conn(
                     depends_on_json, wave, sort_order, working_dir, project_hash,
                     agent_id, agent_label, model, session_id, attempt, attempt_id,
                     repair_count, contract_summary, last_output_excerpt, verify_verdict,
-                    verify_feedback, touched_files_json, status, started_at, updated_at, finished_at
+                    verify_feedback, touched_files_json, status, started_at, updated_at, finished_at,
+                    project_slot_id, project_name, avatar_id, custom_prompt
              FROM team_tasks
              WHERE run_id = ?1
              ORDER BY wave ASC, sort_order ASC",
@@ -313,7 +473,8 @@ pub(crate) fn load_task_conn(conn: &Connection, task_id: &str) -> Result<Option<
                 depends_on_json, wave, sort_order, working_dir, project_hash,
                 agent_id, agent_label, model, session_id, attempt, attempt_id,
                 repair_count, contract_summary, last_output_excerpt, verify_verdict,
-                verify_feedback, touched_files_json, status, started_at, updated_at, finished_at
+                verify_feedback, touched_files_json, status, started_at, updated_at, finished_at,
+                project_slot_id, project_name, avatar_id, custom_prompt
          FROM team_tasks
          WHERE id = ?1",
         params![task_id],
@@ -350,6 +511,96 @@ pub(crate) fn load_contracts_for_run_conn(
         })
         .map_err(|e| e.to_string())?;
     Ok(rows.flatten().collect())
+}
+
+pub(crate) fn load_task_statuses_by_run_conn(
+    conn: &Connection,
+    run_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    use std::collections::HashMap;
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    if run_ids.is_empty() {
+        return Ok(map);
+    }
+    let placeholders = (1..=run_ids.len())
+        .map(|idx| format!("?{idx}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT run_id, status
+         FROM team_tasks
+         WHERE run_id IN ({placeholders})
+         ORDER BY wave ASC, sort_order ASC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params = rusqlite::params_from_iter(run_ids.iter());
+    let rows = stmt
+        .query_map(params, |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows.flatten() {
+        map.entry(row.0).or_default().push(row.1);
+    }
+    Ok(map)
+}
+
+pub(crate) fn append_task_note_conn(
+    conn: &Connection,
+    run_id: &str,
+    task_id: &str,
+    note: &str,
+) -> Result<(), String> {
+    let now = now_ts();
+    let cur = load_task_conn(conn, task_id)?.ok_or_else(|| format!("未找到子任务: {task_id}"))?;
+    if cur.run_id != run_id {
+        return Err("子任务与当前任务单不匹配".to_string());
+    }
+    let trimmed = note.trim();
+    if trimmed.is_empty() {
+        return Err("补充指令不能为空".to_string());
+    }
+    let next_desc = if cur.description.trim().is_empty() {
+        format!("[补充指令 {now}] {trimmed}")
+    } else {
+        format!("{}\n[补充指令 {now}] {trimmed}", cur.description.trim_end())
+    };
+    conn.execute(
+        "UPDATE team_tasks SET description = ?1, updated_at = ?2 WHERE id = ?3",
+        params![next_desc, now, task_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE team_runs SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+        params![now, run_id],
+    )
+    .ok();
+    Ok(())
+}
+
+pub(crate) fn update_task_followup_result_conn(
+    conn: &Connection,
+    task_id: &str,
+    excerpt: &str,
+    touched_files: &[String],
+) -> Result<(), String> {
+    let now = now_ts();
+    let clean_excerpt = truncate_chars_safe(excerpt, MAX_EXCERPT_CHARS);
+    let files_json = serde_json::to_string(touched_files).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "UPDATE team_tasks
+         SET last_output_excerpt = ?1, touched_files_json = ?2, updated_at = ?3
+         WHERE id = ?4",
+        params![clean_excerpt, files_json, now, task_id],
+    )
+    .map_err(|e| e.to_string())?;
+    if let Ok(Some(t)) = load_task_conn(conn, task_id) {
+        let _ = conn.execute(
+            "UPDATE team_runs SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+            params![now, t.run_id],
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn load_events_for_run_conn(
@@ -409,12 +660,25 @@ pub(crate) fn create_run_with_tasks_conn(
     run: &TeamRun,
     tasks: &[TeamTask],
 ) -> Result<(), String> {
+    let images_json = serde_json::to_string(&run.goal_images).unwrap_or_else(|_| "[]".into());
+    let mut sanitized_overrides = run.prompt_overrides.clone();
+    sanitized_overrides.retain(|k, v| !k.trim().is_empty() && !v.trim().is_empty());
+    let overrides_json =
+        serde_json::to_string(&sanitized_overrides).unwrap_or_else(|_| "{}".into());
+    let clean_sql_wd = clean_path_str(&run.sql_working_dir);
+    let clean_sql_agent = if run.sql_agent_id.trim().is_empty() {
+        "none"
+    } else {
+        run.sql_agent_id.trim()
+    };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
         "INSERT INTO team_runs (
             id, title, user_goal, mode, status, revision, auto_verify, max_repairs,
-            lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at,
+            stage, requires_db, execution_plan, sql_schema_draft, interface_spec, delivery_sql, goal_images_json,
+            sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
         params![
             run.id,
             run.title,
@@ -430,6 +694,18 @@ pub(crate) fn create_run_with_tasks_conn(
             run.created_at,
             run.updated_at,
             run.finished_at,
+            run.stage,
+            i64::from(run.requires_db),
+            run.execution_plan,
+            run.sql_schema_draft,
+            run.interface_spec,
+            run.delivery_sql,
+            images_json,
+            clean_sql_wd,
+            clean_sql_agent,
+            run.sql_model.trim(),
+            run.sql_session_id.trim(),
+            overrides_json,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -450,13 +726,15 @@ fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
             depends_on_json, wave, sort_order, working_dir, project_hash,
             agent_id, agent_label, model, session_id, status, attempt, attempt_id,
             repair_count, contract_summary, last_output_excerpt, verify_verdict,
-            verify_feedback, touched_files_json, started_at, updated_at, finished_at
+            verify_feedback, touched_files_json, started_at, updated_at, finished_at,
+            project_slot_id, project_name, avatar_id, custom_prompt
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
             ?7, ?8, ?9, ?10, ?11,
             ?12, ?13, ?14, ?15, ?16, ?17, ?18,
             ?19, ?20, ?21, ?22,
-            ?23, ?24, ?25, ?26, ?27
+            ?23, ?24, ?25, ?26, ?27,
+            ?28, ?29, ?30, ?31
          )",
         params![
             task.id,
@@ -490,13 +768,70 @@ fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
             task.started_at,
             task.updated_at,
             task.finished_at,
+            task.project_slot_id,
+            task.project_name,
+            task.avatar_id,
+            task.custom_prompt,
         ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// CAS 更新派工单草稿（校验 `expected_revision`，仅允许在非 `running` 态下整单编辑任务拓扑）。
+fn binding_dirs_equal(a: &str, b: &str) -> bool {
+    let a = clean_path_str(a);
+    let b = clean_path_str(b);
+    if a.is_empty() || b.is_empty() {
+        return a == b;
+    }
+    super::sessions::same_project(std::path::Path::new(&a), std::path::Path::new(&b))
+}
+
+// Only editable fields come from the client. Runtime and attempt fencing belong to the DB.
+fn task_for_draft(client: &TeamTask, old: Option<&TeamTask>, run_id: &str, now: &str) -> TeamTask {
+    let mut task = client.clone();
+    task.run_id = run_id.to_string();
+    task.working_dir = clean_path_str(&client.working_dir);
+    let retained = old.filter(|old| binding_dirs_equal(&old.working_dir, &task.working_dir));
+    task.session_id = retained.map(|t| t.session_id.clone()).unwrap_or_default();
+    task.project_hash = retained.map(|t| t.project_hash.clone()).unwrap_or_default();
+    task.status = retained
+        .map(|t| t.status.clone())
+        .unwrap_or_else(|| "pending".into());
+    task.attempt = retained.map(|t| t.attempt).unwrap_or_default();
+    task.attempt_id = retained.map(|t| t.attempt_id.clone()).unwrap_or_default();
+    task.repair_count = retained.map(|t| t.repair_count).unwrap_or_default();
+    task.contract_summary = retained
+        .map(|t| t.contract_summary.clone())
+        .unwrap_or_default();
+    task.last_output_excerpt = retained
+        .map(|t| t.last_output_excerpt.clone())
+        .unwrap_or_default();
+    task.verify_verdict = retained
+        .map(|t| t.verify_verdict.clone())
+        .unwrap_or_default();
+    task.verify_feedback = retained
+        .map(|t| t.verify_feedback.clone())
+        .unwrap_or_default();
+    task.touched_files = retained
+        .map(|t| t.touched_files.clone())
+        .unwrap_or_default();
+    task.started_at = retained.map(|t| t.started_at.clone()).unwrap_or_default();
+    task.finished_at = retained.map(|t| t.finished_at.clone()).unwrap_or_default();
+    task.updated_at = now.to_string();
+    task
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RunDraftExtras<'a> {
+    pub(crate) sql_working_dir: Option<&'a str>,
+    pub(crate) sql_agent_id: Option<&'a str>,
+    pub(crate) sql_model: Option<&'a str>,
+    pub(crate) prompt_overrides: Option<&'a BTreeMap<String, String>>,
+}
+
+/// CAS 更新任务草稿（校验 `expected_revision`，仅允许在非 `running` 态下整单编辑任务拓扑）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn update_run_draft_cas_conn(
     conn: &mut Connection,
     run_id: &str,
@@ -505,16 +840,18 @@ pub(crate) fn update_run_draft_cas_conn(
     auto_verify: bool,
     max_repairs: u32,
     lead_model: &str,
+    requires_db: Option<bool>,
     tasks: &[TeamTask],
+    extras: &RunDraftExtras<'_>,
 ) -> Result<u64, String> {
-    let cur = load_run_conn(conn, run_id)?.ok_or_else(|| format!("未找到派工单: {run_id}"))?;
+    let cur = load_run_conn(conn, run_id)?.ok_or_else(|| format!("未找到任务: {run_id}"))?;
     if cur.status == "running" {
-        return Err("派工单正在执行中，请先暂停后再调整任务结构".to_string());
+        return Err("任务正在执行中，请先暂停后再调整任务结构".to_string());
     }
     if let Some(exp) = expected_revision {
         if exp != cur.revision {
             return Err(format!(
-                "派工单版本已变更（本地 v{exp} != 最新 v{}），已刷新最新状态",
+                "任务版本已变更（本地 v{exp} != 最新 v{}），已刷新最新状态",
                 cur.revision
             ));
         }
@@ -522,22 +859,59 @@ pub(crate) fn update_run_draft_cas_conn(
 
     let next_rev = cur.revision.saturating_add(1);
     let now = now_ts();
+    let effective_title = if title.trim().is_empty() {
+        cur.title.as_str()
+    } else {
+        title.trim()
+    };
+    let req_db_val = requires_db.map(i64::from);
+    let sql_wd_val = extras.sql_working_dir.map(clean_path_str);
+    let sql_aid_val = extras.sql_agent_id.map(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            "none".to_string()
+        } else {
+            t.to_string()
+        }
+    });
+    let sql_mdl_val = extras.sql_model.map(|s| s.trim().to_string());
+    let overrides_val = extras.prompt_overrides.map(|m| {
+        let mut sanitized = m.clone();
+        sanitized.retain(|k, v| !k.trim().is_empty() && !v.trim().is_empty());
+        serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".into())
+    });
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let old_tasks = load_tasks_for_run_conn(&tx, run_id)?;
+    let sql_dir_changed = sql_wd_val
+        .as_ref()
+        .map_or(false, |wd| !binding_dirs_equal(wd, &cur.sql_working_dir));
     let changed = tx
         .execute(
             "UPDATE team_runs
              SET title = ?1, auto_verify = ?2, max_repairs = ?3, lead_model = ?4,
-                 revision = ?5, updated_at = ?6
-             WHERE id = ?7 AND revision = ?8",
+                 requires_db = COALESCE(?5, requires_db),
+                 sql_working_dir = COALESCE(?6, sql_working_dir),
+                 sql_agent_id = COALESCE(?7, sql_agent_id),
+                 sql_model = COALESCE(?8, sql_model),
+                 prompt_overrides_json = COALESCE(?9, prompt_overrides_json),
+                 sql_session_id = CASE WHEN ?14 THEN '' ELSE sql_session_id END,
+                 revision = ?10, updated_at = ?11
+             WHERE id = ?12 AND revision = ?13",
             params![
-                title.trim(),
+                effective_title,
                 i64::from(auto_verify),
                 max_repairs.min(HARD_CAP_MAX_REPAIRS) as i64,
                 lead_model.trim(),
+                req_db_val,
+                sql_wd_val,
+                sql_aid_val,
+                sql_mdl_val,
+                overrides_val,
                 next_rev as i64,
                 now,
                 run_id,
                 cur.revision as i64,
+                sql_dir_changed,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -548,7 +922,18 @@ pub(crate) fn update_run_draft_cas_conn(
     tx.execute("DELETE FROM team_tasks WHERE run_id = ?1", params![run_id])
         .map_err(|e| e.to_string())?;
     for task in tasks {
-        insert_task_row(&tx, task)?;
+        let old = old_tasks.iter().find(|old| old.id == task.id);
+        let sanitized = task_for_draft(task, old, run_id, &now);
+        if old.map_or(false, |old| {
+            !binding_dirs_equal(&old.working_dir, &task.working_dir)
+        }) {
+            tx.execute(
+                "DELETE FROM team_contracts WHERE run_id = ?1 AND from_task_id = ?2",
+                params![run_id, task.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        insert_task_row(&tx, &sanitized)?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(next_rev)
@@ -585,6 +970,284 @@ pub(crate) fn set_run_status_conn(
         )
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+pub(crate) fn update_run_design_conn(
+    conn: &mut Connection,
+    run_id: &str,
+    title: Option<&str>,
+    status: &str,
+    stage: &str,
+    requires_db: bool,
+    execution_plan: &str,
+    sql_schema_draft: &str,
+    tasks: Option<&[TeamTask]>,
+) -> Result<(), String> {
+    let now = now_ts();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    if let Some(t) = title.map(str::trim).filter(|s| !s.is_empty()) {
+        tx.execute(
+            "UPDATE team_runs
+             SET title = ?1, status = ?2, stage = ?3, requires_db = ?4,
+                 execution_plan = ?5, sql_schema_draft = ?6,
+                 revision = revision + 1, updated_at = ?7
+             WHERE id = ?8",
+            params![
+                t,
+                status,
+                stage,
+                i64::from(requires_db),
+                execution_plan,
+                sql_schema_draft,
+                now,
+                run_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        tx.execute(
+            "UPDATE team_runs
+             SET status = ?1, stage = ?2, requires_db = ?3,
+                 execution_plan = ?4, sql_schema_draft = ?5,
+                 revision = revision + 1, updated_at = ?6
+             WHERE id = ?7",
+            params![
+                status,
+                stage,
+                i64::from(requires_db),
+                execution_plan,
+                sql_schema_draft,
+                now,
+                run_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(new_tasks) = tasks {
+        tx.execute("DELETE FROM team_tasks WHERE run_id = ?1", params![run_id])
+            .map_err(|e| e.to_string())?;
+        for task in new_tasks {
+            insert_task_row(&tx, task)?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn reset_run_to_team_binding_conn(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<(), String> {
+    transition_run_stage_conn(conn, run_id, "draft", "team_binding", None)
+}
+
+pub(crate) fn transition_run_stage_conn(
+    conn: &Connection,
+    run_id: &str,
+    status: &str,
+    stage: &str,
+    requires_db: Option<bool>,
+) -> Result<(), String> {
+    let cur = load_run_conn(conn, run_id)?.ok_or_else(|| format!("未找到任务: {run_id}"))?;
+    if cur.status == "running" {
+        return Err("任务正在执行中，请先暂停后再切换阶段".to_string());
+    }
+    let now = now_ts();
+    let req_db = requires_db.unwrap_or(cur.requires_db);
+    conn.execute(
+        "UPDATE team_runs
+         SET status = ?1, stage = ?2, requires_db = ?3, revision = revision + 1, updated_at = ?4
+         WHERE id = ?5",
+        params![status, stage, i64::from(req_db), now, run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 阶段 2 → 阶段 3：用户确认数据库表结构定稿后，进入研发团队配置阶段，并顺手用 SQL 参考目录预填未绑定目录的后端智能体。
+pub(crate) fn confirm_sql_to_team_binding_conn(
+    conn: &Connection,
+    run_id: &str,
+    execution_plan: Option<&str>,
+    sql_schema_draft: Option<&str>,
+) -> Result<(), String> {
+    let cur = load_run_conn(conn, run_id)?.ok_or_else(|| format!("未找到任务: {run_id}"))?;
+    if cur.status == "running" {
+        return Err("任务正在执行中，请先暂停后再操作".to_string());
+    }
+    update_run_design_texts_conn(conn, run_id, execution_plan, sql_schema_draft)?;
+    transition_run_stage_conn(conn, run_id, "draft", "team_binding", Some(true))?;
+
+    // 若 SQL 阶段绑定的目录确实包含应用源码（而非纯 SQL 脚本目录或空目录），且后端智能体目录为空，自动预填避免重复选择
+    let candidate_sql_wd = if !clean_path_str(&cur.sql_working_dir).is_empty() {
+        clean_path_str(&cur.sql_working_dir)
+    } else if let Ok(presets) = load_role_presets_conn(conn) {
+        presets
+            .into_iter()
+            .find(|p| {
+                normalize_domain(&p.domain) == "sql" && !clean_path_str(&p.working_dir).is_empty()
+            })
+            .map(|p| clean_path_str(&p.working_dir))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if !candidate_sql_wd.is_empty()
+        && super::prompts::inspect_dir_profile(std::path::Path::new(&candidate_sql_wd)).kind
+            == super::prompts::DirProfileKind::Codebase
+    {
+        let _ = conn.execute(
+            "UPDATE team_tasks
+             SET working_dir = ?1, updated_at = ?2
+             WHERE run_id = ?3 AND domain = 'backend' AND TRIM(working_dir) = ''",
+            params![candidate_sql_wd, now_ts(), run_id],
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn update_run_sql_binding_conn(
+    conn: &Connection,
+    run_id: &str,
+    sql_working_dir: Option<&str>,
+    sql_agent_id: Option<&str>,
+    sql_model: Option<&str>,
+    sql_session_id: Option<&str>,
+) -> Result<(), String> {
+    let now = now_ts();
+    let wd_val = sql_working_dir.map(clean_path_str);
+    let aid_val = sql_agent_id.map(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            "none".to_string()
+        } else {
+            t.to_string()
+        }
+    });
+    let mdl_val = sql_model.map(|s| s.trim().to_string());
+    let sid_val = sql_session_id.map(|s| s.trim().to_string());
+    let dir_changed = if let Some(wd) = &wd_val {
+        let cur = load_run_conn(conn, run_id)?.ok_or_else(|| format!("未找到任务: {run_id}"))?;
+        !binding_dirs_equal(wd, &cur.sql_working_dir)
+    } else {
+        false
+    };
+    conn.execute(
+        "UPDATE team_runs
+         SET sql_working_dir = COALESCE(?1, sql_working_dir),
+             sql_agent_id = COALESCE(?2, sql_agent_id),
+             sql_model = COALESCE(?3, sql_model),
+             sql_session_id = CASE
+                 WHEN ?1 IS NOT NULL AND ?7 THEN ''
+                 ELSE COALESCE(?4, sql_session_id) END,
+             updated_at = ?5
+         WHERE id = ?6",
+        params![wd_val, aid_val, mdl_val, sid_val, now, run_id, dir_changed],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn update_run_design_texts_conn(
+    conn: &Connection,
+    run_id: &str,
+    execution_plan: Option<&str>,
+    sql_schema_draft: Option<&str>,
+) -> Result<(), String> {
+    let now = now_ts();
+    if let Some(plan) = execution_plan {
+        conn.execute(
+            "UPDATE team_runs SET execution_plan = ?1, updated_at = ?2 WHERE id = ?3",
+            params![plan, now, run_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(sql) = sql_schema_draft {
+        conn.execute(
+            "UPDATE team_runs SET sql_schema_draft = ?1, updated_at = ?2 WHERE id = ?3",
+            params![sql, now, run_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn update_run_stage_conn(
+    conn: &Connection,
+    run_id: &str,
+    status: Option<&str>,
+    stage: &str,
+) -> Result<(), String> {
+    let now = now_ts();
+    if let Some(st) = status {
+        conn.execute(
+            "UPDATE team_runs
+             SET status = ?1, stage = ?2, revision = revision + 1, updated_at = ?3
+             WHERE id = ?4",
+            params![st, stage, now, run_id],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE team_runs
+             SET stage = ?1, revision = revision + 1, updated_at = ?2
+             WHERE id = ?3",
+            params![stage, now, run_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn update_run_interface_spec_conn(
+    conn: &Connection,
+    run_id: &str,
+    stage: &str,
+    interface_spec: &str,
+) -> Result<(), String> {
+    let now = now_ts();
+    conn.execute(
+        "UPDATE team_runs
+         SET stage = ?1, interface_spec = ?2, revision = revision + 1, updated_at = ?3
+         WHERE id = ?4",
+        params![stage, interface_spec, now, run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn update_run_delivery_conn(
+    conn: &Connection,
+    run_id: &str,
+    status: &str,
+    stage: &str,
+    delivery_sql: &str,
+    synthesis_report: &str,
+) -> Result<(), String> {
+    let now = now_ts();
+    let finished = if matches!(status, "completed" | "failed" | "cancelled") {
+        now.as_str()
+    } else {
+        ""
+    };
+    conn.execute(
+        "UPDATE team_runs
+         SET status = ?1, stage = ?2, delivery_sql = ?3, synthesis_report = ?4,
+             revision = revision + 1, updated_at = ?5,
+             finished_at = CASE WHEN ?6 != '' THEN ?6 ELSE finished_at END
+         WHERE id = ?7",
+        params![
+            status,
+            stage,
+            delivery_sql,
+            synthesis_report,
+            now,
+            finished,
+            run_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

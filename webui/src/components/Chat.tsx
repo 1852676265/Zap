@@ -239,6 +239,7 @@ import {
   type ChatRecoveryState,
 } from '../lib/chatTerminal';
 import {
+  clearInFlightAssistantTiming,
   formatTurnElapsed,
   resumeTurnClockEpoch,
   stampLastAssistantElapsed,
@@ -296,9 +297,13 @@ interface Message {
    * filters/folds rows, so this cannot be reconstructed from the visible index. */
   sourceIndex?: number;
   /** Stable ordinal among real user questions. Browser-local optimistic turns
-   * carry this until the daemon's authoritative outline arrives. */
+   *  carry this until the daemon's authoritative outline arrives. */
   turnNavOrdinal?: number;
 }
+
+/** 按不可变 Message 引用缓存 TurnNav 与回合文本聚合结果，避免流式输出时每次 O(N) 重扫全部历史消息。 */
+const turnNavMsgCache = new WeakMap<Message, { tokens: number; navText: string }>();
+const turnAggMsgCache = new WeakMap<Message, { textParts: string[]; fallback: string; reasoningParts: string[] }>();
 
 function areMessagePartsEquivalent(a: MsgPart[], b: MsgPart[]): boolean {
   if (a.length !== b.length) return false;
@@ -337,6 +342,7 @@ function areMessagesEquivalent(a: Message, b: Message): boolean {
     a.role !== b.role ||
     a.id !== b.id ||
     a.sourceIndex !== b.sourceIndex ||
+    a.ts !== b.ts ||
     a.elapsedMs !== b.elapsedMs ||
     (a.images?.length ?? 0) !== (b.images?.length ?? 0)
   ) {
@@ -1249,7 +1255,7 @@ export function Chat({
       }
     }
   }
-  function finishTurnClock(opts?: { stamp?: boolean; sessionId?: string | null }) {
+  function finishTurnClock(opts?: { stamp?: boolean; force?: boolean; sessionId?: string | null }) {
     const started = turnStartedAtRef.current;
     const targetId = opts?.sessionId ?? activeIdRef.current;
     if (targetId && opts?.stamp !== false) {
@@ -1259,13 +1265,40 @@ export function Chat({
     turnStartedAtRef.current = null;
     setTurnStartedAt(null);
     if (started == null || opts?.stamp === false) return;
-    setMessages((prev) => stampLastAssistantElapsed(prev, Date.now() - started, Date.now()));
+    const finishedAt = Date.now();
+    const elapsedMs = Math.max(0, finishedAt - started);
+    // 同步刷新 messagesRef/缓存，确保紧随其后的 saveSessionCache 立即落盘真实完成时刻与耗时
+    const stampedRef = stampLastAssistantElapsed(messagesRef.current, elapsedMs, finishedAt, {
+      force: opts?.force,
+    });
+    if (stampedRef !== messagesRef.current) {
+      messagesRef.current = stampedRef;
+      if (targetId && activeIdRef.current === targetId) {
+        messageCacheRef.current.set(targetId, stampedRef);
+      }
+    }
+    setMessages((prev) => {
+      const next = stampLastAssistantElapsed(prev, elapsedMs, finishedAt, {
+        force: opts?.force,
+      });
+      if (next !== prev) {
+        messagesRef.current = next;
+        if (targetId && activeIdRef.current === targetId) {
+          messageCacheRef.current.set(targetId, next);
+        }
+      }
+      return next;
+    });
   }
-  function setBusyAndClock(next: boolean, explicitStartTs?: number) {
+  function setBusyAndClock(
+    next: boolean,
+    explicitStartTs?: number,
+    opts?: { forceStamp?: boolean },
+  ) {
     if (next) {
       startTurnClock(undefined, explicitStartTs);
       lastLiveContentRef.current = Date.now();
-    } else finishTurnClock();
+    } else finishTurnClock({ force: opts?.forceStamp });
     busyRef.current = next;
     setBusy(next);
   }
@@ -1767,10 +1800,10 @@ export function Chat({
     ?? modelCatalog[0];
   const contextLimit = activeModelMeta?.context_window;
   // 审批模式（build / accept_edits / bypass / plan）。进程级 runtime 状态，
-  // 由 /live snapshot + 'mode' 事件同步，切换调 postLiveMode（当前回合立即生效）。
-  // confirmedMode 是 daemon 已确认值。--host 新建会话默认 Build；协议会话观察时显示 Auto。
-  const [modeState, setModeState] = useState(() => initModeState('build' as ApprovalMode));
-  const nativeModeRef = useRef<ApprovalMode>('build');
+  // 由 /approval_mode + 'mode' 事件同步，切换调 postLiveMode（当前回合立即生效）。
+  // confirmedMode 是 daemon 已确认值。新建会话与协议会话默认均显示 Auto（wire: bypass）。
+  const [modeState, setModeState] = useState(() => initModeState('bypass' as ApprovalMode));
+  const nativeModeRef = useRef<ApprovalMode>('bypass');
   const protocolSessionRef = useRef(false);
   const [pendingAttach, setPendingAttach] = useState<PendingAttach[]>(() =>
     initialDraft?.images ? imagesToPending(initialDraft.images) : [],
@@ -2909,6 +2942,8 @@ export function Chat({
         hasOlderBySessionRef.current.set(prevId, prevHasOlder);
       }
       const detachedController = abortRef.current;
+      // 离开当前会话前冲刷尚未落盘的帧级流式增量，确保切回缓存完整且取消待执行的 rAF
+      flushPendingStreamDeltas();
       // Prefer the ref: disk settlement writes it immediately, while React
       // state can still be the longer partial canvas from before the turn ended.
       const leavingMessages = messagesRef.current.length > 0 ? messagesRef.current : messages;
@@ -2962,17 +2997,17 @@ export function Chat({
           activeTodosBySessionRef.current.delete(prevId);
           cached = detachUnfinishedTodoFromLatestAssistant(leavingMessages);
         }
-        // Stamp the leaving session's live stopwatch into its cache. The
-        // following setBusyAndClock(false) must NOT write elapsed onto the
-        // destination session's messages.
+        // 离开仍在执行的会话时只保留起始时间戳，绝不提前给未完成气泡盖完成戳，
+        // 否则后续继续流式追加并在真正结束时，旧 ts/elapsedMs 会永久锁死气泡时刻与用时。
         if (turnStartedAtRef.current != null) {
           turnStartedAtBySessionRef.current.set(prevId, turnStartedAtRef.current);
-          cached = stampLastAssistantElapsed(cached, Date.now() - turnStartedAtRef.current);
+          setStoredTurnClock(prevId, turnStartedAtRef.current);
         }
         messageCacheRef.current.set(prevId, cached);
       } else if (prevId) {
         if (turnStartedAtRef.current != null) {
           turnStartedAtBySessionRef.current.set(prevId, turnStartedAtRef.current);
+          setStoredTurnClock(prevId, turnStartedAtRef.current);
         }
         const sticky =
           activeTodoSlotRef.current.sessionId === prevId
@@ -3095,7 +3130,9 @@ export function Chat({
         : createLiveLifecycleState();
       finishTurnClock({ stamp: false });
       if (destRunning) {
-        const sessionStarted = sessionId ? turnStartedAtBySessionRef.current.get(sessionId) : undefined;
+        const sessionStarted = sessionId
+          ? (turnStartedAtBySessionRef.current.get(sessionId) ?? getStoredTurnClock(sessionId) ?? undefined)
+          : undefined;
         // Fallback to the latest user message's send timestamp if stashed clock is absent
         const lastUserTs = [...(cached ?? [])].reverse().find((m) => m.role === 'user')?.ts;
         const started = sessionStarted ?? lastUserTs ?? resumeTurnStartedAt(Date.now(), destElapsed);
@@ -3247,6 +3284,26 @@ export function Chat({
 
     if (!sessionId) {
       requestIdRef.current = null;
+      protocolSessionRef.current = false;
+      if (!modeState.pendingMode) {
+        const fallbackMode: ApprovalMode = 'bypass';
+        nativeModeRef.current = fallbackMode;
+        setModeState((cur) => (cur.pendingMode ? cur : initModeState(fallbackMode)));
+        const landingGen = sessionGenerationRef.current;
+        getApprovalMode(null)
+          .then((current) => {
+            if (
+              activeIdRef.current !== null ||
+              sessionGenerationRef.current !== landingGen ||
+              protocolSessionRef.current
+            ) {
+              return;
+            }
+            nativeModeRef.current = current;
+            setModeState((cur) => (cur.pendingMode ? cur : initModeState(current)));
+          })
+          .catch(() => {});
+      }
       return;
     }
     // 已为该会话加载过历史（或它是本 Chat 自建会话）→ 不重复加载、不覆盖。
@@ -3566,11 +3623,22 @@ export function Chat({
               // 关键修复：当会话未处于活跃轮次时，如果磁盘与缓存的消息结构或内容不一致（例如发生删除、改写或截断），以磁盘持久化为最高真相源！
               const diskCountDiffer = (!turnActive || serverActive === false) && !cacheInFlight && loaded.length !== currentCached.length;
               const diskUserDiffer = (!turnActive || serverActive === false) && !cacheInFlight && loadedUserCount !== cachedUserCount;
+              const lastCachedAsst = [...currentCached].reverse().find((m) => m.role === 'assistant');
+              const lastLoadedAsst = [...loaded].reverse().find((m) => m.role === 'assistant');
+              const diskTimingDiffer =
+                (!turnActive || serverActive === false) &&
+                !cacheInFlight &&
+                diskHasUser &&
+                !!lastCachedAsst &&
+                !!lastLoadedAsst &&
+                (lastLoadedAsst.elapsedMs !== lastCachedAsst.elapsedMs ||
+                  (lastLoadedAsst.ts != null &&
+                    (lastCachedAsst.ts == null || Math.abs(lastLoadedAsst.ts - lastCachedAsst.ts) >= 1000)));
               // 上下文压缩会把硬盘上的老消息换成一条摘要 → 硬盘比画布**更短**。
               // 显示只增不减：这种情况绝不能用硬盘覆盖画布（否则显示被阑割）。
               const diskShrank = diskHasUser && transcriptTextLen(loaded) < transcriptTextLen(currentCached);
               const cacheContentStale = !diskShrank && (!turnActive || serverActive === false) && !cacheInFlight && (
-                diskCountDiffer || diskUserDiffer || (diskHasUser && transcriptTextLen(loaded) !== transcriptTextLen(currentCached))
+                diskCountDiffer || diskUserDiffer || diskTimingDiffer || (diskHasUser && transcriptTextLen(loaded) !== transcriptTextLen(currentCached))
               );
 
               // 仅当缓存落后于磁盘最新状态，或磁盘内容被改写/删除产生结构差异时采用磁盘覆盖；
@@ -3656,7 +3724,22 @@ export function Chat({
           loadedForRef.current = isEmptyNew ? loadId : null;
           if (isEmptyNew) {
             protocolSessionRef.current = false;
-            setModeState(initModeState(nativeModeRef.current));
+            if (!modeState.pendingMode) {
+              setModeState(initModeState(nativeModeRef.current));
+              getApprovalMode(loadId)
+                .then((current) => {
+                  if (
+                    activeIdRef.current !== loadId ||
+                    sessionGenerationRef.current !== loadGeneration ||
+                    protocolSessionRef.current
+                  ) {
+                    return;
+                  }
+                  nativeModeRef.current = current;
+                  setModeState((cur) => (cur.pendingMode ? cur : initModeState(current)));
+                })
+                .catch(() => {});
+            }
           }
           if (!isEmptyNew) {
             nextHint = t('chat.continueSession', { id: loadId.slice(0, 8) });
@@ -3677,7 +3760,7 @@ export function Chat({
             liveIdleSnapshotRef.current = false;
             heldDuplicateUserRef.current = null;
             liveLifecycleRef.current = { running: true, terminalConsumed: false };
-            const opened = ensureWorkingAssistant(messagesRef.current);
+            const opened = clearInFlightAssistantTiming(ensureWorkingAssistant(messagesRef.current));
             if (opened !== messagesRef.current) {
               messagesRef.current = opened;
               messageCacheRef.current.set(loadId, opened);
@@ -3791,7 +3874,7 @@ export function Chat({
   const scrollToBottom = (_behavior: ScrollBehavior = 'auto') => timelineFollow.jump();
   useEffect(() => {
     timelineFollow.changed();
-  }, [messages, tokens, timelineFollow]);
+  }, [messages, timelineFollow]);
 
   // 消息变化且当前无精确 tokens（如切会话、加载历史）时，根据消息或内存快照恢复 tokens。
   useEffect(() => {
@@ -4377,14 +4460,22 @@ export function Chat({
     () => {
       const loaded = buildTurnNavItems(
         messages.map((m) => {
-          const est = estimateMessageTokens(m);
+          let cached = turnNavMsgCache.get(m);
+          if (!cached) {
+            const est = estimateMessageTokens(m);
+            cached = {
+              tokens: est.prompt + est.completion + est.reasoning,
+              navText: m.role === 'assistant' ? assistantAnswerText(m) : messageText(m),
+            };
+            turnNavMsgCache.set(m, cached);
+          }
           return {
             role: m.role,
-            text: m.role === 'assistant' ? assistantAnswerText(m) : messageText(m),
+            text: cached.navText,
             sourceIndex: m.sourceIndex,
             turnNavOrdinal: m.turnNavOrdinal,
             hasImages: Boolean(m.images && m.images.length > 0),
-            tokens: est.prompt + est.completion + est.reasoning,
+            tokens: cached.tokens,
           };
         }),
         historyOffsetRef.current,
@@ -5429,10 +5520,14 @@ export function Chat({
     },
     [],
   );
+  const turnNavStructureKey = useMemo(
+    () => `${turnNavItems.length}:${turnNavItems[0]?.id ?? ''}:${turnNavItems[turnNavItems.length - 1]?.id ?? ''}`,
+    [turnNavItems],
+  );
   useEffect(() => {
     const id = requestAnimationFrame(() => syncTurnNavFromScrollNow());
     return () => cancelAnimationFrame(id);
-  }, [turnNavItems]);
+  }, [turnNavStructureKey]);
 
   // After older messages load (or progressive tail window expands), scroll to the pending
   // turn-jump target that couldn't be resolved immediately.
@@ -6337,6 +6432,16 @@ export function Chat({
         backgroundRunningSessionsRef.current.delete(targetSid);
         localTurnSessionsRef.current.delete(targetSid);
         onLiveRunningChange?.(targetSid, false);
+        const bgStarted =
+          turnStartedAtBySessionRef.current.get(targetSid) ??
+          getStoredTurnClock(targetSid) ??
+          precedingUserTs(next, next.length);
+        turnStartedAtBySessionRef.current.delete(targetSid);
+        setStoredTurnClock(targetSid, null);
+        if (bgStarted != null) {
+          const finishedAt = Date.now();
+          next = stampLastAssistantElapsed(next, Math.max(0, finishedAt - bgStarted), finishedAt, { force: true });
+        }
         const liveDoc = liveTodoDoc(targetSid);
         const settled = settleLiveTodo(liveDoc);
         if (settled.archive) {
@@ -6407,6 +6512,211 @@ export function Chat({
     }, 800);
   }
 
+  type PendingStreamOp =
+    | {
+        kind: 'text' | 'reasoning';
+        content: string;
+        requireReplayDedup: boolean;
+        messageId?: string;
+        partId?: string;
+        recordSeq?: number;
+        insertBeforeMessageId?: string;
+      }
+    | {
+        kind: 'tool_output';
+        callId?: string;
+        chunk: string;
+        requireReplayDedup: boolean;
+      }
+    | {
+        kind: 'tool_progress';
+        callId: string;
+        progress: string;
+      };
+  type PendingStreamTokens = {
+    localPrompt: number;
+    localCompletion: number;
+    localTotal: number;
+    localReasoning: number;
+    auth?: {
+      prompt: number;
+      completion: number;
+      total: number;
+      cached: number;
+      cached_estimated: boolean;
+      loop_prompt: number;
+      loop_cached: number;
+    };
+  };
+  const pendingStreamOpsRef = useRef<PendingStreamOp[]>([]);
+  const pendingStreamTokensRef = useRef<PendingStreamTokens | null>(null);
+  const streamFlushRafRef = useRef<number | null>(null);
+
+  function flushPendingStreamDeltas() {
+    if (streamFlushRafRef.current != null) {
+      window.cancelAnimationFrame(streamFlushRafRef.current);
+      streamFlushRafRef.current = null;
+    }
+    const ops = pendingStreamOpsRef.current;
+    const tokPatch = pendingStreamTokensRef.current;
+    if (ops.length === 0 && !tokPatch) return;
+    pendingStreamOpsRef.current = [];
+    pendingStreamTokensRef.current = null;
+
+    if (ops.length > 0) {
+      setMessages((prev) => {
+        let next = prev;
+        for (let k = 0; k < ops.length; k++) {
+          const op = ops[k]!;
+          if (op.kind === 'text') {
+            next = paintAssistantText(
+              next,
+              op.content,
+              op.requireReplayDedup,
+              op.messageId,
+              op.partId,
+              op.recordSeq,
+            );
+            next = withAssistantIdentity(next, op.messageId, op.partId);
+            if (op.insertBeforeMessageId) {
+              next = moveAssistantRowBefore(next, op.messageId, op.insertBeforeMessageId);
+            }
+          } else if (op.kind === 'reasoning') {
+            next = withAssistantIdentity(
+              paintAssistantReasoning(next, op.content, op.requireReplayDedup, op.messageId, op.partId, op.recordSeq),
+              op.messageId,
+              op.partId,
+            );
+            if (op.insertBeforeMessageId) {
+              next = moveAssistantRowBefore(next, op.messageId, op.insertBeforeMessageId);
+            }
+          } else if (op.kind === 'tool_output') {
+            if (next.length === 0) continue;
+            const callId = op.callId;
+            const replayChunk = (parts: MsgPart[]) =>
+              visibleToolChunk(parts, callId, op.chunk, op.requireReplayDedup);
+            let matched = false;
+            if (callId) {
+              for (let i = next.length - 1; i >= 0; i--) {
+                const m = next[i]!;
+                if (m.role === 'assistant' && m.parts?.some((p) => p.kind === 'tool' && p.tool?.id === callId)) {
+                  matched = true;
+                  const chunk = replayChunk(m.parts);
+                  if (!chunk) break;
+                  let parts = appendToolOutput(m.parts, callId, chunk);
+                  parts = parts.map((p) => {
+                    if (p.kind === 'tool' && p.tool.id === callId && p.tool.subtasks) {
+                      const sub = applySubtaskProgress(p.tool.subtasks, chunk);
+                      if (sub !== p.tool.subtasks) {
+                        return { kind: 'tool' as const, tool: { ...p.tool, subtasks: sub } };
+                      }
+                    }
+                    return p;
+                  });
+                  const copy = next.slice();
+                  copy[i] = { ...m, parts };
+                  next = copy;
+                  break;
+                }
+              }
+            }
+            if (!matched) {
+              const last = next[next.length - 1];
+              if (last && last.role === 'assistant') {
+                const chunk = replayChunk(last.parts);
+                if (chunk) {
+                  let parts = appendToolOutput(last.parts, callId, chunk);
+                  if (callId) {
+                    parts = parts.map((p) => {
+                      if (p.kind === 'tool' && p.tool.id === callId && p.tool.subtasks) {
+                        const sub = applySubtaskProgress(p.tool.subtasks, chunk);
+                        if (sub !== p.tool.subtasks) {
+                          return { kind: 'tool' as const, tool: { ...p.tool, subtasks: sub } };
+                        }
+                      }
+                      return p;
+                    });
+                  }
+                  const copy = next.slice();
+                  copy[copy.length - 1] = { ...last, parts };
+                  next = copy;
+                }
+              }
+            }
+          } else if (op.kind === 'tool_progress') {
+            if (next.length === 0) continue;
+            for (let i = next.length - 1; i >= 0; i--) {
+              const m = next[i]!;
+              if (m.role === 'assistant' && m.parts?.some((p) => p.kind === 'tool' && p.tool?.id === op.callId)) {
+                let patch: Partial<ToolRow> | undefined;
+                for (const p of m.parts) {
+                  if (p.kind === 'tool' && p.tool.id === op.callId && p.tool.subtasks) {
+                    const sub = applySubtaskProgress(p.tool.subtasks, op.progress);
+                    if (sub !== p.tool.subtasks) patch = { subtasks: sub };
+                    break;
+                  }
+                }
+                const copy = next.slice();
+                copy[i] = {
+                  ...m,
+                  parts: updateToolProgress(m.parts, op.callId, op.progress, patch),
+                };
+                next = copy;
+                break;
+              }
+            }
+          }
+        }
+        messagesRef.current = next;
+        return next;
+      });
+    }
+
+    if (tokPatch) {
+      setTokens((prev) => {
+        let next = prev;
+        if (tokPatch.auth) {
+          next = {
+            prompt: tokPatch.auth.prompt,
+            completion: tokPatch.auth.completion,
+            total: tokPatch.auth.total,
+            cached: tokPatch.auth.cached,
+            cached_estimated: tokPatch.auth.cached_estimated,
+            reasoning: next?.reasoning ?? 0,
+            loop_prompt: tokPatch.auth.loop_prompt,
+            loop_cached: tokPatch.auth.loop_cached,
+          };
+        }
+        if (tokPatch.localTotal > 0 || tokPatch.localCompletion > 0 || tokPatch.localReasoning > 0) {
+          next = mergeLocalTokens(next, {
+            prompt: (next?.prompt ?? 0) + tokPatch.localPrompt,
+            completion: (next?.completion ?? 0) + tokPatch.localCompletion,
+            total: (next?.total ?? 0) + tokPatch.localTotal,
+            ...(tokPatch.localReasoning > 0 ? { reasoning: (next?.reasoning ?? 0) + tokPatch.localReasoning } : {}),
+          });
+        }
+        return next;
+      });
+    }
+  }
+
+  function scheduleStreamFlush() {
+    if (streamFlushRafRef.current != null) return;
+    streamFlushRafRef.current = window.requestAnimationFrame(() => {
+      streamFlushRafRef.current = null;
+      flushPendingStreamDeltas();
+    });
+  }
+
+  useEffect(() => () => {
+    if (streamFlushRafRef.current != null) {
+      window.cancelAnimationFrame(streamFlushRafRef.current);
+      streamFlushRafRef.current = null;
+    }
+    pendingStreamOpsRef.current = [];
+    pendingStreamTokensRef.current = null;
+  }, []);
+
   /** @param opts.observerOnly Reserved for pure third-party observers that must
    *  not own interactive modals. /chat/watch reattach after refresh MUST call
    *  without this flag so Build-mode permission_request is restored. */
@@ -6429,6 +6739,16 @@ export function Chat({
     ) {
       applyEventToSessionCache(opts.sourceSessionId, event);
       return;
+    }
+    // 结构性/状态边界事件到达前立即冲刷同一帧缓冲的流式增量，保证顺序 100% 严格一致
+    if (
+      event.type !== 'text' &&
+      event.type !== 'reasoning' &&
+      event.type !== 'tool_output' &&
+      event.type !== 'tool_progress' &&
+      event.type !== 'tokens'
+    ) {
+      flushPendingStreamDeltas();
     }
     switch (event.type) {
       case 'runtime_info':
@@ -6550,19 +6870,41 @@ export function Chat({
       case 'text': {
         const streamSeq = (event as unknown as { seq?: number }).seq;
         const insertBeforeMessageId = (event as unknown as { insert_before_message_id?: string }).insert_before_message_id;
-        appendToLastAssistant(
-          event.content,
-          { requireReplayDedup },
-          { messageId: event.message_id, partId: event.part_id, recordSeq: streamSeq, insertBeforeMessageId },
-        );
+        const ops = pendingStreamOpsRef.current;
+        const lastOp = ops[ops.length - 1];
+        if (
+          lastOp &&
+          lastOp.kind === 'text' &&
+          lastOp.requireReplayDedup === requireReplayDedup &&
+          lastOp.messageId === event.message_id &&
+          lastOp.partId === event.part_id &&
+          lastOp.recordSeq === streamSeq &&
+          lastOp.insertBeforeMessageId === insertBeforeMessageId
+        ) {
+          lastOp.content += event.content;
+        } else {
+          ops.push({
+            kind: 'text',
+            content: event.content,
+            requireReplayDedup,
+            messageId: event.message_id,
+            partId: event.part_id,
+            recordSeq: streamSeq,
+            insertBeforeMessageId,
+          });
+        }
         const textDelta = estimateTextTokens(event.content);
         if (textDelta > 0) {
-          setTokens((prev) => mergeLocalTokens(prev, {
-            prompt: prev?.prompt ?? 0,
-            completion: (prev?.completion ?? 0) + textDelta,
-            total: (prev?.total ?? 0) + textDelta,
-          }));
+          const tok = pendingStreamTokensRef.current ?? (pendingStreamTokensRef.current = {
+            localPrompt: 0,
+            localCompletion: 0,
+            localTotal: 0,
+            localReasoning: 0,
+          });
+          tok.localCompletion += textDelta;
+          tok.localTotal += textDelta;
         }
+        scheduleStreamFlush();
         break;
       }
 
@@ -6570,27 +6912,42 @@ export function Chat({
         // Thinking / chain-of-thought stream — collapsible block in the UI.
         const streamSeq = (event as unknown as { seq?: number }).seq;
         const insertBeforeMessageId = (event as unknown as { insert_before_message_id?: string }).insert_before_message_id;
-        setMessages((prev) => {
-          let next = withAssistantIdentity(
-            paintAssistantReasoning(prev, event.content, requireReplayDedup, event.message_id, event.part_id, streamSeq),
-            event.message_id,
-            event.part_id,
-          );
-          if (insertBeforeMessageId) {
-            next = moveAssistantRowBefore(next, event.message_id, insertBeforeMessageId);
-          }
-          messagesRef.current = next;
-          return next;
-        });
+        const ops = pendingStreamOpsRef.current;
+        const lastOp = ops[ops.length - 1];
+        if (
+          lastOp &&
+          lastOp.kind === 'reasoning' &&
+          lastOp.requireReplayDedup === requireReplayDedup &&
+          lastOp.messageId === event.message_id &&
+          lastOp.partId === event.part_id &&
+          lastOp.recordSeq === streamSeq &&
+          lastOp.insertBeforeMessageId === insertBeforeMessageId
+        ) {
+          lastOp.content += event.content;
+        } else {
+          ops.push({
+            kind: 'reasoning',
+            content: event.content,
+            requireReplayDedup,
+            messageId: event.message_id,
+            partId: event.part_id,
+            recordSeq: streamSeq,
+            insertBeforeMessageId,
+          });
+        }
         const rDelta = estimateTextTokens(event.content);
         if (rDelta > 0) {
-          setTokens((prev) => mergeLocalTokens(prev, {
-            prompt: prev?.prompt ?? 0,
-            completion: (prev?.completion ?? 0) + rDelta,
-            total: (prev?.total ?? 0) + rDelta,
-            reasoning: (prev?.reasoning ?? 0) + rDelta,
-          }));
+          const tok = pendingStreamTokensRef.current ?? (pendingStreamTokensRef.current = {
+            localPrompt: 0,
+            localCompletion: 0,
+            localTotal: 0,
+            localReasoning: 0,
+          });
+          tok.localCompletion += rDelta;
+          tok.localTotal += rDelta;
+          tok.localReasoning += rDelta;
         }
+        scheduleStreamFlush();
         break;
       }
 
@@ -6635,79 +6992,37 @@ export function Chat({
       }
 
       case 'tool_output': {
-        const callId = event.id;
-        setMessages((prev) => {
-          if (prev.length === 0) return prev;
-          const replayChunk = (parts: MsgPart[]) =>
-            visibleToolChunk(parts, callId, event.chunk, requireReplayDedup);
-          if (callId) {
-            for (let i = prev.length - 1; i >= 0; i--) {
-              const m = prev[i];
-              if (m.role === 'assistant' && m.parts?.some((p) => p.kind === 'tool' && p.tool?.id === callId)) {
-                const chunk = replayChunk(m.parts);
-                if (!chunk) return prev;
-                let parts = appendToolOutput(m.parts, callId, chunk);
-                parts = parts.map((p) => {
-                  if (p.kind === 'tool' && p.tool.id === callId && p.tool.subtasks) {
-                    const next = applySubtaskProgress(p.tool.subtasks, chunk);
-                    if (next !== p.tool.subtasks) {
-                      return { kind: 'tool' as const, tool: { ...p.tool, subtasks: next } };
-                    }
-                  }
-                  return p;
-                });
-                const next = prev.slice();
-                next[i] = { ...m, parts };
-                return next;
-              }
-            }
-          }
-          const last = prev[prev.length - 1];
-          if (last.role !== 'assistant') return prev;
-          const chunk = replayChunk(last.parts);
-          if (!chunk) return prev;
-          let parts = appendToolOutput(last.parts, callId, chunk);
-          if (callId) {
-            parts = parts.map((p) => {
-              if (p.kind === 'tool' && p.tool.id === callId && p.tool.subtasks) {
-                const next = applySubtaskProgress(p.tool.subtasks, chunk);
-                if (next !== p.tool.subtasks) {
-                  return { kind: 'tool' as const, tool: { ...p.tool, subtasks: next } };
-                }
-              }
-              return p;
-            });
-          }
-          return [...prev.slice(0, -1), { ...last, parts }];
+        pendingStreamOpsRef.current.push({
+          kind: 'tool_output',
+          callId: event.id,
+          chunk: event.chunk,
+          requireReplayDedup,
         });
+        scheduleStreamFlush();
         break;
       }
 
-      case 'tool_progress':
-        setMessages((prev) => {
-          if (prev.length === 0) return prev;
-          for (let i = prev.length - 1; i >= 0; i--) {
-            const m = prev[i];
-            if (m.role === 'assistant' && m.parts?.some((p) => p.kind === 'tool' && p.tool?.id === event.id)) {
-              let patch: Partial<ToolRow> | undefined;
-              for (const p of m.parts) {
-                if (p.kind === 'tool' && p.tool.id === event.id && p.tool.subtasks) {
-                  const next = applySubtaskProgress(p.tool.subtasks, event.progress);
-                  if (next !== p.tool.subtasks) patch = { subtasks: next };
-                  break;
-                }
-              }
-              const next = prev.slice();
-              next[i] = {
-                ...m,
-                parts: updateToolProgress(m.parts, event.id, event.progress, patch),
-              };
-              return next;
-            }
+      case 'tool_progress': {
+        const ops = pendingStreamOpsRef.current;
+        let replaced = false;
+        for (let i = ops.length - 1; i >= 0; i--) {
+          const op = ops[i]!;
+          if (op.kind === 'tool_progress' && op.callId === event.id) {
+            op.progress = event.progress;
+            replaced = true;
+            break;
           }
-          return prev;
-        });
+        }
+        if (!replaced) {
+          ops.push({
+            kind: 'tool_progress',
+            callId: event.id,
+            progress: event.progress,
+          });
+        }
+        scheduleStreamFlush();
         break;
+      }
 
       case 'tool_result': {
         updateToolInLastAssistant(event.id, {
@@ -6792,16 +7107,26 @@ export function Chat({
         );
         tokenCacheRef.current = resolved.nextState;
         tokensAuthoritativeRef.current = true;
-        setTokens((prev) => ({
+        const tok = pendingStreamTokensRef.current ?? (pendingStreamTokensRef.current = {
+          localPrompt: 0,
+          localCompletion: 0,
+          localTotal: 0,
+          localReasoning: 0,
+        });
+        tok.localPrompt = 0;
+        tok.localCompletion = 0;
+        tok.localTotal = 0;
+        tok.localReasoning = 0;
+        tok.auth = {
           prompt: event.prompt,
           completion: event.completion,
           total: event.total,
           cached: resolved.cached,
           cached_estimated: resolved.cached_estimated,
-          reasoning: prev?.reasoning ?? 0,
           loop_prompt: resolved.nextState.turnPromptSum,
           loop_cached: resolved.nextState.turnCachedSum,
-        }));
+        };
+        scheduleStreamFlush();
         break;
       }
 
@@ -6921,7 +7246,7 @@ export function Chat({
           saveTokenSnapshot(event.session_id, tokensAuthoritativeRef.current);
         }
         setIsCompacting(false);
-        setBusyAndClock(false);
+        setBusyAndClock(false, undefined, { forceStamp: true });
         if (event.session_id) {
           markSessionTerminalSettled(event.session_id);
         }
@@ -6974,7 +7299,7 @@ export function Chat({
           onLiveRunningChange?.(activeIdRef.current, false);
           turnStartedAtBySessionRef.current.delete(activeIdRef.current);
         }
-        setBusyAndClock(false);
+        setBusyAndClock(false, undefined, { forceStamp: true });
         closeOpenArtifactFence();
         finalizePendingToolsOnCanvas();
         commitActiveTodosIntoLastAssistant();
@@ -7002,7 +7327,7 @@ export function Chat({
           onLiveRunningChange?.(activeIdRef.current, false);
           turnStartedAtBySessionRef.current.delete(activeIdRef.current);
         }
-        setBusyAndClock(false);
+        setBusyAndClock(false, undefined, { forceStamp: true });
         finalizePendingToolsOnCanvas();
         commitActiveTodosIntoLastAssistant();
         blockQueueDrainRef.current = true; // 出错时暂停自动 drain，但保留排队消息不丢失
@@ -8684,7 +9009,7 @@ export function Chat({
     stopIdleWatch();
 
     // 乐观立即复位界面状态：红色停止方块立刻变回白蓝色发送箭头，提供确定的即时反馈
-    setBusyAndClock(false);
+    setBusyAndClock(false, undefined, { forceStamp: true });
     busyRef.current = false;
     transitionChatRecovery({ type: 'stop_succeeded' });
     onPermissionResolved?.(null);
@@ -8984,18 +9309,27 @@ export function Chat({
     let fallbackParts: string[] = [];
     let reasoningParts: string[] = [];
     for (let i = 0; i < effectiveMessages.length; i++) {
-      if (effectiveMessages[i].role === 'assistant') {
+      const m = effectiveMessages[i]!;
+      if (m.role === 'assistant') {
         if (start < 0) start = i;
-        for (const p of effectiveMessages[i].parts) {
-          if (p.kind === 'text' && p.text.trim()) {
-            textParts.push(p.text);
-          } else if (p.kind === 'reasoning' && p.text.trim()) {
-            reasoningParts.push(p.text.trim());
+        let cachedAgg = turnAggMsgCache.get(m);
+        if (!cachedAgg) {
+          const tp: string[] = [];
+          const rp: string[] = [];
+          for (const p of m.parts) {
+            if (p.kind === 'text' && p.text.trim()) {
+              tp.push(p.text);
+            } else if (p.kind === 'reasoning' && p.text.trim()) {
+              rp.push(p.text.trim());
+            }
           }
+          cachedAgg = { textParts: tp, fallback: messageFullText(m), reasoningParts: rp };
+          turnAggMsgCache.set(m, cachedAgg);
         }
-        const raw = messageFullText(effectiveMessages[i]);
-        if (raw) fallbackParts.push(raw);
-      } else if (effectiveMessages[i].role === 'user') {
+        if (cachedAgg.textParts.length > 0) textParts.push(...cachedAgg.textParts);
+        if (cachedAgg.reasoningParts.length > 0) reasoningParts.push(...cachedAgg.reasoningParts);
+        if (cachedAgg.fallback) fallbackParts.push(cachedAgg.fallback);
+      } else if (m.role === 'user') {
         if (start >= 0) {
           const targetList = textParts.length > 0 ? textParts : fallbackParts;
           const lastText = targetList.length > 0 ? targetList[targetList.length - 1] : '';
@@ -11262,25 +11596,34 @@ function ReasoningBlock({
     el.scrollTop = el.scrollHeight;
   }, [text, open]);
 
-  // 同时提取首行（完成后静止摘要）与最新有效行（流式生成时实时滚动展示）
+  // 仅从首尾局部扫行提取首行（完成后静止摘要）与最新有效行（流式生成时实时滚动展示），避免每帧 split 整段思考长文本
   const { firstLine, latestLine } = useMemo(() => {
     if (!text) return { firstLine: '', latestLine: '' };
-    const lines = text.split('\n');
     let first = '';
-    let latest = '';
-    for (let i = 0; i < lines.length; i++) {
-      const cleaned = cleanReasoningPreviewLine(lines[i]!);
+    let start = 0;
+    while (start <= text.length) {
+      const nl = text.indexOf('\n', start);
+      const end = nl === -1 ? text.length : nl;
+      const cleaned = cleanReasoningPreviewLine(text.slice(start, end));
       if (cleaned) {
         first = cleaned;
         break;
       }
+      if (nl === -1) break;
+      start = nl + 1;
     }
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const cleaned = cleanReasoningPreviewLine(lines[i]!);
+    let latest = '';
+    let end = text.length;
+    while (end >= 0) {
+      const nl = text.lastIndexOf('\n', end - 1);
+      const segStart = nl === -1 ? 0 : nl + 1;
+      const cleaned = cleanReasoningPreviewLine(text.slice(segStart, end));
       if (cleaned) {
         latest = cleaned;
         break;
       }
+      if (nl <= 0) break;
+      end = nl;
     }
     return { firstLine: first, latestLine: latest };
   }, [text]);

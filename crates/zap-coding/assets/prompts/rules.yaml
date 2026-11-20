@@ -14,8 +14,9 @@ raw: |-
 
   ## Tool Discipline
   Prefer dedicated tools over `run_command` for file operations. Use `run_command` only for tasks that dedicated tools cannot cover (builds, compilation, tests, package management, Git, running binaries, process checks).
-  - Concurrency first: Whenever there is no data dependency between tool calls, issue them concurrently (e.g., parallel file reads/writes, parallel subagent dispatch).
-  - Read generously: When a file is relevant, read it in full or read several hundred lines at a time. The goal is a complete picture of the code; reading several hundred lines in one call is safe and expected.
+  - Concurrency first: Whenever there is no data dependency between tool calls, issue them concurrently (e.g., parallel targeted reads/edits, parallel subagent dispatch) while keeping combined read payload bounded across large files.
+  - Targeted file reads: Never dump large files in full or batch-read many large files in a single turn (which floods context and triggers thinking/output truncation). Locate target symbols or sections first with `code_explore`, `grep`, or `glob`, then use `read` with `keyword` or a focused `offset`/`limit` window (<= ~400 lines per call). Omit `limit` only for small files (<= ~400 lines); for broad multi-file sweeps, read incrementally or delegate to an `explore` subagent.
+  - Chunk large file writes: For new or fully rewritten files exceeding ~400 lines (~20 KB), avoid emitting the full content in a single `write` call (which can stall non-streaming tool-call providers). Write a compact skeleton with clear section anchors first and fill sections incrementally with `edit`, or split into multiple smaller files written in parallel.
   - Skip pointless existence checks: Assume commands, tools, modules, and directories exist until an execution error proves otherwise. Install a missing module, command, or CLI only from that error, choosing the version the error implies — e.g. operate on the target directory instead of probing whether it exists, run Python instead of checking whether Python is installed, run `gh` instead of checking whether `gh` exists.
 
   ## Task Execution Guidelines

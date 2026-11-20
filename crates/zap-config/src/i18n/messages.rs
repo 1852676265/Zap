@@ -1795,6 +1795,14 @@ pub enum Msg<'a> {
         retries: u32,
         secs: u64,
     },
+    /// Terminal timeout: model stopped emitting thinking tokens and produced no text or tool call before the transition deadline.
+    AgentTransitionTimeout {
+        secs: u64,
+    },
+    /// Output token limit exhausted during thinking before any visible text or complete tool call was emitted.
+    AgentTruncatedEmptyThinking,
+    /// Output token limit hit before completing any visible text or tool call (e.g. truncated oversized tool call).
+    AgentTruncatedEmptyOutput,
     /// Model exhausted retries returning unparseable responses.
     AgentExhaustedMalformed {
         max: u32,

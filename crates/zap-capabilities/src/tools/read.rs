@@ -18,10 +18,10 @@ use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 /// UTF-8/GB18030 detection and codeintel. Refuse pathological inputs uniformly,
 /// including callers that supplied an offset/limit.
 const MAX_IN_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
-/// Default page size when the caller omits `limit`. Midway between Grok (1000)
-/// and OpenCode (2000). Remainder is always recoverable via `offset` + omit
-/// `limit` (same continuation contract as Grok); do not dump the rest into this page.
-pub const READ_LIMIT_DEFAULT: usize = 1500;
+/// Default page size when the caller omits `limit`. Bounded to 400 lines to align
+/// with large-file chunking and avoid flooding context on un-scoped reads; callers can
+/// still pass an explicit `limit` (bounded by `READ_BYTE_BUDGET`) or use `keyword`.
+pub const READ_LIMIT_DEFAULT: usize = 400;
 /// Default context lines above each key_string match.
 pub const READ_UPWARD_DEFAULT: usize = 25;
 /// Default context lines below each key_string match.
@@ -128,8 +128,7 @@ impl RangeMeta {
                 "File: {path}\n\
                  Total Lines: {total_lines} | Total Bytes: {total_bytes}\n\
                  Showing lines {start}-{end} | Remaining: {next_offset}-{total_lines}\n\
-                 To continue: call `read` with offset={next_offset}.\n\
-                 Reading several hundred lines, or the whole file, in one call is safe and expected.\n"
+                 To continue: call `read` with offset={next_offset}, or narrow down with `keyword` / `grep` instead of reading large files end-to-end.\n"
             )
         }
     }
@@ -463,7 +462,7 @@ impl Tool for ReadFileTool {
         &[READ_TOOL_ALIAS]
     }
     fn description(&self) -> &str {
-        "Read file content generously (reading several hundred lines or the whole file in one call is safe and expected), view images, list directories, or inspect truncated output via 'artifact://<artifact_id>'."
+        "Read file slices, view images, list directories, or inspect folded output via 'artifact://<artifact_id>'. For large files (over ~400 lines), prefer `keyword` or focused `offset`/`limit` ranges instead of reading the whole file blindly."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
@@ -479,7 +478,7 @@ impl Tool for ReadFileTool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Number of lines to read from `offset` (defaults to 1500). Reading several hundred lines or the whole file in one call is safe and expected. Ignored when keyword is provided."
+                    "description": "Number of lines to read from `offset` (defaults to 400). Prefer bounded slices (e.g. 150-400 lines) or `keyword` for large files to avoid flooding context. Ignored when keyword is provided."
                 },
                 "keyword": {
                     "type": "string",
@@ -1571,7 +1570,7 @@ mod tests {
     #[tokio::test]
     async fn omitted_limit_uses_a_bounded_page_with_an_actionable_continuation() {
         let d = tempfile::tempdir().unwrap();
-        let text = (1..=3505)
+        let text = (1..=1005)
             .map(|n| format!("line {n}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1582,12 +1581,12 @@ mod tests {
             .await;
 
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("1500→line 1500"), "{}", r.content);
-        assert!(!r.content.contains("line 1501"), "{}", r.content);
+        assert!(r.content.contains("400→line 400"), "{}", r.content);
+        assert!(!r.content.contains("line 401"), "{}", r.content);
         assert!(
             r.content
-                .contains("Showing lines 1-1500 | Remaining: 1501-3505")
-                && r.content.contains("offset=1501")
+                .contains("Showing lines 1-400 | Remaining: 401-1005")
+                && r.content.contains("offset=401")
                 && !r.content.contains("read_file("),
             "{}",
             r.content
@@ -1595,16 +1594,12 @@ mod tests {
 
         let page2 = ReadFileTool::default()
             .execute(
-                r#"{"file_path":"notes.txt","offset":1501,"limit":100}"#,
+                r#"{"file_path":"notes.txt","offset":401,"limit":100}"#,
                 &ctx(d.path()),
             )
             .await;
         assert!(!page2.is_error, "{}", page2.content);
-        assert!(
-            page2.content.contains("1501→line 1501"),
-            "{}",
-            page2.content
-        );
+        assert!(page2.content.contains("401→line 401"), "{}", page2.content);
         assert!(!page2.content.contains("read_file("), "{}", page2.content);
     }
 
@@ -1668,13 +1663,11 @@ mod tests {
             "{footer}"
         );
         assert!(
-            footer.contains("Reading several hundred lines, or the whole file, in one call is safe and expected."),
+            footer.contains("narrow down with `keyword` / `grep`"),
             "{footer}"
         );
-        assert!(
-            !footer.contains("To read the whole file: call `read` with offset=1, limit=1500."),
-            "{footer}"
-        );
+        assert!(!footer.contains("safe and expected"), "{footer}");
+        assert!(!footer.contains("To read the whole file:"), "{footer}");
     }
 
     #[tokio::test]
@@ -1698,7 +1691,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_limit_can_read_beyond_the_default_line_page() {
         let d = tempfile::tempdir().unwrap();
-        let text = (1..=350)
+        let text = (1..=600)
             .map(|n| format!("l{n}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1706,13 +1699,13 @@ mod tests {
 
         let r = ReadFileTool::default()
             .execute(
-                r#"{"file_path":"short-lines.txt","offset":1,"limit":350}"#,
+                r#"{"file_path":"short-lines.txt","offset":1,"limit":600}"#,
                 &ctx(d.path()),
             )
             .await;
 
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("350→l350"), "{}", r.content);
+        assert!(r.content.contains("600→l600"), "{}", r.content);
         assert!(!r.content.contains("Continue reading"), "{}", r.content);
     }
 
@@ -2000,18 +1993,18 @@ mod tests {
     async fn file_under_the_default_page_returns_in_full() {
         let d = tempfile::tempdir().unwrap();
         let mut src = String::new();
-        for i in 0..800 {
+        for i in 0..300 {
             src.push_str(&format!("line {i}\n"));
         }
-        std::fs::write(d.path().join("big.txt"), &src).unwrap();
+        std::fs::write(d.path().join("medium.txt"), &src).unwrap();
         let r = ReadFileTool::default()
-            .execute(r#"{"file_path":"big.txt"}"#, &ctx(d.path()))
+            .execute(r#"{"file_path":"medium.txt"}"#, &ctx(d.path()))
             .await;
         assert!(r.content.contains("line 0"), "{}", r.content);
-        assert!(r.content.contains("line 799"), "{}", r.content);
+        assert!(r.content.contains("line 299"), "{}", r.content);
         assert!(
             !r.content.contains("read_file("),
-            "an 800-line file must not paginate under a 1500-line default: {}",
+            "a 300-line file must not paginate under a 400-line default: {}",
             r.content
         );
     }
@@ -2093,7 +2086,7 @@ mod tests {
     #[tokio::test]
     async fn large_file_paginates_without_continuation_json() {
         let d = tempfile::tempdir().unwrap();
-        let text = (1..=1800)
+        let text = (1..=600)
             .map(|n| format!("line_{n}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -2106,27 +2099,26 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert!(
             r.content
-                .contains("Showing lines 1-1500 | Remaining: 1501-1800")
-                && r.content.contains("offset=1501"),
+                .contains("Showing lines 1-400 | Remaining: 401-600")
+                && r.content.contains("offset=401"),
             "{}",
             r.content
         );
         assert!(!r.content.contains("read_file("), "{}", r.content);
         assert!(r.content.contains("1→line_1"), "{}", r.content);
-        assert!(r.content.contains("1500→line_1500"), "{}", r.content);
-        assert!(!r.content.contains("line_1501"), "{}", r.content);
+        assert!(r.content.contains("400→line_400"), "{}", r.content);
+        assert!(!r.content.contains("line_401"), "{}", r.content);
 
         // Read second page to EOF
         let r2 = ReadFileTool::default()
             .execute(
-                r#"{"file_path":"giant.txt","offset":1501,"limit":500}"#,
+                r#"{"file_path":"giant.txt","offset":401,"limit":400}"#,
                 &ctx(d.path()),
             )
             .await;
         assert!(!r2.is_error, "{}", r2.content);
         assert!(
-            r2.content
-                .contains("Showing lines 1501-1800 | End of file."),
+            r2.content.contains("Showing lines 401-600 | End of file."),
             "{}",
             r2.content
         );
@@ -2141,7 +2133,7 @@ mod tests {
             .join("\n");
         std::fs::write(d.path().join("sample.txt"), text).unwrap();
 
-        // 仅传 offset + downward，没有传 limit：downward 被静默吸收，limit 回退为默认 1500（读完剩余 10-200 行）
+        // 仅传 offset + downward，没有传 limit：downward 被静默吸收，limit 回退为默认 400（读完剩余 10-200 行）
         let r = ReadFileTool::default()
             .execute(
                 r#"{"path":"sample.txt","offset":10,"downward":5}"#,
@@ -2210,7 +2202,7 @@ mod tests {
 
     #[test]
     fn ci_check_keywords_and_constants_integrity() {
-        assert_eq!(READ_LIMIT_DEFAULT, 1500);
+        assert_eq!(READ_LIMIT_DEFAULT, 400);
         assert_eq!(READ_UPWARD_DEFAULT, 25);
         assert_eq!(READ_DOWNWARD_DEFAULT, 75);
         assert_eq!(READ_BYTE_BUDGET, 65536);
@@ -2220,10 +2212,10 @@ mod tests {
         let schema_str = serde_json::to_string(&schema).unwrap();
 
         let keywords = [
-            "1500",
+            "400",
             "25",
             "75",
-            "safe and expected",
+            "bounded slices",
             "Ignored when keyword",
             "\"keyword\"",
         ];
@@ -2233,6 +2225,10 @@ mod tests {
                 "schema must contain keyword '{kw}': {schema_str}"
             );
         }
+        assert!(
+            !schema_str.contains("safe and expected"),
+            "schema must not encourage dumping whole large files: {schema_str}"
+        );
         assert!(
             !schema_str.contains("\"key_string\""),
             "external schema must not expose key_string: {schema_str}"
@@ -2254,12 +2250,13 @@ mod tests {
         if rules_path.exists() {
             let rules_content = std::fs::read_to_string(&rules_path).unwrap();
             assert!(
-                rules_content.contains("safe and expected"),
-                "rules.yaml must contain 'safe and expected'"
+                !rules_content.contains("safe and expected")
+                    && !rules_content.contains("Read generously"),
+                "rules.yaml must not keep unbounded generous-reading guidance"
             );
             assert!(
-                rules_content.contains("read it in full or read several hundred lines at a time"),
-                "rules.yaml must keep generous-reading guidance"
+                rules_content.contains("Targeted file reads"),
+                "rules.yaml must enforce targeted file reads"
             );
         }
 
@@ -2280,7 +2277,7 @@ mod tests {
     async fn range_mode_3a_3b_3c_3d_lifecycle() {
         let d = tempfile::tempdir().unwrap();
 
-        // 3D: 完整文件一次读完 (< 1500 行，无截断)
+        // 3D: 完整文件一次读完 (< 400 行，无截断)
         std::fs::write(d.path().join("tiny.rs"), "fn tiny() {}\n").unwrap();
         let r3d = ReadFileTool::default()
             .execute(r#"{"path":"tiny.rs"}"#, &ctx(d.path()))
@@ -2324,8 +2321,8 @@ mod tests {
         assert!(r3a.content.contains("Showing lines 1-5 | Remaining: 6-20"));
         assert!(r3a
             .content
-            .contains("To continue: call `read` with offset=6."));
-        assert!(r3a.content.contains("safe and expected"));
+            .contains("To continue: call `read` with offset=6"));
+        assert!(r3a.content.contains("narrow down with `keyword` / `grep`"));
 
         // 3C: 读到末尾 (start > 1 且 end == total)
         let r3c = ReadFileTool::default()
@@ -2359,7 +2356,7 @@ mod tests {
         assert!(r3b
             .content
             .contains("To continue: call `read` with offset="));
-        assert!(r3b.content.contains("safe and expected"));
+        assert!(r3b.content.contains("narrow down with `keyword` / `grep`"));
     }
 
     #[tokio::test]

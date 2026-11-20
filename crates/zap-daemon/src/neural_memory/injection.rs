@@ -1,8 +1,9 @@
-//! 静态会话前缀注入 + `pre_request` 瞬态动态记忆 Hook（不污染对话历史与 `.snapshot`）。
+//! 静态会话前缀注入（含极薄大脑目录）+ `pre_request` 瞬态动态记忆 Hook（WAL 读写分离、4 关精准检索、耗时打点）。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rusqlite::{params, Connection};
@@ -11,16 +12,25 @@ use zap_kernel::hook::{LifecycleHooks, TurnCtx};
 use zap_kernel::message::{Message, Role};
 use zap_kernel::tool::Tool;
 
+use super::distill::spawn_boot_draft_recovery_once;
 use super::recall_tool::MemoryRecallTool;
+use super::retrieval::{
+    expand_top_node_neighbors_conn, query_nodes_ranked_conn, query_raw_turns_cold_conn,
+    query_tasks_ranked_conn, query_timeline_ranked_conn,
+};
 use super::search::{
-    build_fts_queries, clean_user_prompt, detect_mentioned_project, is_slash_command,
-    parse_temporal_range, query_nodes_fts_conn, query_raw_turns_fts_conn, query_timeline_fts_conn,
-    should_inject_l3_verbatim, ProjectScope,
+    analyze_query, clean_user_prompt, detect_mentioned_project, is_slash_command, ProjectScope,
 };
 use super::store::{
-    bind_fresh_session_agent_if_unset_conn, has_any_agents_conn, list_known_projects_conn,
-    load_open_tasks_scoped_conn, load_profiles_scoped_conn, load_raw_turn_conn,
-    resolve_agent_for_session_conn, with_store,
+    bind_fresh_session_agent_if_unset_conn, build_thin_memory_directory_conn,
+    get_thin_directory_cached, has_any_agents_conn, list_known_projects_cached,
+    list_known_projects_conn, load_open_tasks_scoped_conn, load_profiles_scoped_conn,
+    load_raw_turn_conn, map_timeline_row, record_memory_hits_conn,
+    resolve_agent_for_session_cached, resolve_agent_for_session_conn, with_read, with_write,
+    KnownProject,
+};
+use super::team_bridge::{
+    format_team_overview_line, list_recent_team_runs_for_project, lookup_team_run_overview,
 };
 use super::types::{
     normalize_project_key, normalize_project_name, NeuralNode, ProfileFact, RawTurn, TimelineEvent,
@@ -32,6 +42,7 @@ const MAX_SESSION_STATIC_STATES: usize = 256;
 #[derive(Debug, Clone)]
 struct SessionStaticState {
     initial_agent_id: String,
+    active_agent_id: String,
     frozen_profile_ids: HashSet<String>,
     known_profile_ids: HashSet<String>,
     frozen_profiles: Vec<(String, String)>,
@@ -44,8 +55,7 @@ struct SessionStaticCache {
     seq: u64,
 }
 
-static SESSION_STATIC_STATES: std::sync::OnceLock<Mutex<SessionStaticCache>> =
-    std::sync::OnceLock::new();
+static SESSION_STATIC_STATES: OnceLock<Mutex<SessionStaticCache>> = OnceLock::new();
 
 pub(crate) fn record_session_static_state(
     session_id: &str,
@@ -63,10 +73,16 @@ pub(crate) fn record_session_static_state(
     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
     guard.seq = guard.seq.saturating_add(1);
     let seq = guard.seq;
+    let preserved_initial = guard
+        .entries
+        .get(sid)
+        .map(|existing| existing.initial_agent_id.clone())
+        .unwrap_or_else(|| agent_id.to_string());
     guard.entries.insert(
         sid.to_string(),
         SessionStaticState {
-            initial_agent_id: agent_id.to_string(),
+            initial_agent_id: preserved_initial,
+            active_agent_id: agent_id.to_string(),
             frozen_profile_ids,
             known_profile_ids,
             frozen_profiles,
@@ -107,6 +123,46 @@ fn get_session_static_state(session_id: &str) -> Option<SessionStaticState> {
     let cache = SESSION_STATIC_STATES.get_or_init(|| Mutex::new(SessionStaticCache::default()));
     let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
     guard.entries.get(sid).cloned()
+}
+
+/// 当会话在运行期切换了智能体（含切换回 `none`）时，刷新该会话的当前生效智能体与 L1 档案基线快照。
+fn sync_session_switched_agent_state(
+    session_id: &str,
+    active_agent_id: &str,
+    frozen_profiles: Vec<(String, String)>,
+    all_scoped_profile_ids: HashSet<String>,
+) {
+    let sid = session_id.trim();
+    if sid.is_empty() {
+        return;
+    }
+    let frozen_profile_ids: HashSet<String> =
+        frozen_profiles.iter().map(|(id, _)| id.clone()).collect();
+    let mut known_profile_ids = frozen_profile_ids.clone();
+    known_profile_ids.extend(all_scoped_profile_ids);
+    let cache = SESSION_STATIC_STATES.get_or_init(|| Mutex::new(SessionStaticCache::default()));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.seq = guard.seq.saturating_add(1);
+    let seq = guard.seq;
+    if let Some(entry) = guard.entries.get_mut(sid) {
+        entry.active_agent_id = active_agent_id.to_string();
+        entry.frozen_profile_ids = frozen_profile_ids;
+        entry.known_profile_ids = known_profile_ids;
+        entry.frozen_profiles = frozen_profiles;
+        entry.last_seq = seq;
+    } else {
+        guard.entries.insert(
+            sid.to_string(),
+            SessionStaticState {
+                initial_agent_id: active_agent_id.to_string(),
+                active_agent_id: active_agent_id.to_string(),
+                frozen_profile_ids,
+                known_profile_ids,
+                frozen_profiles,
+                last_seq: seq,
+            },
+        );
+    }
 }
 
 fn format_profile_line(f: &ProfileFact) -> String {
@@ -167,14 +223,25 @@ pub(crate) fn build_static_system_block_with_ids_conn(
         let lines = format_profile_lines(&facts);
         parts.push(format!("[L1 Core Agent Profile]\n{}", lines.join("\n")));
     }
+    // 第 1 关：极薄大脑目录（仅在开场静态前缀挂载，0ms 告诉模型有哪些活跃需求/学习计划和知识卡片索引）
+    if !is_switched_override {
+        let thin_dir = build_thin_memory_directory_conn(
+            conn,
+            &agent.id,
+            current_project_key,
+            current_project_name,
+        )?;
+        if !thin_dir.trim().is_empty() {
+            parts.push(thin_dir);
+        }
+    }
     Ok((Some(parts.join("\n\n")), frozen_profiles))
 }
 
-/// 静态会话前缀块（纯英文标签，命中 Prompt Cache）。
+/// 静态会话前缀块（纯英文标签，命中 Prompt Cache，走独立只读连接）。
 pub fn build_static_system_block(session_id: &str) -> Option<String> {
-    with_store(|store| {
-        let (blk, _) =
-            build_static_system_block_with_ids_conn(&store.conn, session_id, "", "", false)?;
+    with_read(|conn, _| {
+        let (blk, _) = build_static_system_block_with_ids_conn(conn, session_id, "", "", false)?;
         Ok(blk)
     })
     .ok()
@@ -192,12 +259,12 @@ pub async fn note_fresh_session_static_agent(session_id: &str, working_dir: &Pat
     let proj_key = normalize_project_key(working_dir);
     let sid_for_db = sid_owned.clone();
     let res = tokio::task::spawn_blocking(move || {
-        with_store(|store| {
-            let agent_id = resolve_agent_for_session_conn(&store.conn, &sid_for_db)
+        with_read(|conn, _| {
+            let agent_id = resolve_agent_for_session_conn(conn, &sid_for_db)
                 .map(|a| a.id)
                 .unwrap_or_else(|| "none".to_string());
             let frozen_profiles = if agent_id != "none" {
-                load_profiles_scoped_conn(&store.conn, &agent_id, &proj_key, &proj_name, 18)?
+                load_profiles_scoped_conn(conn, &agent_id, &proj_key, &proj_name, 18)?
                     .into_iter()
                     .map(|f| {
                         let line = format_profile_line(&f);
@@ -237,12 +304,12 @@ impl NeuralMemoryBinding {
         if !sid.is_empty() {
             record_session_static_state(sid, &self.initial_agent_id, self.frozen_profiles.clone());
             record_session_known_profile_ids(sid, &self.initial_known_profile_ids);
-            if self.was_fresh && self.initial_agent_id != "none" {
+            if self.was_fresh {
                 let sid_owned = sid.to_string();
                 let aid_owned = self.initial_agent_id.clone();
                 if let Ok(rt) = tokio::runtime::Handle::try_current() {
                     rt.spawn_blocking(move || {
-                        let _ = with_store(|store| {
+                        let _ = with_write(|store| {
                             bind_fresh_session_agent_if_unset_conn(
                                 &store.conn,
                                 &sid_owned,
@@ -251,7 +318,7 @@ impl NeuralMemoryBinding {
                         });
                     });
                 } else {
-                    let _ = with_store(|store| {
+                    let _ = with_write(|store| {
                         bind_fresh_session_agent_if_unset_conn(&store.conn, &sid_owned, &aid_owned)
                     });
                 }
@@ -260,12 +327,12 @@ impl NeuralMemoryBinding {
     }
 }
 
-/// 挂载智能体静态系统前缀、`memory_recall` 工具（仅在存在可用智能体或已激活时挂载）与 `NeuralMemoryHook`（`pre_request` 瞬态注入）。
-/// SQLite 查询通过 `spawn_blocking` 执行，绝不阻塞 Tokio 异步工作线程。
+/// 挂载智能体静态系统前缀、`memory_recall` 工具与 `NeuralMemoryHook`（`pre_request` 瞬态注入）。
 pub async fn apply_session_static_system_append(
     runtime: &mut zap_coding::CodingRuntimeConfig,
     session_id: Option<&str>,
 ) -> NeuralMemoryBinding {
+    spawn_boot_draft_recovery_once();
     let sid_opt = session_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -283,39 +350,53 @@ pub async fn apply_session_static_system_append(
         .push(Arc::clone(&hook) as Arc<dyn LifecycleHooks>);
 
     let sid_for_db = sid.clone();
+    let pkey_dir = current_proj_key.clone();
+    let pname_dir = current_proj_name.clone();
     let store_res = tokio::task::spawn_blocking(move || {
-        with_store(|store| {
-            let agent = resolve_agent_for_session_conn(&store.conn, &sid_for_db);
-            let should_mount_tool = agent.is_some() || has_any_agents_conn(&store.conn);
+        let agent = resolve_agent_for_session_cached(&sid_for_db)?;
+        let (should_mount_tool, mut block, frozen_profiles, known_ids) = with_read(|conn, _| {
+            let should_mount_tool = agent.is_some() || has_any_agents_conn(conn);
             let (block, frozen_profiles) = build_static_system_block_with_ids_conn(
-                &store.conn,
+                conn,
                 &sid_for_db,
                 &current_proj_key,
                 &current_proj_name,
                 false,
             )?;
             let known_ids: HashSet<String> = if let Some(ref ag) = agent {
-                load_profiles_scoped_conn(
-                    &store.conn,
-                    &ag.id,
-                    &current_proj_key,
-                    &current_proj_name,
-                    64,
-                )?
-                .into_iter()
-                .map(|p| p.id)
-                .collect()
+                load_profiles_scoped_conn(conn, &ag.id, &current_proj_key, &current_proj_name, 64)?
+                    .into_iter()
+                    .map(|p| p.id)
+                    .collect()
             } else {
                 HashSet::new()
             };
-            Ok((
-                agent.map(|a| a.id),
-                should_mount_tool,
-                block,
-                frozen_profiles,
-                known_ids,
-            ))
-        })
+            Ok((should_mount_tool, block, frozen_profiles, known_ids))
+        })?;
+        // 预热极薄大脑目录缓存（写时失效），后续新会话 0ms 复用
+        if let Some(ref ag) = agent {
+            if let Ok(dir) = get_thin_directory_cached(&ag.id, &pkey_dir, &pname_dir) {
+                if !dir.trim().is_empty() && block.as_deref().is_some_and(|b| !b.contains(&dir)) {
+                    if let Some(ref mut b) = block {
+                        b.push_str("\n\n");
+                        b.push_str(&dir);
+                    }
+                }
+            }
+        }
+        let resolved_aid = agent.as_ref().map(|a| a.id.as_str()).unwrap_or("none");
+        if !sid_for_db.is_empty() {
+            let _ = with_write(|store| {
+                bind_fresh_session_agent_if_unset_conn(&store.conn, &sid_for_db, resolved_aid)
+            });
+        }
+        Ok::<_, String>((
+            agent.map(|a| a.id),
+            should_mount_tool,
+            block,
+            frozen_profiles,
+            known_ids,
+        ))
     })
     .await;
 
@@ -369,8 +450,7 @@ pub async fn apply_session_static_system_append(
     }
 }
 
-/// 瞬态动态记忆 Hook：在每次发往模型前的 `pre_request` 中计算/读取记忆并作为 `synthetic_user` 尾注，
-/// 既保持 Prompt Cache 增量前缀安全，又**绝不写入 `Conversation` 与 `.snapshot`**，根除多轮膨胀。
+/// 瞬态动态记忆 Hook：在每次发往模型前的 `pre_request` 中走只读连接极速计算相关记忆并作为 `synthetic_user` 尾注。
 pub struct NeuralMemoryHook {
     session_id: Arc<RwLock<Option<String>>>,
     working_dir: PathBuf,
@@ -418,22 +498,31 @@ impl NeuralMemoryHook {
 #[async_trait]
 impl LifecycleHooks for NeuralMemoryHook {
     async fn pre_request(&self, messages: &mut Vec<Message>, ctx: &TurnCtx) {
-        // 提取本轮最后一个真实用户输入
-        let Some(latest_user_raw) = messages
+        // 提取最近 3 条真实用户消息：最新一条为主问题，前 1~2 条供短句追问借用主语主题词
+        let real_user_msgs: Vec<String> = messages
             .iter()
             .rev()
-            .find(|m| {
+            .filter(|m| {
                 m.role == Role::User
                     && !m.synthetic
                     && !is_system_reminder(&m.text)
                     && !is_strong_reminder(&m.text)
             })
+            .take(3)
             .map(|m| m.text.clone())
-        else {
+            .collect();
+        let Some(latest_user_raw) = real_user_msgs.first().cloned() else {
             return;
         };
+        let prior_user_turns: Vec<String> = real_user_msgs
+            .iter()
+            .skip(1)
+            .rev()
+            .map(|s| clean_user_prompt(s))
+            .filter(|s| !s.is_empty())
+            .collect();
 
-        // 同回合第 2..N 轮工具循环直接复用缓存的瞬态提醒，避免重复读 SQLite
+        // 同回合第 2..N 轮工具循环直接复用缓存的瞬态提醒，0 次 SQL 查询
         if ctx.turn_id > 0 {
             let cached = self
                 .turn_cache
@@ -454,7 +543,7 @@ impl LifecycleHooks for NeuralMemoryHook {
         let sid = self.resolved_session_id(ctx);
         let wd = self.working_dir.clone();
         let reminder_opt = tokio::task::spawn_blocking(move || {
-            build_dynamic_turn_reminder(&sid, &latest_user_raw, &wd)
+            build_dynamic_turn_reminder_with_context(&sid, &latest_user_raw, &prior_user_turns, &wd)
         })
         .await
         .ok()
@@ -471,20 +560,85 @@ impl LifecycleHooks for NeuralMemoryHook {
     }
 }
 
-/// 构造动态单轮 `<system-reminder>`（全部使用英文框架指令，严格相关性过滤，支持热切换与本场新学 L1 档案）。
+fn record_hits_async(node_ids: Vec<String>, profile_ids: Vec<String>) {
+    if (node_ids.is_empty() && profile_ids.is_empty()) || cfg!(test) {
+        return;
+    }
+    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        rt.spawn_blocking(move || {
+            let _ = with_write(|store| {
+                record_memory_hits_conn(&store.conn, &node_ids, &profile_ids);
+                Ok(())
+            });
+        });
+    }
+}
+
+/// 构造动态单轮 `<system-reminder>`（向后兼容旧签名）。
 pub fn build_dynamic_turn_reminder(
     session_id: &str,
     user_text: &str,
+    working_dir: &Path,
+) -> Option<String> {
+    build_dynamic_turn_reminder_with_context(session_id, user_text, &[], working_dir)
+}
+
+pub fn build_dynamic_turn_reminder_with_context(
+    session_id: &str,
+    user_text: &str,
+    prior_user_turns: &[String],
     working_dir: &Path,
 ) -> Option<String> {
     let clean_q = clean_user_prompt(user_text);
     if clean_q.is_empty() || is_slash_command(&clean_q) {
         return None;
     }
-    match with_store(|store| {
-        build_dynamic_turn_reminder_conn(&store.conn, session_id, &clean_q, working_dir)
-    }) {
-        Ok(res) => res,
+    let started = Instant::now();
+
+    // 生产热路径：先查进程级热缓存；通用模式下直接 0 SQL 短路返回
+    let cached_agent = match resolve_agent_for_session_cached(session_id) {
+        Ok(ag) => ag,
+        Err(err) => {
+            tracing::warn!(error = %err, "neural_memory: failed to resolve cached agent");
+            return None;
+        }
+    };
+    let Some(agent) = cached_agent else {
+        if let Some(st) = get_session_static_state(session_id) {
+            if st.initial_agent_id != "none" || st.active_agent_id != "none" {
+                sync_session_switched_agent_state(session_id, "none", Vec::new(), HashSet::new());
+                return Some(system_reminder(
+                    "[Neural Agent Switched: none]\nNeural memory isolation is now disabled for this session. Do not rely on the initial or previous neural agent persona above.",
+                ));
+            }
+        }
+        return None;
+    };
+    let known_projects = list_known_projects_cached(&agent.id).unwrap_or_default();
+
+    let res = with_read(|conn, _| {
+        build_dynamic_turn_reminder_inner(
+            conn,
+            session_id,
+            &clean_q,
+            prior_user_turns,
+            working_dir,
+            Some((agent, known_projects)),
+        )
+    });
+    match res {
+        Ok((reminder_opt, hit_nodes, hit_profiles)) => {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            tracing::debug!(
+                session_id = session_id,
+                elapsed_ms = format_args!("{elapsed_ms:.2}"),
+                injected = reminder_opt.is_some(),
+                hit_nodes = hit_nodes.len(),
+                "neural_memory: pre_request retrieval completed"
+            );
+            record_hits_async(hit_nodes, hit_profiles);
+            reminder_opt
+        }
         Err(err) => {
             tracing::warn!(error = %err, "neural_memory: failed to build dynamic reminder");
             None
@@ -492,30 +646,112 @@ pub fn build_dynamic_turn_reminder(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_dynamic_turn_reminder_conn(
     conn: &Connection,
     session_id: &str,
     clean_q: &str,
     working_dir: &Path,
 ) -> Result<Option<String>, String> {
+    let (rem, _, _) =
+        build_dynamic_turn_reminder_inner(conn, session_id, clean_q, &[], working_dir, None)?;
+    Ok(rem)
+}
+
+#[cfg(test)]
+pub(crate) fn build_dynamic_turn_reminder_with_context_conn(
+    conn: &Connection,
+    session_id: &str,
+    clean_q: &str,
+    prior_user_turns: &[String],
+    working_dir: &Path,
+) -> Result<Option<String>, String> {
+    let (rem, _, _) = build_dynamic_turn_reminder_inner(
+        conn,
+        session_id,
+        clean_q,
+        prior_user_turns,
+        working_dir,
+        None,
+    )?;
+    Ok(rem)
+}
+
+fn format_node_card_block(
+    n: &NeuralNode,
+    include_superseded: bool,
+    relation_tag: Option<&str>,
+) -> String {
+    let p = if n.project.is_empty() {
+        String::new()
+    } else {
+        format!("[{}] ", n.project)
+    };
+    let rel = relation_tag
+        .map(|r| format!("[linked:{r}] "))
+        .unwrap_or_default();
+    let mut header = format!(
+        "- {rel}{p}{} (status={}, mastery={}%): {}",
+        n.name, n.status, n.mastery, n.summary
+    );
+    let extra_facts: Vec<String> = n
+        .facts
+        .iter()
+        .filter(|f| include_superseded || f.is_active())
+        .filter(|f| f.text.trim() != n.summary.trim())
+        .take(3)
+        .map(|f| {
+            let st = if f.is_active() { "" } else { "[superseded] " };
+            format!("  * {st}[{}] {}", f.kind, f.text)
+        })
+        .collect();
+    if !extra_facts.is_empty() {
+        header.push('\n');
+        header.push_str(&extra_facts.join("\n"));
+    }
+    header
+}
+
+fn build_dynamic_turn_reminder_inner(
+    conn: &Connection,
+    session_id: &str,
+    clean_q: &str,
+    prior_user_turns: &[String],
+    working_dir: &Path,
+    preloaded: Option<(super::types::NeuralAgent, Vec<KnownProject>)>,
+) -> Result<(Option<String>, Vec<String>, Vec<String>), String> {
     let proj_name = normalize_project_name(working_dir);
     let proj_key = normalize_project_key(working_dir);
     let static_state = get_session_static_state(session_id);
 
-    let agent_opt = resolve_agent_for_session_conn(conn, session_id);
-    let Some(agent) = agent_opt else {
-        // 如果会话最初挂载了某个智能体，中途被切换为 `none`，需发一次解除隔离提示
-        if let Some(st) = static_state {
-            if st.initial_agent_id != "none" {
-                return Ok(Some(system_reminder(
-                    "[Neural Agent Switched: none]\nNeural memory isolation is now disabled for this session. Do not rely on the initial neural agent persona above.",
-                )));
-            }
+    let (agent, known_projects) = match preloaded {
+        Some((ag, projs)) => (ag, projs),
+        None => {
+            let agent_opt = resolve_agent_for_session_conn(conn, session_id);
+            let Some(ag) = agent_opt else {
+                if let Some(st) = static_state {
+                    if st.initial_agent_id != "none" || st.active_agent_id != "none" {
+                        sync_session_switched_agent_state(
+                            session_id,
+                            "none",
+                            Vec::new(),
+                            HashSet::new(),
+                        );
+                        return Ok((
+                            Some(system_reminder(
+                                "[Neural Agent Switched: none]\nNeural memory isolation is now disabled for this session. Do not rely on the initial or previous neural agent persona above.",
+                            )),
+                            Vec::new(),
+                            Vec::new(),
+                        ));
+                    }
+                }
+                return Ok((None, Vec::new(), Vec::new()));
+            };
+            let projs = list_known_projects_conn(conn, &ag.id);
+            (ag, projs)
         }
-        return Ok(None);
     };
-
-    let known_projects = list_known_projects_conn(conn, &agent.id);
     let mentioned_project =
         detect_mentioned_project(clean_q, &known_projects, &proj_name, &proj_key);
 
@@ -532,39 +768,67 @@ pub(crate) fn build_dynamic_turn_reminder_conn(
         })
     };
 
+    let plan = analyze_query(clean_q, prior_user_turns);
     let mut sections: Vec<String> = Vec::new();
+    let mut hit_node_ids: Vec<String> = Vec::new();
+    let mut hit_profile_ids: Vec<String> = Vec::new();
 
-    // 1. 若会话中途切换了智能体，发瞬态接管指令（替换开头初始人设）
-    let switched = static_state
+    // 1. 支持单会话内任意多次切换智能体 + 增量同步本场新学/撤回的 L1 档案
+    let differs_from_initial = static_state
         .as_ref()
         .is_some_and(|st| st.initial_agent_id != agent.id);
-    if switched {
-        if let (Some(static_blk), _) =
-            build_static_system_block_with_ids_conn(conn, session_id, &proj_key, &proj_name, true)?
-        {
+    let agent_just_changed = static_state
+        .as_ref()
+        .is_none_or(|st| st.active_agent_id != agent.id);
+
+    let current_profiles = load_profiles_scoped_conn(conn, &agent.id, &proj_key, &proj_name, 64)?;
+    let current_ids: HashSet<String> = current_profiles.iter().map(|p| p.id.clone()).collect();
+
+    if differs_from_initial {
+        let (static_blk_opt, switched_frozen) =
+            build_static_system_block_with_ids_conn(conn, session_id, &proj_key, &proj_name, true)?;
+        if let Some(static_blk) = static_blk_opt {
             sections.push(static_blk);
         }
-    } else {
-        // 未切换智能体时：
-        // 1) 把本场会话中刚学到、尚未进入静态前缀的新 L1 档案增量注入
-        // 2) 把开场冻结后又被删除/否定的档案发一次撤回提示，避免继续生效
-        let current_profiles =
-            load_profiles_scoped_conn(conn, &agent.id, &proj_key, &proj_name, 64)?;
-        let current_ids: HashSet<String> = current_profiles.iter().map(|p| p.id.clone()).collect();
-        let known_ids = static_state.as_ref().map(|st| &st.known_profile_ids);
+        if agent_just_changed {
+            sync_session_switched_agent_state(
+                session_id,
+                &agent.id,
+                switched_frozen,
+                current_ids.clone(),
+            );
+        }
+    } else if agent_just_changed {
+        let (_, switched_frozen) = build_static_system_block_with_ids_conn(
+            conn, session_id, &proj_key, &proj_name, false,
+        )?;
+        sync_session_switched_agent_state(
+            session_id,
+            &agent.id,
+            switched_frozen,
+            current_ids.clone(),
+        );
+    }
+
+    if !agent_just_changed {
+        let active_state = get_session_static_state(session_id);
+        let known_ids = active_state.as_ref().map(|st| &st.known_profile_ids);
         let newly_learned: Vec<ProfileFact> = current_profiles
             .into_iter()
             .filter(|f| known_ids.is_none_or(|set| !set.contains(&f.id)))
             .take(8)
             .collect();
         if !newly_learned.is_empty() {
+            for f in &newly_learned {
+                hit_profile_ids.push(f.id.clone());
+            }
             let lines = format_profile_lines(&newly_learned);
             sections.push(format!(
                 "[Newly Learned L1 Profile Facts]\n{}",
                 lines.join("\n")
             ));
         }
-        if let Some(st) = static_state.as_ref() {
+        if let Some(st) = active_state.as_ref() {
             let retracted: Vec<String> = st
                 .frozen_profiles
                 .iter()
@@ -580,125 +844,113 @@ pub(crate) fn build_dynamic_turn_reminder_conn(
         }
     }
 
-    // 2. L1 未完成任务（SQL 作用域下推，只查当前/全局或显式点名项目）
-    let open_tasks = load_open_tasks_scoped_conn(conn, &agent.id, target_key, target_name, 8)?;
-    if !open_tasks.is_empty() {
+    // 2. 抽屉 2（需求与学习进度本 + Team 跨端状态透视）
+    let mut displayed_tasks =
+        load_open_tasks_scoped_conn(conn, &agent.id, target_key, target_name, 8)?;
+    if plan.wants_progress {
+        let mut seen_tids: HashSet<String> = displayed_tasks.iter().map(|t| t.id.clone()).collect();
+        for rt in query_tasks_ranked_conn(conn, &agent.id, &plan, target_scope, 6) {
+            if seen_tids.insert(rt.task.id.clone()) {
+                displayed_tasks.push(rt.task);
+            }
+        }
+    }
+    let mut team_run_ids_to_check: Vec<String> = Vec::new();
+    if !displayed_tasks.is_empty() {
         let mut lines = Vec::new();
-        for t in open_tasks {
-            let tag = if t.status == "stale" {
-                "stale"
-            } else {
-                "in_progress"
-            };
+        for t in &displayed_tasks {
             let p = if t.project.is_empty() {
                 String::new()
             } else {
                 format!("[{}] ", t.project)
             };
-            let rem = if t.remaining_note.is_empty() {
-                String::new()
+            let rem = if !t.next_step.trim().is_empty() {
+                format!(" | next: {}", t.next_step.trim())
+            } else if !t.remaining_note.trim().is_empty() {
+                format!(" | remaining: {}", t.remaining_note.trim())
+            } else if !t.progress_note.trim().is_empty() {
+                format!(" | progress: {}", t.progress_note.trim())
             } else {
-                format!(" | remaining: {}", t.remaining_note)
+                String::new()
             };
-            lines.push(format!("- ({tag}, id={}) {p}{}{rem}", t.id, t.title));
+            if !t.team_run_id.trim().is_empty() && !team_run_ids_to_check.contains(&t.team_run_id) {
+                team_run_ids_to_check.push(t.team_run_id.clone());
+            }
+            lines.push(format!(
+                "- ({}/{}, id={}) {p}{}{rem}",
+                t.item_kind, t.status, t.id, t.title
+            ));
         }
         sections.push(format!("[L1 Pinned Open Tasks]\n{}", lines.join("\n")));
     }
 
-    // 3. L2 知识节点：严格按 FTS5 相关性命中，不再用无关最近节点凑数
-    let (fts_strict, fts_broad) = build_fts_queries(clean_q);
-    let mut matched_nodes: Vec<NeuralNode> = Vec::new();
-    let mut seen_node_ids: HashSet<String> = HashSet::new();
-
-    for fq in [fts_strict.as_deref(), fts_broad.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        if matched_nodes.len() >= 6 {
-            break;
-        }
-        if let Some(ref mp) = mentioned_project {
-            let mp_scope = ProjectScope {
-                key: mp.key.as_str(),
-                name: mp.name.as_str(),
-            };
-            for n in query_nodes_fts_conn(conn, &agent.id, fq, Some(mp_scope), 6) {
-                if seen_node_ids.insert(n.id.clone()) {
-                    matched_nodes.push(n);
-                }
-            }
-        }
-        let mut hits = query_nodes_fts_conn(conn, &agent.id, fq, target_scope, 6);
-        if hits.is_empty() && target_scope.is_some() && mentioned_project.is_none() {
-            // 当前项目未命中时，允许严格 AND 检索跨项目强相关节点
-            if fts_strict.as_deref() == Some(fq) {
-                hits = query_nodes_fts_conn(conn, &agent.id, fq, None, 4);
-            }
-        }
-        for n in hits {
-            if matched_nodes.len() >= 6 {
-                break;
-            }
-            if seen_node_ids.insert(n.id.clone()) {
-                matched_nodes.push(n);
+    let mut team_overview_lines: Vec<String> = Vec::new();
+    let mut seen_runs: HashSet<String> = HashSet::new();
+    for rid in &team_run_ids_to_check {
+        if seen_runs.insert(rid.clone()) {
+            if let Some(ov) = lookup_team_run_overview(rid) {
+                team_overview_lines.push(format_team_overview_line(&ov));
             }
         }
     }
-    if !matched_nodes.is_empty() {
-        let lines: Vec<String> = matched_nodes
-            .iter()
-            .map(|n| {
-                let p = if n.project.is_empty() {
-                    String::new()
-                } else {
-                    format!("[{}] ", n.project)
-                };
-                format!(
-                    "- {p}{} (status={}, mastery={}%): {}",
-                    n.name, n.status, n.mastery, n.summary
-                )
-            })
+    if plan.wants_progress && team_overview_lines.len() < 3 {
+        for ov in list_recent_team_runs_for_project(working_dir, 3) {
+            if seen_runs.insert(ov.run_id.clone()) {
+                team_overview_lines.push(format_team_overview_line(&ov));
+            }
+        }
+    }
+    if !team_overview_lines.is_empty() {
+        sections.push(format!(
+            "[Linked Agent Teams Cross-Role Status]\n{}",
+            team_overview_lines.join("\n")
+        ));
+    }
+
+    // 3. 抽屉 3（知识与经验活卡片）：精确路牌 + 分列加权 BM25 + 多因子重排 + 及格线宁缺毋滥 + 1-hop 邻居
+    let mut ranked_nodes = query_nodes_ranked_conn(conn, &agent.id, &plan, target_scope, 3);
+    if ranked_nodes.is_empty() && target_scope.is_some() && mentioned_project.is_none() {
+        ranked_nodes = query_nodes_ranked_conn(conn, &agent.id, &plan, None, 2)
+            .into_iter()
+            .filter(|rn| rn.anchor_hits > 0 || rn.score >= 28.0)
             .collect();
+    }
+    if !ranked_nodes.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        for rn in &ranked_nodes {
+            hit_node_ids.push(rn.node.id.clone());
+            lines.push(format_node_card_block(
+                &rn.node,
+                plan.wants_superseded,
+                None,
+            ));
+        }
+        for (neighbor, rel) in expand_top_node_neighbors_conn(conn, &agent.id, &ranked_nodes, 1) {
+            lines.push(format_node_card_block(
+                &neighbor,
+                plan.wants_superseded,
+                Some(&rel),
+            ));
+        }
         sections.push(format!("[L2 Knowledge Nodes]\n{}", lines.join("\n")));
     }
 
-    // 4. L2 时间线索引（日期范围感知 + FTS5 BM25，仅命中时注入）
-    let date_range = parse_temporal_range(clean_q);
+    // 4. 抽屉 4（每日精华大事记）：日期范围直达 + 综合加权检索及格线
     let mut timeline_hits: Vec<TimelineEvent> = Vec::new();
     let mut seen_tl_ids: HashSet<String> = HashSet::new();
-
-    if let Some(ref dr) = date_range {
-        if let Ok(mut stmt) = conn.prepare(
+    if let Some(ref dr) = plan.date_range {
+        if let Ok(mut stmt) = conn.prepare_cached(
             "SELECT id, ts, agent_id, project, project_key, working_dir, session_id, turn_id, raw_file,
-                    user_goal, summary, ai_outcome, keywords_json, touched_files_json, distilled_by
+                    user_goal, summary, ai_outcome, keywords_json, touched_files_json, distilled_by,
+                    kind, team_run_id, node_ids_json
              FROM timeline
              WHERE agent_id = ?1 AND ts >= ?2 AND ts <= ?3
-               AND (?4 = '' OR project_key = ?4 OR (project_key = '' AND LOWER(project) = LOWER(?5)))
-             ORDER BY ts DESC LIMIT 8",
+               AND (?4 = '' OR project_key = ?4 OR (project_key = '' AND LOWER(project) = LOWER(?5)) OR (project_key = '' AND project = ''))
+             ORDER BY ts DESC LIMIT 6",
         ) {
             if let Ok(rows) = stmt.query_map(
                 params![agent.id, dr.start, dr.end, target_key, target_name],
-                |row| {
-                    let kw_str: String = row.get(12)?;
-                    let tf_str: String = row.get(13)?;
-                    Ok(TimelineEvent {
-                        id: row.get(0)?,
-                        ts: row.get(1)?,
-                        agent: row.get(2)?,
-                        project: row.get(3)?,
-                        project_key: row.get(4)?,
-                        working_dir: row.get(5)?,
-                        session_id: row.get(6)?,
-                        turn_id: row.get(7)?,
-                        raw_file: row.get(8)?,
-                        user_goal: row.get(9)?,
-                        summary: row.get(10)?,
-                        ai_outcome: row.get(11)?,
-                        keywords: serde_json::from_str(&kw_str).unwrap_or_default(),
-                        touched_files: serde_json::from_str(&tf_str).unwrap_or_default(),
-                        distilled_by: row.get(14)?,
-                    })
-                },
+                map_timeline_row,
             ) {
                 for ev in rows.flatten() {
                     if seen_tl_ids.insert(ev.id.clone()) {
@@ -708,26 +960,25 @@ pub(crate) fn build_dynamic_turn_reminder_conn(
             }
         }
     }
-    for fq in [fts_strict.as_deref(), fts_broad.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        if timeline_hits.len() >= 6 {
-            break;
-        }
-        let hits =
-            query_timeline_fts_conn(conn, &agent.id, fq, target_scope, date_range.as_ref(), 6);
-        for ev in hits {
-            if timeline_hits.len() >= 6 {
+    if timeline_hits.len() < 3 {
+        for rt in query_timeline_ranked_conn(
+            conn,
+            &agent.id,
+            &plan,
+            target_scope,
+            plan.date_range.as_ref(),
+            3,
+        ) {
+            if timeline_hits.len() >= 3 {
                 break;
             }
-            if seen_tl_ids.insert(ev.id.clone()) {
-                timeline_hits.push(ev);
+            if seen_tl_ids.insert(rt.event.id.clone()) {
+                timeline_hits.push(rt.event);
             }
         }
     }
     if !timeline_hits.is_empty() {
-        let header = match &date_range {
+        let header = match &plan.date_range {
             Some(dr) => format!("[L2 Period Index: {}]", dr.label),
             None => "[L2 Timeline Index]".to_string(),
         };
@@ -750,8 +1001,8 @@ pub(crate) fn build_dynamic_turn_reminder_conn(
         sections.push(format!("{header}\n{}", lines.join("\n")));
     }
 
-    // 5. L3 原文仅在显式索要原文/堆栈，或精确点名跨项目且 FTS 命中时注入
-    if should_inject_l3_verbatim(clean_q) || mentioned_project.is_some() {
+    // 5. 抽屉 5（冷仓库原话）：仅显式索要原文/堆栈或跨项目点名时按需检索（零 FTS 膨胀）
+    if plan.wants_verbatim || mentioned_project.is_some() {
         let mut raw_hits: Vec<RawTurn> = Vec::new();
         let mut seen_turns: HashSet<String> = HashSet::new();
         let l3_scope = mentioned_project
@@ -762,28 +1013,28 @@ pub(crate) fn build_dynamic_turn_reminder_conn(
             })
             .or(target_scope);
 
-        for fq in [fts_strict.as_deref(), fts_broad.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            if raw_hits.len() >= 2 {
-                break;
-            }
-            for r in query_raw_turns_fts_conn(conn, &agent.id, fq, l3_scope, date_range.as_ref(), 3)
-            {
-                if seen_turns.insert(r.turn_id.clone()) {
+        for ev in timeline_hits.iter().take(2) {
+            if !ev.turn_id.is_empty() && seen_turns.insert(ev.turn_id.clone()) {
+                if let Ok(Some(r)) = load_raw_turn_conn(conn, &ev.turn_id) {
                     raw_hits.push(r);
-                }
-                if raw_hits.len() >= 2 {
-                    break;
                 }
             }
         }
-        if raw_hits.is_empty() && should_inject_l3_verbatim(clean_q) {
-            for ev in timeline_hits.iter().take(2) {
-                if !ev.turn_id.is_empty() && seen_turns.insert(ev.turn_id.clone()) {
-                    if let Ok(Some(r)) = load_raw_turn_conn(conn, &ev.turn_id) {
-                        raw_hits.push(r);
+        if raw_hits.len() < 2 {
+            let mut terms = plan.anchors.clone();
+            terms.extend(plan.core_terms.iter().take(3).cloned());
+            for r in query_raw_turns_cold_conn(
+                conn,
+                &agent.id,
+                &terms,
+                l3_scope,
+                plan.date_range.as_ref(),
+                2,
+            ) {
+                if seen_turns.insert(r.turn_id.clone()) {
+                    raw_hits.push(r);
+                    if raw_hits.len() >= 2 {
+                        break;
                     }
                 }
             }
@@ -813,7 +1064,7 @@ pub(crate) fn build_dynamic_turn_reminder_conn(
         }
     }
 
-    // 6. 记忆检索工具提示（仅在确实有记忆项目或本次命中数据时提供一行简洁引导）
+    // 6. 工具提示
     if !known_projects.is_empty() && (!sections.is_empty() || mentioned_project.is_some()) {
         let mut names: Vec<String> = known_projects
             .into_iter()
@@ -828,12 +1079,16 @@ pub(crate) fn build_dynamic_turn_reminder_conn(
             format!(" Known projects in memory: {}.", names.join(", "))
         };
         sections.push(format!(
-            "[Memory Recall Tool]\nCall `memory_recall` whenever you need past requirements, decisions, tasks, or verbatim transcripts (across projects via `project=\"*\"` or `project=\"<name>\"`).{proj_list}"
+            "[Memory Recall Tool]\nCall `memory_recall` whenever you need full card facts, superseded history, cross-project records (`project=\"*\"`), or verbatim transcripts (`include_raw=true`).{proj_list}"
         ));
     }
 
     if sections.is_empty() {
-        return Ok(None);
+        return Ok((None, hit_node_ids, hit_profile_ids));
     }
-    Ok(Some(system_reminder(&sections.join("\n\n"))))
+    Ok((
+        Some(system_reminder(&sections.join("\n\n"))),
+        hit_node_ids,
+        hit_profile_ids,
+    ))
 }

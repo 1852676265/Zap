@@ -9,8 +9,9 @@
 //! 3. If an existing file is unread:
 //!    - Intercepts `write` (refuses to mutate the file).
 //!    - Informs the model to read and confirm before writing.
-//!    - Directly returns the file's latest 1500 lines formatted with line anchors.
-//!    - If total lines > 1500, informs how many lines remain and instructs reading the remainder via offset/limit.
+//!    - Directly returns up to `READ_LIMIT_DEFAULT` (400) lines formatted with line anchors
+//!      (within `READ_BYTE_BUDGET`).
+//!    - If total lines > 400 (or byte budget exceeded), instructs reading remaining sections via `read` or preferring `edit`.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -19,8 +20,9 @@ use std::sync::{LazyLock, Mutex};
 use zap_kernel::hook::LifecycleHooks;
 use zap_kernel::message::Conversation;
 
-const DEFAULT_READ_LIMIT: usize = 1500;
+use super::read::{READ_BYTE_BUDGET, READ_LIMIT_DEFAULT as DEFAULT_READ_LIMIT};
 const MAX_LINE_LEN: usize = 2000;
+const FOOTER_RESERVE_BYTES: usize = 1024;
 /// Bound the per-path state map so a long-lived daemon editing thousands of
 /// files across sessions cannot grow it without limit. Oldest turns are pruned
 /// first; a pruned file simply loses its read confirmation (fail-closed).
@@ -259,7 +261,7 @@ pub fn check_write_permitted(path: &Path) -> WritePermission {
     WritePermission::RefusedUnread
 }
 
-/// Build the unread refusal message returning up to 1500 lines of the target file.
+/// Build the unread refusal message returning up to `READ_LIMIT_DEFAULT` lines (within `READ_BYTE_BUDGET`).
 pub async fn build_unread_refusal_message(path: &Path, display_path: &str) -> String {
     let bytes = match tokio::fs::read(path).await {
         Ok(b) => b,
@@ -297,9 +299,10 @@ pub async fn build_unread_refusal_message(path: &Path, display_path: &str) -> St
 
     let total = text.lines().count();
     let mut rendered_lines = String::new();
-    let display_count = total.min(DEFAULT_READ_LIMIT);
+    let mut displayed_count = 0usize;
+    let mut truncated_by_bytes = false;
 
-    for (i, line) in text.lines().take(display_count).enumerate() {
+    for (i, line) in text.lines().take(DEFAULT_READ_LIMIT).enumerate() {
         let n = i + 1;
         let is_anchor = i == 0 || n % 10 == 0;
         let rendered = if line.chars().count() > MAX_LINE_LEN {
@@ -314,16 +317,27 @@ pub async fn build_unread_refusal_message(path: &Path, display_path: &str) -> St
         } else {
             format!("{line}\n")
         };
+        if !rendered_lines.is_empty()
+            && rendered_lines
+                .len()
+                .saturating_add(rendered.len())
+                .saturating_add(FOOTER_RESERVE_BYTES)
+                > READ_BYTE_BUDGET
+        {
+            truncated_by_bytes = true;
+            break;
+        }
         rendered_lines.push_str(&rendered);
+        displayed_count = n;
     }
 
-    let footer = if total > DEFAULT_READ_LIMIT {
-        let remaining = total - DEFAULT_READ_LIMIT;
+    let footer = if truncated_by_bytes || total > displayed_count {
+        let remaining = total.saturating_sub(displayed_count);
+        let next_offset = displayed_count + 1;
         format!(
-            "[Showing lines 1-{display_count} of {total}. {remaining} lines remaining.]\n\
-             ⚠️ **Note**: The target file contains {total} lines in total; currently showing the first {display_count} lines ({remaining} lines remaining).\
-             Please read the complete file (using `read` with offset={}, limit=1500) before writing.",
-            DEFAULT_READ_LIMIT + 1
+            "[Showing lines 1-{displayed_count} of {total}. {remaining} lines remaining.]\n\
+             ⚠️ **Note**: The target file contains {total} lines in total; currently showing lines 1-{displayed_count} ({remaining} lines remaining). \
+             Please inspect the remaining sections using `read` with offset={next_offset}, limit={DEFAULT_READ_LIMIT} (or `keyword`) before overwriting — and for files over {DEFAULT_READ_LIMIT} lines, prefer `edit` for targeted modifications instead of full-file `write`."
         )
     } else {
         record_read_confirmed(path);
@@ -337,7 +351,7 @@ pub async fn build_unread_refusal_message(path: &Path, display_path: &str) -> St
         "❌ **[Write Intercepted: File Unread Confirmation Required]**\n\
          The target file `{display_path}` already exists and has not been read in this conversation.\n\
          Safety rule: Before overwriting an existing file, you must first inspect its current content using `read`! Please verify the existing content before writing.\n\n\
-         The first {display_count} lines of the current file content have been returned below for your inspection:\n\
+         The first {displayed_count} lines of the current file content have been returned below for your inspection:\n\
          ```\n\
          {rendered_lines}```\n\
          {footer}"

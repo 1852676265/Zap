@@ -1332,6 +1332,12 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::AgentEchoLoopWarning => "你死循环了，请你重新思考你的动作。若再重复相同工具和参数，本回合将停止。".into(),
         Msg::AgentModelHighLatencyTerminal { retries, secs } =>
             format!("模型延迟过高,请稍后再试(连续 {retries} 次在 {secs} 秒内未收到首token)").into(),
+        Msg::AgentTransitionTimeout { secs } =>
+            format!("模型思考后等待正文或工具输出超时（已静默 {secs} 秒）。这通常发生在单次写入超大文件且上游未流式返回工具参数时；建议拆分写入，或调大 ~/.zap/config.toml 中的 [coding].transition_secs 后重试。").into(),
+        Msg::AgentTruncatedEmptyThinking =>
+            "模型在思考阶段即耗尽了单次输出上限（未产出任何正文或完整工具调用即被截断）。这通常是因为一次读取了过多大文件或上下文过重；建议改用关键字/分段小块读取、执行 /compact，或调大配置中的 max_tokens 后重试。".into(),
+        Msg::AgentTruncatedEmptyOutput =>
+            "模型输出在完成任何正文或工具调用前即触发长度上限被截断（常见于单次写入超大文件导致工具参数未传输完）。建议拆分为骨架写入+分段 edit、执行 /compact，或调大配置中的 max_tokens 后重试。".into(),
         Msg::AgentExhaustedMalformed { max } =>
             format!("模型连续 {max} 次返回无法解析的响应（上游偶发）。可直接重试，或稍后再试。").into(),
         Msg::AgentExhaustedThinkingOverWindowIntro { max } =>

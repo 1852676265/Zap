@@ -28,14 +28,14 @@ impl Tool for WriteFileTool {
         &["write_file", "create_file"]
     }
     fn description(&self) -> &str {
-        "Write content to a file. Creates file and parent directories if absent, or overwrites existing file content."
+        "Write content to a file. Creates file and parent directories if absent, or overwrites existing file content. For large files (over ~400 lines or ~20 KB), avoid writing the entire file in a single call: write a compact skeleton with clear section anchors first and fill sections incrementally with `edit`, or split into multiple smaller files."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "File path to write (relative or absolute). Parent directories are created automatically if absent." },
-                "content": { "type": "string", "description": "Content to write." }
+                "content": { "type": "string", "description": "Content to write. Keep single write calls compact (under ~400 lines / ~20 KB); for larger files, write a skeleton first and populate sections incrementally with `edit`." }
             },
             "required": ["path", "content"]
         })
@@ -229,7 +229,7 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
-    async fn test_unread_existing_file_is_intercepted_with_1500_lines_content() {
+    async fn test_unread_existing_file_is_intercepted_within_read_limit() {
         let d = tempfile::tempdir().unwrap();
         let target = d.path().join("unread.txt");
         std::fs::write(&target, "line 1\nline 2\nline 3\n").unwrap();
@@ -285,10 +285,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unread_existing_file_truncated_when_over_1500_lines() {
+    async fn test_unread_existing_file_truncated_when_over_read_limit() {
         let d = tempfile::tempdir().unwrap();
         let target = d.path().join("huge.txt");
-        let content: String = (1..=1600).map(|i| format!("content line {i}\n")).collect();
+        let content: String = (1..=500).map(|i| format!("content line {i}\n")).collect();
         std::fs::write(&target, content).unwrap();
 
         crate::tools::write_state::advance_turn_for_dir(d.path());
@@ -305,12 +305,14 @@ mod tests {
         );
         assert!(
             r.content
-                .contains("[Showing lines 1-1500 of 1600. 100 lines remaining.]"),
+                .contains("[Showing lines 1-400 of 500. 100 lines remaining.]"),
             "{}",
             r.content
         );
+        assert!(r.content.contains("offset=401, limit=400"), "{}", r.content);
         assert!(
-            r.content.contains("Please read the complete file (using `read` with offset=1501, limit=1500) before writing."),
+            r.content
+                .contains("prefer `edit` for targeted modifications"),
             "{}",
             r.content
         );

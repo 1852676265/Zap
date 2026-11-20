@@ -391,6 +391,8 @@ async fn exec_native_compact(
 
     // 阶段登记与广播由 `exec_compact` 在受理那一刻统一负责；这里只做压缩与提交。
     let sid_for_notice = session.lease.id().to_string();
+    // 压缩前先抢救刷盘该会话尚未整理入库的草稿记忆，避免压缩后丢失未落盘决策
+    crate::neural_memory::flush_session_drafts_async(&sid_for_notice, None);
 
     let compact_fut = zap_coding::runtime::compact_snapshot(
         session.loaded.snapshot.messages.clone(),

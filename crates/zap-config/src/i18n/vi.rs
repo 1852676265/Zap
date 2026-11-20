@@ -1248,6 +1248,10 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
                 .into(),
         Msg::ServeNoTokenSecurityWarning =>
             "[CẢNH BÁO AN NINH NGHIÊM TRỌNG] Phát hiện bạn chưa sử dụng mã truy cập (Token)!\nNếu hiện tại chưa thiết lập tường lửa tương ứng, vui lòng nhờ AI của JeikCode hỗ trợ thiết lập tường lửa và danh sách IP trắng, nếu không máy chủ của bạn rất dễ bị hacker xâm nhập!".into(),
+        Msg::AgentTruncatedEmptyThinking =>
+            "Mô hình đã dùng hết giới hạn token đầu ra ngay trong giai đoạn suy luận trước khi xuất văn bản hoặc lệnh gọi công cụ hoàn chỉnh. Nguyên nhân thường do đọc quá nhiều tệp lớn cùng lúc hoặc ngữ cảnh quá nặng; hãy dùng đọc theo từ khóa/đoạn nhỏ, chạy /compact hoặc tăng max_tokens rồi thử lại.".into(),
+        Msg::AgentTruncatedEmptyOutput =>
+            "Đầu ra của mô hình chạm giới hạn độ dài trước khi hoàn tất văn bản hoặc lệnh gọi công cụ (thường gặp khi ghi một tệp quá lớn trong một lần làm tham số bị cắt giữa chừng). Hãy tách nhỏ thao tác ghi bằng edit từng phần, chạy /compact hoặc tăng max_tokens rồi thử lại.".into(),
         // Kernel liveness/retry advisories: fall back to the English catalog.
         Msg::AgentRetryEmpty { .. }
         | Msg::AgentRetryThinking { .. }
@@ -1263,6 +1267,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         | Msg::AgentEchoLoopNudge
         | Msg::AgentEchoLoopWarning
         | Msg::AgentModelHighLatencyTerminal { .. }
+        | Msg::AgentTransitionTimeout { .. }
         | Msg::AgentExhaustedMalformed { .. }
         | Msg::AgentExhaustedThinkingOverWindowIntro { .. }
         | Msg::AgentExhaustedThinkingOverWindowSize { .. }

@@ -36,34 +36,66 @@ export function turnDurationMs(userTs?: number, endTs?: number): number | undefi
   return endTs - userTs;
 }
 
-/** Done-turn "用时": prefer user-bubble → final answer, else the stamped
- *  full-turn elapsed (never a lone last-round kernel duration when a span exists). */
+/** Done-turn "用时": take the larger of user-bubble → final answer span and
+ *  stamped/persisted full-turn elapsed so neither a lone per-round kernel
+ *  duration nor a mid-turn steer / trailing tool wait truncates the total. */
 export function turnTotalElapsedMs(
   userTs?: number,
   endTs?: number,
   elapsedMs?: number,
 ): number | undefined {
   const fromUser = turnDurationMs(userTs, endTs);
-  if (fromUser && fromUser > 0) return fromUser;
-  return elapsedMs;
+  const stamped =
+    elapsedMs != null && Number.isFinite(elapsedMs) && elapsedMs >= 0
+      ? elapsedMs
+      : undefined;
+  if (fromUser && fromUser > 0) {
+    return stamped != null && stamped > fromUser ? stamped : fromUser;
+  }
+  return stamped;
 }
 
 /** Stamp `elapsedMs` (and optional completion time) onto the latest assistant
- *  message that does not already have a duration. */
+ *  message of the current turn (never crossing back over a `user` bubble).
+ *  Idempotent by default; pass `{ force: true }` on an authoritative live turn
+ *  terminal so a stale mid-turn round stamp cannot freeze the final bubble. */
 export function stampLastAssistantElapsed<T extends { role: string; elapsedMs?: number; ts?: number }>(
   msgs: T[],
   elapsedMs: number,
   finishedAt?: number,
+  opts?: { force?: boolean },
 ): T[] {
+  const force = opts?.force === true;
+  const safeElapsed = Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs : 0);
   for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]!.role === 'user') return msgs;
     if (msgs[i]!.role !== 'assistant') continue;
-    if (msgs[i]!.elapsedMs != null) return msgs;
+    if (!force && msgs[i]!.elapsedMs != null) return msgs;
     const next = msgs.slice();
     next[i] = {
       ...msgs[i]!,
-      elapsedMs,
+      elapsedMs: safeElapsed,
       ts: finishedAt ?? Date.now(),
     };
+    return next;
+  }
+  return msgs;
+}
+
+/** Strip stale per-round `ts` / `elapsedMs` from the trailing assistant of an
+ *  active (still-running) turn — e.g. after reattaching from an inflight disk
+ *  snapshot whose intermediate round carried its own `created_at` / kernel
+ *  per-round `elapsed_ms`. */
+export function clearInFlightAssistantTiming<
+  T extends { role: string; elapsedMs?: number; ts?: number },
+>(msgs: T[]): T[] {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]!.role === 'user') return msgs;
+    if (msgs[i]!.role !== 'assistant') continue;
+    if (msgs[i]!.elapsedMs == null && msgs[i]!.ts == null) return msgs;
+    const next = msgs.slice();
+    const { elapsedMs: _elapsed, ts: _ts, ...rest } = msgs[i]!;
+    next[i] = rest as T;
     return next;
   }
   return msgs;

@@ -789,3 +789,118 @@ async fn malformed_response_retried_with_distinct_notice() {
         "the recovered turn must succeed"
     );
 }
+
+#[tokio::test]
+async fn thinking_truncated_without_visible_output_fails_fast_with_diagnostic() {
+    let reg = ToolRegistry::new();
+    let provider = Arc::new(MockProvider::new(vec![
+        vec![
+            StreamEvent::Reasoning("exhausted max_tokens while thinking...".into()),
+            StreamEvent::Done { truncated: true },
+        ],
+        vec![
+            StreamEvent::TextDelta("should never be requested".into()),
+            StreamEvent::Done { truncated: false },
+        ],
+    ]));
+    let received = provider.received.clone();
+
+    let mut handle = Agent::builder()
+        .provider(provider)
+        .tools(reg.mount(&[] as &[&str]))
+        .build()
+        .spawn();
+    handle.commands.send(send("inspect large plugin")).unwrap();
+
+    let mut error_msg: Option<String> = None;
+    let mut stop: Option<String> = None;
+    while let Some(ev) = handle.events.recv().await {
+        match ev {
+            AgentEvent::Error { message, .. } => error_msg = Some(message),
+            AgentEvent::TurnComplete { reason } => {
+                stop = Some(format!("{reason:?}"));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        received.lock().unwrap().len(),
+        1,
+        "truncated thinking-only round must NOT enter blank TRUNCATION_RESUME_NUDGE retries"
+    );
+    assert_eq!(stop.as_deref(), Some("ProviderError"));
+    assert!(
+        error_msg.as_deref().is_some_and(|m| !m.is_empty()),
+        "must emit an actionable error diagnostic; got {error_msg:?}"
+    );
+
+    handle.commands.send(AgentCommand::Snapshot).unwrap();
+    let snapshot = loop {
+        match handle.events.recv().await {
+            Some(AgentEvent::Snapshot { snapshot }) => break snapshot.messages,
+            Some(_) => continue,
+            None => panic!("never received Snapshot reply"),
+        }
+    };
+    assert!(
+        !snapshot.iter().any(|m| {
+            m.role == Role::User && m.synthetic && m.text.contains("Output limit hit")
+        }),
+        "must not inject TRUNCATION_RESUME_NUDGE when nothing visible was emitted: {snapshot:?}"
+    );
+    assert!(
+        snapshot.iter().any(|m| {
+            m.role == Role::Assistant && m.internal_origin.as_deref() == Some("turn_diagnostic")
+        }),
+        "must persist turn diagnostic instead of blank assistant bubble: {snapshot:?}"
+    );
+    assert!(
+        !snapshot.iter().any(|m| {
+            m.role == Role::Assistant
+                && m.internal_origin.is_none()
+                && m.text.trim().is_empty()
+                && m.tool_calls.is_empty()
+        }),
+        "must not leave an empty assistant message in snapshot: {snapshot:?}"
+    );
+    handle.commands.send(AgentCommand::Shutdown).unwrap();
+    let _ = handle.task.await;
+}
+
+#[tokio::test]
+async fn truncated_empty_without_reasoning_fails_fast_with_diagnostic() {
+    let reg = ToolRegistry::new();
+    let provider = Arc::new(MockProvider::new(vec![vec![StreamEvent::Done {
+        truncated: true,
+    }]]));
+    let received = provider.received.clone();
+
+    let mut handle = Agent::builder()
+        .provider(provider)
+        .tools(reg.mount(&[] as &[&str]))
+        .build()
+        .spawn();
+    handle.commands.send(send("write huge file")).unwrap();
+
+    let mut error_msg: Option<String> = None;
+    let mut stop: Option<String> = None;
+    while let Some(ev) = handle.events.recv().await {
+        match ev {
+            AgentEvent::Error { message, .. } => error_msg = Some(message),
+            AgentEvent::TurnComplete { reason } => {
+                stop = Some(format!("{reason:?}"));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(received.lock().unwrap().len(), 1);
+    assert_eq!(stop.as_deref(), Some("ProviderError"));
+    assert!(error_msg.as_deref().is_some_and(|m| !m.is_empty()));
+
+    handle.commands.send(AgentCommand::Shutdown).unwrap();
+    let _ = handle.task.await;
+}

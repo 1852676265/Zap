@@ -259,6 +259,123 @@ async fn response_id_heartbeat_does_not_reset_ttft() {
     );
 }
 
+// 思考后静默触发 Thinking → Transition 超时：必须直接以 Timeout 终止，
+// 绝不能误判成 thinking_only 并把相同大请求盲目重发 6 次。
+#[tokio::test(start_paused = true)]
+async fn thinking_then_transition_timeout_fails_without_thinking_only_retry() {
+    use async_trait::async_trait;
+    use futures::stream::BoxStream;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use zap_kernel::event::StopReason;
+    use zap_kernel::message::Message;
+    use zap_kernel::provider::{ChatOptions, LlmProvider};
+    use zap_kernel::stream::ProviderError;
+    use zap_kernel::timeouts::TimeoutPolicy;
+    use zap_kernel::tool::ToolDef;
+
+    struct ThinkingThenStall {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl LlmProvider for ThinkingThenStall {
+        fn model_name(&self) -> &str {
+            "thinking-stall"
+        }
+        fn context_window(&self) -> u32 {
+            0
+        }
+        async fn chat_stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDef],
+            _options: &ChatOptions,
+        ) -> Result<BoxStream<'static, StreamEvent>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(futures::stream::unfold(
+                false,
+                |sent| async move {
+                    if !sent {
+                        Some((
+                            StreamEvent::Reasoning("planning huge write...".into()),
+                            true,
+                        ))
+                    } else {
+                        futures::future::pending::<()>().await;
+                        None
+                    }
+                },
+            )))
+        }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let recorder = Arc::new(RecorderHook::new());
+    let log = recorder.log.clone();
+    let policy = TimeoutPolicy {
+        ttft: Some(Duration::from_secs(10)),
+        transition: Some(Duration::from_secs(18)),
+        streaming: Some(Duration::from_secs(12)),
+        ..TimeoutPolicy::unbounded()
+    };
+
+    let mut handle = Agent::builder()
+        .provider(Arc::new(ThinkingThenStall {
+            calls: calls.clone(),
+        }))
+        .tools(ToolRegistry::new().mount(&[] as &[&str]))
+        .hooks(recorder)
+        .timeouts(policy)
+        .build()
+        .spawn();
+    handle.commands.send(send("write huge file")).unwrap();
+
+    let (warnings, error_msg, stop_reason) = tokio::time::timeout(Duration::from_secs(60), async {
+        let mut warnings = Vec::new();
+        let mut error_msg: Option<String> = None;
+        let mut stop_reason: Option<StopReason> = None;
+        while let Some(ev) = handle.events.recv().await {
+            match ev {
+                AgentEvent::Warning(w) => warnings.push(w),
+                AgentEvent::Error { message, .. } => error_msg = Some(message),
+                AgentEvent::TurnComplete { reason } => {
+                    stop_reason = Some(reason);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (warnings, error_msg, stop_reason)
+    })
+    .await
+    .expect("thinking→transition stall must terminate on timeout, not hang");
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "transition timeout must NOT fall through to thinking_only 6x retries"
+    );
+    assert!(
+        warnings.is_empty(),
+        "transition timeout must NOT emit thinking_only retry warnings; got {warnings:?}"
+    );
+    assert_eq!(stop_reason, Some(StopReason::Timeout));
+    assert!(
+        error_msg
+            .as_deref()
+            .is_some_and(|m| m.contains("transition_secs") && m.contains("30")),
+        "error must explain the 30s (12+18) transition silence and config knob; got {error_msg:?}"
+    );
+    let log = log.lock().unwrap();
+    assert!(
+        log.contains(&"on_error".to_string()),
+        "on_error must fire on transition timeout"
+    );
+    assert!(
+        !log.contains(&"on_model_response".to_string()),
+        "transition timeout must not run the success path"
+    );
+}
+
 // ── (2) REQUEST ROUND-TRIP TIMEOUT ───────────────────────────────────────────
 //
 // An ApprovalMiddleware round-trips via `rt.request` on a risky tool. The driver

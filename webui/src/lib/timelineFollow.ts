@@ -31,6 +31,11 @@ export function createTimelineFollow(
     // position before overwriting a scrollbar move that has not fired yet.
     scroll();
     if (!following.current) return;
+    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    if (Math.abs(element.scrollTop - maxTop) < 0.5) {
+      lastTop = element.scrollTop;
+      return;
+    }
     element.scrollTop = element.scrollHeight;
     writtenTop = element.scrollTop;
     lastTop = element.scrollTop;
@@ -137,9 +142,11 @@ export function createTimelineFollow(
       ? new ResizeObserver(changed) : null;
     observer?.observe(next);
     observer?.observe(next.querySelector('.timeline-inner') ?? next);
-    const mutations = typeof MutationObserver !== 'undefined'
+    // 浏览器支持 ResizeObserver 时内容增高已由 .timeline-inner 尺寸监听精确捕获，
+    // 不再对整棵消息树挂带 attributes: true 的全局 MutationObserver（会因计时器/动画属性变化高频误触跟底）。
+    const mutations = !observer && typeof MutationObserver !== 'undefined'
       ? new MutationObserver(changed) : null;
-    mutations?.observe(next, { subtree: true, childList: true, characterData: true, attributes: true });
+    mutations?.observe(next, { subtree: true, childList: true, characterData: true });
     disconnect = () => {
       observer?.disconnect();
       mutations?.disconnect();

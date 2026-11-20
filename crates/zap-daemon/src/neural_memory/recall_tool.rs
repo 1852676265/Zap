@@ -1,8 +1,10 @@
-//! `memory_recall` 只读工具：允许模型按关键词、项目与日期范围主动跨项目检索记忆。
+//! `memory_recall` 只读工具：走独立 WAL 只读连接，支持 5 抽屉按需筛选、路牌精确直达、
+//! 分列加权 BM25 + 词林重排、作废历史追溯、1-hop 图谱邻居与 Team 跨端进度透视。
 
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::RwLock;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rusqlite::Connection;
@@ -11,20 +13,25 @@ use serde_json::{json, Value};
 use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 use super::redact::redact_secrets;
-use super::search::{
-    build_fts_queries, parse_temporal_range, query_nodes_fts_conn, query_raw_turns_fts_conn,
-    query_timeline_fts_conn, ProjectScope,
+use super::retrieval::{
+    expand_top_node_neighbors_conn, query_nodes_ranked_conn, query_profiles_ranked_conn,
+    query_raw_turns_cold_conn, query_tasks_ranked_conn, query_timeline_ranked_conn,
 };
+use super::search::{analyze_query, parse_temporal_range, ProjectScope};
 use super::store::{
     list_known_projects_conn, load_open_tasks_scoped_conn, load_profiles_scoped_conn,
-    load_raw_turn_conn, resolve_agent_for_session_conn, with_store,
+    load_raw_turn_conn, map_timeline_row, record_memory_hits_conn, resolve_agent_for_session_conn,
+    with_read, with_write,
+};
+use super::team_bridge::{
+    format_team_overview_line, list_recent_team_runs_for_project, lookup_team_run_overview,
 };
 use super::types::{
     normalize_project_key, normalize_project_key_str, normalize_project_name,
     MAX_RECALL_RESULT_CHARS,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub(crate) struct MemoryRecallArgs {
     #[serde(default)]
     pub(crate) query: String,
@@ -36,6 +43,12 @@ pub(crate) struct MemoryRecallArgs {
     pub(crate) include_raw: Option<bool>,
     #[serde(default)]
     pub(crate) limit: Option<usize>,
+    /// 可选抽屉筛选：`"all"` | `"rules"` | `"tasks"` | `"knowledge"` | `"journal"` | `"raw"`
+    #[serde(default)]
+    pub(crate) drawer: String,
+    /// 是否包含已标作废的历史结论（默认 false）
+    #[serde(default)]
+    pub(crate) include_superseded: Option<bool>,
 }
 
 pub struct MemoryRecallTool {
@@ -67,7 +80,7 @@ impl Tool for MemoryRecallTool {
     }
 
     fn description(&self) -> &str {
-        "Search the active neural memory agent's long-term profiles, tasks, knowledge nodes, timeline summaries, and verbatim turn transcripts across projects and date ranges. Use project=\"*\" for cross-project search or project=\"<name>\" for a specific project."
+        "Search the active neural memory agent's 5 drawers (rules/preferences, requirements/study plans, knowledge cards & facts, daily milestone journal, and cold verbatim transcripts) using exact anchors (files/tables/symbols/error codes), weighted search, and linked Agent Teams status. Use project=\"*\" for cross-project search or project=\"<name>\" for a specific project."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -76,7 +89,7 @@ impl Tool for MemoryRecallTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search keywords, identifiers, error messages, or natural-language topic"
+                    "description": "Search keywords, file names, table names, symbols, error codes, or natural-language topic"
                 },
                 "project": {
                     "type": "string",
@@ -86,9 +99,17 @@ impl Tool for MemoryRecallTool {
                     "type": "string",
                     "description": "Optional time filter such as \"today\", \"yesterday\", \"this week\", \"last 3 days\", \"2026-11-15\", etc."
                 },
+                "drawer": {
+                    "type": "string",
+                    "description": "Optional drawer filter: \"all\" (default), \"rules\", \"tasks\", \"knowledge\", \"journal\", or \"raw\""
+                },
+                "include_superseded": {
+                    "type": "boolean",
+                    "description": "Whether to also include superseded/obsolete historical rules or card facts (default false)"
+                },
                 "include_raw": {
                     "type": "boolean",
-                    "description": "Whether to also return verbatim L3 User/Assistant transcripts for matched turns (default false)"
+                    "description": "Whether to also return verbatim cold-storage User/Assistant transcripts for matched turns (default false)"
                 },
                 "limit": {
                     "type": "integer",
@@ -121,19 +142,37 @@ impl Tool for MemoryRecallTool {
             .map(|g| g.clone())
             .unwrap_or_default();
         let working_dir = ctx.working_dir.clone();
+        let started = Instant::now();
 
         let res = tokio::task::spawn_blocking(move || {
-            with_store(|store| execute_memory_recall_conn(&store.conn, &sid, &working_dir, parsed))
+            with_read(|conn, _| execute_memory_recall_inner(conn, &sid, &working_dir, parsed))
         })
         .await;
 
         match res {
-            Ok(Ok(text)) => ToolResult {
-                call_id: String::new(),
-                content: text,
-                is_error: false,
-                images: Vec::new(),
-            },
+            Ok(Ok((text, hit_nodes, hit_profiles))) => {
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                tracing::debug!(
+                    elapsed_ms = format_args!("{elapsed_ms:.2}"),
+                    hit_nodes = hit_nodes.len(),
+                    hit_profiles = hit_profiles.len(),
+                    "neural_memory: memory_recall completed"
+                );
+                if (!hit_nodes.is_empty() || !hit_profiles.is_empty()) && !cfg!(test) {
+                    tokio::task::spawn_blocking(move || {
+                        let _ = with_write(|store| {
+                            record_memory_hits_conn(&store.conn, &hit_nodes, &hit_profiles);
+                            Ok(())
+                        });
+                    });
+                }
+                ToolResult {
+                    call_id: String::new(),
+                    content: text,
+                    is_error: false,
+                    images: Vec::new(),
+                }
+            }
             Ok(Err(e)) => ToolResult {
                 call_id: String::new(),
                 content: format!("memory_recall failed: {e}"),
@@ -150,26 +189,41 @@ impl Tool for MemoryRecallTool {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn execute_memory_recall_conn(
     conn: &Connection,
     session_id: &str,
     working_dir: &Path,
     args: MemoryRecallArgs,
 ) -> Result<String, String> {
+    let (text, _, _) = execute_memory_recall_inner(conn, session_id, working_dir, args)?;
+    Ok(text)
+}
+
+fn execute_memory_recall_inner(
+    conn: &Connection,
+    session_id: &str,
+    working_dir: &Path,
+    args: MemoryRecallArgs,
+) -> Result<(String, Vec<String>, Vec<String>), String> {
     let Some(agent) = resolve_agent_for_session_conn(conn, session_id) else {
-        return Ok(
+        return Ok((
             "No neural memory agent is currently active for this session (activeAgent = none)."
                 .to_string(),
-        );
+            Vec::new(),
+            Vec::new(),
+        ));
     };
 
     let limit = args.limit.unwrap_or(6).clamp(1, 15);
-    let include_raw = args.include_raw.unwrap_or(false);
+    let drawer = args.drawer.trim().to_lowercase();
+    let drawer_allows = |name: &str| drawer.is_empty() || drawer == "all" || drawer == name;
+    let include_raw = args.include_raw.unwrap_or(false) || drawer == "raw";
+
     let current_proj_name = normalize_project_name(working_dir);
     let current_proj_key = normalize_project_key(working_dir);
     let raw_proj = args.project.trim();
 
-    // 区分："" => 当前项目；"*" / "all" => 全项目；其他 => 按指定项目名或路径过滤
     let owned_key: String;
     let owned_name: String;
     let scope: Option<ProjectScope<'_>> = if raw_proj == "*" || raw_proj.eq_ignore_ascii_case("all")
@@ -199,12 +253,12 @@ pub(crate) fn execute_memory_recall_conn(
     };
 
     let known_projects = list_known_projects_conn(conn, &agent.id);
-    let date_range = if !args.date_range.trim().is_empty() {
-        parse_temporal_range(args.date_range.trim())
-    } else {
-        parse_temporal_range(args.query.trim())
-    };
-    let (fts_strict, fts_broad) = build_fts_queries(args.query.trim());
+    let mut plan = analyze_query(args.query.trim(), &[]);
+    if !args.date_range.trim().is_empty() {
+        plan.date_range = parse_temporal_range(args.date_range.trim());
+    }
+    let include_superseded = args.include_superseded.unwrap_or(plan.wants_superseded);
+    let has_query = !args.query.trim().is_empty();
 
     let mut out = vec![format!(
         "Neural Memory Recall | agent={} ({}) | scope={}",
@@ -216,258 +270,281 @@ pub(crate) fn execute_memory_recall_conn(
             None => "*",
         }
     )];
+    let mut hit_nodes: Vec<String> = Vec::new();
+    let mut hit_profiles: Vec<String> = Vec::new();
 
-    // 1. 相关 L1 长期档案与未完成任务（SQL 作用域下推：先取足量候选再按相关性排序，避免 >10 条后漏召回）
     let (s_key, s_name) = scope.map(|s| (s.key, s.name)).unwrap_or(("", ""));
-    let profiles = load_profiles_scoped_conn(conn, &agent.id, s_key, s_name, 64)?;
-    let q_low = args.query.trim().to_lowercase();
-    let broad_terms: Vec<String> = fts_broad
-        .as_deref()
-        .map(|b| {
-            b.split(" OR ")
-                .map(|t| t.trim().trim_matches('"').to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut ranked_profiles: Vec<(bool, bool, super::types::ProfileFact)> = profiles
-        .into_iter()
-        .filter_map(|p| {
-            let p_low = p.text.to_lowercase();
-            let is_match = !q_low.is_empty()
-                && (p_low.contains(&q_low) || broad_terms.iter().any(|t| p_low.contains(t)));
-            if q_low.is_empty() || is_match || p.pinned {
-                Some((is_match, p.pinned, p))
+
+    // 抽屉 1：长期规矩与习惯
+    if drawer_allows("rules") {
+        let matched_profiles = if has_query {
+            let mut ranked =
+                query_profiles_ranked_conn(conn, &agent.id, &plan, scope, include_superseded, 8);
+            if ranked.is_empty() {
+                let q_low = args.query.trim().to_lowercase();
+                let all_p = load_profiles_scoped_conn(conn, &agent.id, s_key, s_name, 64)?;
+                all_p
+                    .into_iter()
+                    .filter(|p| p.text.to_lowercase().contains(&q_low) || p.pinned)
+                    .take(8)
+                    .collect()
             } else {
-                None
+                ranked.drain(..).map(|r| r.profile).collect()
             }
-        })
-        .collect();
-    if !q_low.is_empty() {
-        ranked_profiles.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    }
-    let matched_profiles: Vec<_> = ranked_profiles
-        .into_iter()
-        .map(|(_, _, p)| p)
-        .take(8)
-        .collect();
-    if !matched_profiles.is_empty() {
-        out.push(format!(
-            "## L1 Profile Facts\n{}",
-            matched_profiles
-                .iter()
-                .map(|p| {
-                    let tag = if p.project.is_empty() {
-                        String::new()
-                    } else {
-                        format!("[{}] ", p.project)
-                    };
-                    format!("- {tag}{}", p.text)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
+        } else {
+            load_profiles_scoped_conn(conn, &agent.id, s_key, s_name, 8)?
+        };
+        if !matched_profiles.is_empty() {
+            for p in &matched_profiles {
+                hit_profiles.push(p.id.clone());
+            }
+            out.push(format!(
+                "## L1 Profile Facts\n{}",
+                matched_profiles
+                    .iter()
+                    .map(|p| {
+                        let tag = if p.project.is_empty() {
+                            String::new()
+                        } else {
+                            format!("[{}] ", p.project)
+                        };
+                        let st = if p.is_active() {
+                            String::new()
+                        } else {
+                            format!("[superseded {}] ", p.invalid_at)
+                        };
+                        format!("- {st}{tag}{}", p.text)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
     }
 
-    let tasks = load_open_tasks_scoped_conn(conn, &agent.id, s_key, s_name, limit)?;
-    if !tasks.is_empty() {
-        out.push(format!(
-            "## L1 Open Tasks\n{}",
-            tasks
-                .iter()
-                .map(|t| {
-                    let p = if t.project.is_empty() {
-                        String::new()
-                    } else {
-                        format!("[{}] ", t.project)
-                    };
-                    let rem = if t.remaining_note.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" | remaining: {}", t.remaining_note)
-                    };
-                    format!("- ({}, id={}) {p}{}{rem}", t.status, t.id, t.title)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
+    // 抽屉 2：需求与学习进度本 + Team 跨端状态
+    let mut team_run_ids: Vec<String> = Vec::new();
+    if drawer_allows("tasks") {
+        let mut tasks = load_open_tasks_scoped_conn(conn, &agent.id, s_key, s_name, limit)?;
+        if has_query {
+            let mut seen_t: HashSet<String> = tasks.iter().map(|t| t.id.clone()).collect();
+            for rt in query_tasks_ranked_conn(conn, &agent.id, &plan, scope, limit) {
+                if seen_t.insert(rt.task.id.clone()) {
+                    tasks.push(rt.task);
+                }
+            }
+            tasks.truncate(limit);
+        }
+        if !tasks.is_empty() {
+            for t in &tasks {
+                if !t.team_run_id.trim().is_empty() && !team_run_ids.contains(&t.team_run_id) {
+                    team_run_ids.push(t.team_run_id.clone());
+                }
+            }
+            out.push(format!(
+                "## L1 Open Tasks\n{}",
+                tasks
+                    .iter()
+                    .map(|t| {
+                        let p = if t.project.is_empty() {
+                            String::new()
+                        } else {
+                            format!("[{}] ", t.project)
+                        };
+                        let next = if !t.next_step.trim().is_empty() {
+                            format!(" | next: {}", t.next_step.trim())
+                        } else if !t.remaining_note.trim().is_empty() {
+                            format!(" | remaining: {}", t.remaining_note.trim())
+                        } else {
+                            String::new()
+                        };
+                        let team = if t.team_run_id.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [team={}]", t.team_run_id)
+                        };
+                        format!(
+                            "- ({}/{}, id={}) {p}{}{next}{team}",
+                            t.item_kind, t.status, t.id, t.title
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
 
-    // 2. L2 知识节点
-    let mut nodes = Vec::new();
-    let mut seen_nodes = HashSet::new();
-    for fq in [fts_strict.as_deref(), fts_broad.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        if nodes.len() >= limit {
-            break;
-        }
-        for n in query_nodes_fts_conn(conn, &agent.id, fq, scope, limit) {
-            if seen_nodes.insert(n.id.clone()) {
-                nodes.push(n);
-            }
-            if nodes.len() >= limit {
-                break;
-            }
-        }
-    }
-    if !nodes.is_empty() {
-        out.push(format!(
-            "## L2 Knowledge Nodes\n{}",
-            nodes
-                .iter()
-                .map(|n| {
-                    let p = if n.project.is_empty() {
-                        String::new()
-                    } else {
-                        format!("[{}] ", n.project)
-                    };
-                    format!("- {p}{} ({}%): {}", n.name, n.mastery, n.summary)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
-
-    // 3. L2 时间线摘要
-    let mut timelines = Vec::new();
-    let mut seen_tl = HashSet::new();
-    for fq in [fts_strict.as_deref(), fts_broad.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        if timelines.len() >= limit {
-            break;
-        }
-        for ev in query_timeline_fts_conn(conn, &agent.id, fq, scope, date_range.as_ref(), limit) {
-            if seen_tl.insert(ev.id.clone()) {
-                timelines.push(ev);
-            }
-            if timelines.len() >= limit {
-                break;
-            }
-        }
-    }
-    if timelines.is_empty() && fts_broad.is_none() {
-        let mut conds = vec!["agent_id = ?1".to_string()];
-        let mut pvals: Vec<rusqlite::types::Value> =
-            vec![rusqlite::types::Value::from(agent.id.clone())];
-        let mut pidx = 2usize;
-        if let Some(sc) = scope {
-            if !sc.key.is_empty() && !sc.name.is_empty() {
-                let pk = pidx;
-                let pn = pidx + 1;
-                pidx += 2;
-                conds.push(format!(
-                    "((project_key != '' AND project_key = ?{pk}) OR (project_key = '' AND LOWER(project) = LOWER(?{pn})))"
-                ));
-                pvals.push(rusqlite::types::Value::from(sc.key.to_string()));
-                pvals.push(rusqlite::types::Value::from(sc.name.to_string()));
-            } else if !sc.key.is_empty() {
-                conds.push(format!("project_key = ?{pidx}"));
-                pvals.push(rusqlite::types::Value::from(sc.key.to_string()));
-                pidx += 1;
-            } else if !sc.name.is_empty() {
-                conds.push(format!("LOWER(project) = LOWER(?{pidx})"));
-                pvals.push(rusqlite::types::Value::from(sc.name.to_string()));
-                pidx += 1;
-            }
-        }
-        if let Some(dr) = &date_range {
-            let ps = pidx;
-            let pe = pidx + 1;
-            pidx += 2;
-            conds.push(format!("ts >= ?{ps} AND ts <= ?{pe}"));
-            pvals.push(rusqlite::types::Value::from(dr.start.clone()));
-            pvals.push(rusqlite::types::Value::from(dr.end.clone()));
-        }
-        pvals.push(rusqlite::types::Value::from(limit as i64));
-        let sql = format!(
-            "SELECT id, ts, agent_id, project, project_key, working_dir, session_id, turn_id, raw_file,
-                    user_goal, summary, ai_outcome, keywords_json, touched_files_json, distilled_by
-             FROM timeline WHERE {} ORDER BY ts DESC LIMIT ?{pidx}",
-            conds.join(" AND ")
-        );
-        if let Ok(mut stmt) = conn.prepare(&sql) {
-            if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(pvals), |row| {
-                let kw_str: String = row.get(12)?;
-                let tf_str: String = row.get(13)?;
-                Ok(super::types::TimelineEvent {
-                    id: row.get(0)?,
-                    ts: row.get(1)?,
-                    agent: row.get(2)?,
-                    project: row.get(3)?,
-                    project_key: row.get(4)?,
-                    working_dir: row.get(5)?,
-                    session_id: row.get(6)?,
-                    turn_id: row.get(7)?,
-                    raw_file: row.get(8)?,
-                    user_goal: row.get(9)?,
-                    summary: row.get(10)?,
-                    ai_outcome: row.get(11)?,
-                    keywords: serde_json::from_str(&kw_str).unwrap_or_default(),
-                    touched_files: serde_json::from_str(&tf_str).unwrap_or_default(),
-                    distilled_by: row.get(14)?,
-                })
-            }) {
-                for ev in rows.flatten() {
-                    if seen_tl.insert(ev.id.clone()) {
-                        timelines.push(ev);
-                    }
+        let mut team_lines = Vec::new();
+        let mut seen_runs = HashSet::new();
+        for rid in &team_run_ids {
+            if seen_runs.insert(rid.clone()) {
+                if let Some(ov) = lookup_team_run_overview(rid) {
+                    team_lines.push(format_team_overview_line(&ov));
                 }
             }
         }
+        if plan.wants_progress && team_lines.len() < 3 {
+            for ov in list_recent_team_runs_for_project(working_dir, 3) {
+                if seen_runs.insert(ov.run_id.clone()) {
+                    team_lines.push(format_team_overview_line(&ov));
+                }
+            }
+        }
+        if !team_lines.is_empty() {
+            out.push(format!(
+                "## Linked Agent Teams Progress\n{}",
+                team_lines.join("\n")
+            ));
+        }
     }
 
-    if !timelines.is_empty() {
-        out.push(format!(
-            "## L2 Timeline Events\n{}",
-            timelines
-                .iter()
-                .map(|ev| {
-                    let p = if ev.project.is_empty() {
-                        String::new()
-                    } else {
-                        format!("[{}] ", ev.project)
-                    };
-                    let files = if ev.touched_files.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" | files: {}", ev.touched_files.join(", "))
-                    };
-                    let out_s = if ev.ai_outcome.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" -> {}", ev.ai_outcome)
-                    };
-                    format!("- [{}] {p}{}{out_s}{files}", ev.ts, ev.summary)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
+    // 抽屉 3：知识与经验活卡片（含独立要点 + 1-hop 脑图关联邻居）
+    if drawer_allows("knowledge") {
+        let ranked_nodes = query_nodes_ranked_conn(conn, &agent.id, &plan, scope, limit);
+        if !ranked_nodes.is_empty() {
+            let mut lines = Vec::new();
+            for rn in &ranked_nodes {
+                hit_nodes.push(rn.node.id.clone());
+                let p = if rn.node.project.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}] ", rn.node.project)
+                };
+                let mut item = format!(
+                    "- {p}{} ({}%): {}",
+                    rn.node.name, rn.node.mastery, rn.node.summary
+                );
+                let fact_lines: Vec<String> = rn
+                    .node
+                    .facts
+                    .iter()
+                    .filter(|f| include_superseded || f.is_active())
+                    .filter(|f| f.text.trim() != rn.node.summary.trim())
+                    .take(5)
+                    .map(|f| {
+                        let st = if f.is_active() {
+                            String::new()
+                        } else {
+                            format!("[superseded {}] ", f.invalid_at)
+                        };
+                        format!("  * {st}[{}] {}", f.kind, f.text)
+                    })
+                    .collect();
+                if !fact_lines.is_empty() {
+                    item.push('\n');
+                    item.push_str(&fact_lines.join("\n"));
+                }
+                lines.push(item);
+            }
+            for (nb, rel) in expand_top_node_neighbors_conn(conn, &agent.id, &ranked_nodes, 2) {
+                let p = if nb.project.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}] ", nb.project)
+                };
+                lines.push(format!(
+                    "- [linked:{rel}] {p}{} ({}%): {}",
+                    nb.name, nb.mastery, nb.summary
+                ));
+            }
+            out.push(format!("## L2 Knowledge Nodes\n{}", lines.join("\n")));
+        }
     }
 
-    // 4. L3 原始对话摘录（支持直接 FTS 命中 + 由 timeline.turn_id 反查）
+    // 抽屉 4：每日精华大事记
+    let mut timelines = Vec::new();
+    if drawer_allows("journal") || include_raw {
+        let ranked_tl = query_timeline_ranked_conn(
+            conn,
+            &agent.id,
+            &plan,
+            scope,
+            plan.date_range.as_ref(),
+            limit,
+        );
+        timelines = ranked_tl.into_iter().map(|r| r.event).collect();
+
+        if timelines.is_empty() && (!has_query || plan.date_range.is_some()) {
+            let mut conds = vec!["agent_id = ?1".to_string()];
+            let mut pvals: Vec<rusqlite::types::Value> =
+                vec![rusqlite::types::Value::from(agent.id.clone())];
+            let mut pidx = 2usize;
+            if let Some(sc) = scope {
+                if !sc.key.is_empty() && !sc.name.is_empty() {
+                    let pk = pidx;
+                    let pn = pidx + 1;
+                    pidx += 2;
+                    conds.push(format!(
+                        "((project_key != '' AND project_key = ?{pk}) OR (project_key = '' AND LOWER(project) = LOWER(?{pn})) OR (project_key = '' AND project = ''))"
+                    ));
+                    pvals.push(rusqlite::types::Value::from(sc.key.to_string()));
+                    pvals.push(rusqlite::types::Value::from(sc.name.to_string()));
+                } else if !sc.key.is_empty() {
+                    conds.push(format!("project_key = ?{pidx}"));
+                    pvals.push(rusqlite::types::Value::from(sc.key.to_string()));
+                    pidx += 1;
+                } else if !sc.name.is_empty() {
+                    conds.push(format!("LOWER(project) = LOWER(?{pidx})"));
+                    pvals.push(rusqlite::types::Value::from(sc.name.to_string()));
+                    pidx += 1;
+                }
+            }
+            if let Some(ref dr) = plan.date_range {
+                let ps = pidx;
+                let pe = pidx + 1;
+                pidx += 2;
+                conds.push(format!("ts >= ?{ps} AND ts <= ?{pe}"));
+                pvals.push(rusqlite::types::Value::from(dr.start.clone()));
+                pvals.push(rusqlite::types::Value::from(dr.end.clone()));
+            }
+            pvals.push(rusqlite::types::Value::from(limit as i64));
+            let sql = format!(
+                "SELECT id, ts, agent_id, project, project_key, working_dir, session_id, turn_id, raw_file,
+                        user_goal, summary, ai_outcome, keywords_json, touched_files_json, distilled_by,
+                        kind, team_run_id, node_ids_json
+                 FROM timeline WHERE {} ORDER BY ts DESC LIMIT ?{pidx}",
+                conds.join(" AND ")
+            );
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                if let Ok(rows) =
+                    stmt.query_map(rusqlite::params_from_iter(pvals), map_timeline_row)
+                {
+                    timelines = rows.flatten().collect();
+                }
+            }
+        }
+
+        if drawer_allows("journal") && !timelines.is_empty() {
+            out.push(format!(
+                "## L2 Timeline Events\n{}",
+                timelines
+                    .iter()
+                    .map(|ev| {
+                        let p = if ev.project.is_empty() {
+                            String::new()
+                        } else {
+                            format!("[{}] ", ev.project)
+                        };
+                        let files = if ev.touched_files.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" | files: {}", ev.touched_files.join(", "))
+                        };
+                        let out_s = if ev.ai_outcome.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" -> {}", ev.ai_outcome)
+                        };
+                        format!("- [{}] {p}{}{out_s}{files}", ev.ts, ev.summary)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+    }
+
+    // 抽屉 5：原始对话冷仓库（仅按需溯源，无 FTS 膨胀）
     if include_raw {
         let mut raws = Vec::new();
         let mut seen_r = HashSet::new();
-        for fq in [fts_strict.as_deref(), fts_broad.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            if raws.len() >= 4 {
-                break;
-            }
-            for r in query_raw_turns_fts_conn(conn, &agent.id, fq, scope, date_range.as_ref(), 4) {
-                if seen_r.insert(r.turn_id.clone()) {
-                    raws.push(r);
-                }
-                if raws.len() >= 4 {
-                    break;
-                }
-            }
-        }
         for ev in &timelines {
             if raws.len() >= 4 {
                 break;
@@ -475,6 +552,25 @@ pub(crate) fn execute_memory_recall_conn(
             if !ev.turn_id.is_empty() && seen_r.insert(ev.turn_id.clone()) {
                 if let Ok(Some(r)) = load_raw_turn_conn(conn, &ev.turn_id) {
                     raws.push(r);
+                }
+            }
+        }
+        if raws.len() < 4 {
+            let mut terms = plan.anchors.clone();
+            terms.extend(plan.core_terms.iter().take(3).cloned());
+            for r in query_raw_turns_cold_conn(
+                conn,
+                &agent.id,
+                &terms,
+                scope,
+                plan.date_range.as_ref(),
+                4,
+            ) {
+                if seen_r.insert(r.turn_id.clone()) {
+                    raws.push(r);
+                    if raws.len() >= 4 {
+                        break;
+                    }
                 }
             }
         }
@@ -512,15 +608,16 @@ pub(crate) fn execute_memory_recall_conn(
     }
 
     let joined = out.join("\n\n");
-    if joined.chars().count() > MAX_RECALL_RESULT_CHARS {
-        Ok(format!(
+    let final_text = if joined.chars().count() > MAX_RECALL_RESULT_CHARS {
+        format!(
             "{}\n...(truncated)",
             joined
                 .chars()
                 .take(MAX_RECALL_RESULT_CHARS)
                 .collect::<String>()
-        ))
+        )
     } else {
-        Ok(joined)
-    }
+        joined
+    };
+    Ok((final_text, hit_nodes, hit_profiles))
 }

@@ -23,6 +23,9 @@ pub struct TeamGlobalConfig {
     pub show_input_capsule: bool,
     #[serde(default = "default_max_parallel")]
     pub max_parallel_per_wave: usize,
+    /// 全局全角色提示词模板自定义覆写（template_id -> 自定义模板；缺失或空值表示使用内置默认模板）
+    #[serde(default)]
+    pub prompt_templates: BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -45,6 +48,7 @@ impl Default for TeamGlobalConfig {
             default_model: String::new(),
             show_input_capsule: true,
             max_parallel_per_wave: 3,
+            prompt_templates: BTreeMap::new(),
         }
     }
 }
@@ -64,11 +68,45 @@ pub struct RoleBindingPreset {
     pub updated_at: String,
 }
 
+/// 用户自主新增的跨团队项目卡片（不限制固定领域，可自由增删改与挑选卡通形象）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamProjectPreset {
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_domain_general")]
+    pub domain: String,
+    #[serde(default)]
+    pub working_dir: String,
+    #[serde(default = "default_agent_none")]
+    pub agent_id: String,
+    #[serde(default)]
+    pub avatar_id: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub sort_order: usize,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
 fn default_agent_none() -> String {
     "none".to_string()
 }
 
-/// 一次完整的跨项目协作编排单（支持 `pipeline` 研发接力流水线 与 `triage` 跨库联合排障会诊）。
+/// 随新建任务附带的截图/原型参考图（支持 Ctrl+V 粘贴上传）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamImage {
+    #[serde(alias = "media_type")]
+    pub media_type: String,
+    pub data: String,
+}
+
+/// 一次完整的跨项目协作任务单（支持 `pipeline` 四阶段研发流 与 `triage` 跨库联合排障会诊）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamRun {
@@ -81,6 +119,39 @@ pub struct TeamRun {
     /// `"draft"` | `"running"` | `"paused"` | `"completed"` | `"failed"` | `"cancelled"`
     #[serde(default = "default_status_draft")]
     pub status: String,
+    /// 五阶段编排状态：`"planning"` | `"sql_binding"` | `"sql_designing"` | `"awaiting_approval"` | `"team_binding"` | `"contracting"` | `"executing"` | `"completed"` | `"triage"`
+    #[serde(default)]
+    pub stage: String,
+    /// 本次任务是否涉及新建/修改数据库表结构
+    #[serde(default)]
+    pub requires_db: bool,
+    /// 阶段 1：主控生成的整体《执行计划》
+    #[serde(default)]
+    pub execution_plan: String,
+    /// 阶段 2：SQL 智能体设计的《表结构 DDL + 字段说明》
+    #[serde(default)]
+    pub sql_schema_draft: String,
+    /// 阶段 3：主控基于已确认表结构约定的《前后端统一接口、字典与权限方案》
+    #[serde(default)]
+    pub interface_spec: String,
+    /// 阶段 4 交付汇总：可直接复制执行的达梦/SQL DDL 脚本
+    #[serde(default)]
+    pub delivery_sql: String,
+    /// 阶段 2 SQL 架构师专属绑定与持久会话（防切换工作目录后被旧项目 .meta 劫持）
+    #[serde(default)]
+    pub sql_working_dir: String,
+    #[serde(default = "default_agent_none")]
+    pub sql_agent_id: String,
+    #[serde(default)]
+    pub sql_model: String,
+    #[serde(default)]
+    pub sql_session_id: String,
+    /// 本单级各角色提示词覆写（template_id -> 自定义模板内容）
+    #[serde(default)]
+    pub prompt_overrides: BTreeMap<String, String>,
+    /// 新建任务附带的截图/效果图（支持视觉识别与前后端还原）
+    #[serde(default)]
+    pub goal_images: Vec<TeamImage>,
     /// 乐观锁递增版本号（CAS 防旧快照覆盖）
     #[serde(default)]
     pub revision: u64,
@@ -131,6 +202,12 @@ pub struct TeamTask {
     #[serde(default)]
     pub sort_order: usize,
     #[serde(default)]
+    pub project_slot_id: String,
+    #[serde(default)]
+    pub project_name: String,
+    #[serde(default)]
+    pub avatar_id: String,
+    #[serde(default)]
     pub working_dir: String,
     #[serde(default)]
     pub project_hash: String,
@@ -142,6 +219,9 @@ pub struct TeamTask {
     pub model: String,
     #[serde(default)]
     pub session_id: String,
+    /// 单成员级完整提示词覆写（非空时完全替换派发给该成员的主提示词）
+    #[serde(default)]
+    pub custom_prompt: String,
     /// `"pending"` | `"ready"` | `"running"` | `"verifying"` | `"repairing"` | `"completed"` | `"failed"` | `"cancelled"`
     #[serde(default = "default_task_pending")]
     pub status: String,
@@ -226,6 +306,23 @@ pub struct TeamRunDetail {
     pub events: Vec<TeamEvent>,
 }
 
+pub(crate) fn clean_path_str(raw: &str) -> String {
+    let mut s = raw.trim().replace('\\', "/");
+    if let Some(rest) = s.strip_prefix("//?/UNC/") {
+        s = format!("//{rest}");
+    } else if let Some(rest) = s.strip_prefix("//?/") {
+        s = rest.to_string();
+    }
+    while s.len() > 3 && s.ends_with('/') {
+        s.pop();
+    }
+    s
+}
+
+pub(crate) fn path_to_clean_str(p: &std::path::Path) -> String {
+    clean_path_str(&p.to_string_lossy())
+}
+
 pub(crate) fn now_ts() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
@@ -245,20 +342,39 @@ pub(crate) fn normalize_domain(raw: &str) -> String {
         || lower.contains("db")
         || lower.contains("database")
         || lower.contains("数据库")
+        || lower.contains("达梦")
     {
         "sql".to_string()
     } else if lower.contains("back")
         || lower.contains("server")
         || lower.contains("api")
+        || lower.contains("java")
+        || lower.contains("rust")
         || lower.contains("后端")
     {
         "backend".to_string()
     } else if lower.contains("front")
         || lower.contains("web")
         || lower.contains("ui")
+        || lower.contains("vue")
+        || lower.contains("react")
         || lower.contains("前端")
     {
         "frontend".to_string()
+    } else if lower.contains("mobile")
+        || lower.contains("app")
+        || lower.contains("flutter")
+        || lower.contains("uniapp")
+        || lower.contains("小程序")
+        || lower.contains("移动")
+    {
+        "mobile".to_string()
+    } else if lower.contains("qa")
+        || lower.contains("test")
+        || lower.contains("测试")
+        || lower.contains("验收")
+    {
+        "qa".to_string()
     } else {
         "general".to_string()
     }
@@ -269,7 +385,9 @@ pub(crate) fn domain_badge_cn(domain: &str) -> &'static str {
         "sql" => "SQL/数据库",
         "backend" => "后端服务",
         "frontend" => "前端界面",
-        _ => "通用任务",
+        "mobile" => "移动端/小程序",
+        "qa" => "测试/验收",
+        _ => "通用项目",
     }
 }
 

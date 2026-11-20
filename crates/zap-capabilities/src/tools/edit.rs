@@ -89,7 +89,7 @@ impl Tool for EditFileTool {
         &["edit_file"]
     }
     fn description(&self) -> &str {
-        "Modify file content via exact string replacement."
+        "Modify file content via exact string replacement (prefer `edit` over full-file `write` for existing large files and incremental section fills)."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({

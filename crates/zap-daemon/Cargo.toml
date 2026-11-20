@@ -19,7 +19,7 @@ default = []
 # Config system used directly by the daemon.
 zap-config = { path = "../zap-config" }
 zap-auth = { path = "../zap-auth" }
-zap-capabilities = { path = "../zap-capabilities", features = ["plugin", "mcp", "notify"] }
+zap-capabilities = { path = "../zap-capabilities", features = ["plugin", "mcp", "notify", "codeintel"] }
 # Unified native runtime used by daemon live/chat/session paths.
 zap-kernel = { path = "../zap-kernel" }
 zap-coding = { path = "../zap-coding" }

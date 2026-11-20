@@ -17,8 +17,8 @@ use zap_kernel::stream::StreamEvent;
 use zap_kernel::tool::{Tool, ToolContext, ToolResult};
 
 use super::store::{
-    append_event_conn, load_contracts_for_run_conn, load_tasks_for_run_conn, upsert_contract_conn,
-    with_team_store,
+    append_event_conn, load_contracts_for_run_conn, load_run_conn, load_tasks_for_run_conn,
+    upsert_contract_conn, with_team_store,
 };
 use super::types::{domain_badge_cn, normalize_domain, truncate_chars_safe};
 
@@ -70,6 +70,15 @@ pub fn apply_session_team_tools(
         return;
     };
 
+    if ctx.read_only_mode {
+        runtime.mcp = false;
+        runtime.shared_mcp_registry = None;
+        runtime
+            .extra_tools
+            .retain(|tool| team_readonly_tool(tool.name()));
+        runtime.extra_hooks.push(Arc::new(TeamReadonlyHook));
+    }
+
     if !ctx.read_only_mode
         && !runtime
             .extra_tools
@@ -89,6 +98,25 @@ pub fn apply_session_team_tools(
         runtime
             .extra_tools
             .push(Arc::new(TeamAskPeerTool::new(sid.to_string())) as Arc<dyn Tool>);
+    }
+}
+
+fn team_readonly_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "code_explore" | "grep" | "read" | "glob" | "team_ask_peer" | "memory_recall"
+    )
+}
+
+struct TeamReadonlyHook;
+
+#[async_trait]
+impl zap_kernel::hook::LifecycleHooks for TeamReadonlyHook {
+    async fn on_model_response(&self, response: &mut Message) {
+        // Enforced independently of customizable system text; deny shell and unknown tools.
+        response
+            .tool_calls
+            .retain(|call| team_readonly_tool(&call.name));
     }
 }
 
@@ -333,6 +361,8 @@ impl Tool for TeamAskPeerTool {
         let target_domain_lookup = norm_target.clone();
         let lookup = tokio::task::spawn_blocking(move || {
             with_team_store(|store| {
+                let run = load_run_conn(&store.conn, &ctx_for_lookup.run_id)?
+                    .ok_or_else(|| "Active team run no longer exists".to_string())?;
                 let tasks = load_tasks_for_run_conn(&store.conn, &ctx_for_lookup.run_id)?;
                 let contracts = load_contracts_for_run_conn(&store.conn, &ctx_for_lookup.run_id)?;
                 let peer_task = tasks
@@ -371,12 +401,12 @@ impl Tool for TeamAskPeerTool {
                     ),
                     &q_for_log,
                 );
-                Ok((peer_task, contracts, target_badge))
+                Ok((run, peer_task, contracts, target_badge))
             })
         })
         .await;
 
-        let (peer_task, contracts, target_badge) = match lookup {
+        let (run, peer_task, contracts, target_badge) = match lookup {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 return ToolResult {
@@ -433,12 +463,36 @@ impl Tool for TeamAskPeerTool {
             .map(|t| t.last_output_excerpt.clone())
             .unwrap_or_default();
 
+        let contracts_text = relevant_contracts.join("\n\n");
+        let prompt = match super::runner::execution_prompt(
+            &run,
+            super::prompts::TPL_PEER_CONSULTATION,
+            Some(&norm_target),
+            &[
+                ("target_badge", &target_badge),
+                ("question", &question),
+                ("contracts_text", &contracts_text),
+                ("peer_excerpt", &peer_excerpt),
+                ("code_evidence", &code_evidence),
+            ],
+        )
+        .await
+        {
+            Ok(prompt) => prompt,
+            Err(e) => {
+                return ToolResult {
+                    call_id: String::new(),
+                    content: format!("Peer template lookup failed: {e}"),
+                    is_error: true,
+                    images: Vec::new(),
+                }
+            }
+        };
         let answer = synthesize_peer_answer(
             &team_ctx.provider_name,
             peer_dir.as_deref(),
-            &target_badge,
-            &question,
-            &relevant_contracts.join("\n\n"),
+            &prompt,
+            &contracts_text,
             &peer_excerpt,
             &code_evidence,
         )
@@ -638,8 +692,7 @@ fn scan_peer_repo_evidence(root: &Path, search_hint: &str, question: &str) -> St
 async fn synthesize_peer_answer(
     provider_name: &str,
     peer_dir: Option<&Path>,
-    target_badge: &str,
-    question: &str,
+    prompt: &str,
     contracts_text: &str,
     peer_excerpt: &str,
     code_evidence: &str,
@@ -667,10 +720,10 @@ async fn synthesize_peer_answer(
     let mut rt =
         zap_coding::CodingRuntimeConfig::from_config(&config, wd, prov_opt, None, false, false);
     rt.mcp = false;
-    rt.max_tokens = Some(1024);
+    rt.max_tokens = Some(4096);
     let coding_cfg = crate::kernel_runtime::coding_config_from_runtime(&rt);
     let options = ChatOptions {
-        max_tokens: Some(1024),
+        max_tokens: Some(4096),
         temperature: None,
         tool_choice: ToolChoice::None,
         reasoning_effort: Some(ReasoningEffort::Low),
@@ -684,14 +737,6 @@ async fn synthesize_peer_answer(
     else {
         return truncate_chars_safe(&fallback, 2200);
     };
-
-    let prompt = format!(
-        "You are answering a cross-repository consultation on behalf of peer team role [{target_badge}].\n\
-        Answer concisely, accurately, and cite exact file paths, column names, or API fields found in the evidence.\n\
-        If something is not yet defined in the contracts or codebase, state that explicitly.\n\n\
-        Question:\n{question}\n\n\
-        {fallback}"
-    );
 
     let msgs = vec![Message::user(prompt)];
     let call_fut = async {

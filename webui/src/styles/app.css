@@ -4859,6 +4859,7 @@ body {
 .reasoning-icon.is-live {
   color: var(--app-brand, #2563eb);
   opacity: 1;
+  will-change: transform, opacity;
   animation: reasoningStarPulse 1.6s ease-in-out infinite;
 }
 .reasoning-label {
@@ -4891,19 +4892,15 @@ body {
 }
 .reasoning-summary-inner.is-live {
   opacity: 1;
-  background: linear-gradient(
-    90deg,
-    var(--zap-thinking-shimmer-base, #64748b) 0%,
-    var(--zap-thinking-shimmer-peak, #0f172a) 48%,
-    var(--zap-thinking-shimmer-base, #64748b) 96%
-  );
-  background-size: 220% 100%;
-  color: transparent;
-  -webkit-background-clip: text;
-  background-clip: text;
+  color: var(--zap-thinking-shimmer-peak, #0f172a);
+  will-change: opacity, transform;
   animation:
     reasoningTickerSlideIn 0.24s cubic-bezier(0.22, 1, 0.36, 1),
-    codexShimmer 2s linear infinite;
+    reasoningLivePulse 1.8s ease-in-out infinite;
+}
+@keyframes reasoningLivePulse {
+  0%, 100% { opacity: 0.96; }
+  50% { opacity: 0.58; }
 }
 .reasoning-live-dots {
   display: inline-flex;
@@ -7579,6 +7576,7 @@ body {
   border: 2px solid var(--app-spinner-foreground, var(--app-brand));
   border-top-color: transparent;
   border-radius: 50%;
+  will-change: transform;
   animation: session-item-spin 0.8s linear infinite;
 }
 @keyframes session-item-spin {
@@ -7653,8 +7651,7 @@ body {
   background: transparent;
   border: 1px solid transparent;
   transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 36px;
+  contain: layout style paint;
 }
 
 .session-item:hover {
