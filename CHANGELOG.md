@@ -21,6 +21,36 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v1.0.20 (2026-11-20)
+
+- **[Multi-Agent Team Orchestration] Five-stage collaborative pipeline, custom project cards, and prompt customization**:
+  - Upgraded Agent Teams into a five-stage pipeline covering planning, optional database schema design, team configuration, contract alignment, and wave execution, with support for pasting reference screenshots and customizing project cards and role prompt templates.
+  - Hardened cross-repository workspace isolation across subtasks and enforced strict read-only safeguards during peer consultations and joint troubleshooting.
+- **[Neural Memory Engine] Precision anchor routing, write-time consolidation, and team delivery sync**:
+  - Upgraded per-agent neural memory with exact file, symbol, and API anchor routing, weighted multi-channel recall, write-time fact consolidation that preserves prior history, and persistent draft queues flushed automatically before compaction.
+  - Synchronized finalized Agent Teams deliverables and cross-domain progress into bound agent memories while filtering out intermediate rework noise.
+- **[Runtime Reliability & Defaults] Fast-fail output diagnostics, targeted file reads, and Auto approval default**:
+  - Added immediate actionable diagnostics when a turn stalls after thinking or hits output length limits before emitting text or tool calls, and tightened default file read paging and chunked write guidance.
+  - Switched the default approval mode to Auto across new and live sessions for smoother uninterrupted execution.
+- **[WebUI Performance & Turn Tracking] Smoother scrolling, faster streaming, and accurate turn timers**:
+  - Eliminated main-thread scroll contention and expensive shimmer repaint overhead across the timeline and sidebar, while optimizing streaming frame batching and turn navigation responsiveness.
+  - Improved turn completion timestamp and elapsed duration accuracy across live completions, background runs, and session switches.
+
+---
+
+- **[多智能体团队协作] 升级五阶段研发流水线、自定义项目卡片与角色提示词模板**：
+  - 将团队协作升级为涵盖规划拆单、可选表结构设计、研发团队配置、契约对齐与波次执行的五阶段流水线，支持粘贴参考截图以及自定义跨端项目卡片与各角色提示词模板。
+  - 强化子任务跨项目工作目录隔离，并在同事问询与联合排障会诊阶段强制启用只读安全护栏。
+- **[神经记忆引擎] 新增精确路牌直达、写入期知识合并与团队成果同步**：
+  - 升级智能体记忆引擎，支持文件名、符号与接口等精确路牌检索、分列加权召回、写入期查重合并与历史保留机制，并在上下文压缩前自动抢救落盘草稿记忆。
+  - 将团队协作验收定案的成果与跨端进度同步至对应智能体记忆中，避免中间返工噪音污染。
+- **[运行时稳定性与默认体验] 完善空截断与过渡超时诊断、收敛默认读取分页并默认开启 Auto 模式**：
+  - 当模型思考后静默超时或未产出正文/工具即触发长度上限时，第一时间给出可操作诊断提示；同步收敛默认文件读取分页并强化大文件分段写入引导。
+  - 新建会话与实时会话默认启用 Auto 审批模式，减少日常连续编码确认中断。
+- **[WebUI 流畅度与回合计时] 优化滚轮滚动流畅度、流式帧渲染与耗时统计精度**：
+  - 消除全局非被动滚轮监听与高开销流光重绘，显著提升长对话时间线与侧边栏滚动帧率，并优化流式合批与轮次导航响应速度。
+  - 修复实时完成、后台完成及切回进行中会话时的完成时刻与回合总耗时统计偏差。
+
 ## v1.0.19 (2026-11-18)
 
 - **[Multi-Agent Team Orchestration] Added persistent cross-repository Agent Teams engine in daemon**:

@@ -4876,7 +4876,7 @@ dependencies = [
 
 [[package]]
 name = "zap"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -4921,7 +4921,7 @@ dependencies = [
 
 [[package]]
 name = "zap-auth"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4942,7 +4942,7 @@ dependencies = [
 
 [[package]]
 name = "zap-capabilities"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -5012,7 +5012,7 @@ dependencies = [
 
 [[package]]
 name = "zap-clix"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5033,7 +5033,7 @@ dependencies = [
 
 [[package]]
 name = "zap-coding"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5060,7 +5060,7 @@ dependencies = [
 
 [[package]]
 name = "zap-config"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5079,7 +5079,7 @@ dependencies = [
 
 [[package]]
 name = "zap-daemon"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5126,7 +5126,7 @@ dependencies = [
 
 [[package]]
 name = "zap-kernel"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "async-trait",
  "futures",
@@ -5140,7 +5140,7 @@ dependencies = [
 
 [[package]]
 name = "zap-review"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "async-trait",
  "futures",
@@ -5155,7 +5155,7 @@ dependencies = [
 
 [[package]]
 name = "zap-telemetry"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5177,7 +5177,7 @@ dependencies = [
 
 [[package]]
 name = "zap-tuix"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5223,7 +5223,7 @@ dependencies = [
 
 [[package]]
 name = "zap-updater"
-version = "1.0.19"
+version = "1.0.20"
 dependencies = [
  "anyhow",
  "chrono",

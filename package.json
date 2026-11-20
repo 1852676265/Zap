@@ -1,6 +1,6 @@
 {
   "name": "zap",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "private": true,
   "description": "Zap AI Coding Agent",
   "scripts": {
