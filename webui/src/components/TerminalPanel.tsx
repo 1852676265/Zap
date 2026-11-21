@@ -5,14 +5,6 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import {
-  hasLiveDsrQuery,
-  hasShellPromptOutput,
-  isColumnOneCursorReport,
-  isTerminalProtocolReply,
-  sanitizeInitialFrame,
-  stripTerminalQueries,
-} from '../lib/terminalSanitize';
-import {
   createTerminalSession,
   fetchTerminalList,
   closeTerminalSession,
@@ -21,6 +13,38 @@ import {
 import { showToast } from './Toast';
 import { useT, useSettings } from '../settings';
 import { getPageZoom } from '../lib/pageZoom';
+import {
+  SHELL_CONFIGS,
+  resolveHostPlatform,
+  getPlatformShells,
+  getDefaultShellForPlatform,
+  getMainstreamShell,
+  inferShellFromTab,
+  getSavedSessions,
+  saveSessions,
+  getSavedActiveTab,
+  saveActiveTab,
+  areAllTerminalsClosed,
+  markAllTerminalsClosed,
+  getSavedTerminalCount,
+  registerTerminalRunHandler,
+  type TerminalTab,
+  type ShellOption,
+  type HostPlatform,
+} from '../lib/terminalStorage';
+
+export {
+  SHELL_CONFIGS,
+  resolveHostPlatform,
+  getPlatformShells,
+  getDefaultShellForPlatform,
+  getMainstreamShell,
+  inferShellFromTab,
+  getSavedTerminalCount,
+  type TerminalTab,
+  type ShellOption,
+  type HostPlatform,
+};
 
 function measureTerminalGrid(term: Terminal, container: HTMLElement): { cols: number; rows: number } | null {
   const core = (term as unknown as {
@@ -30,9 +54,19 @@ function measureTerminalGrid(term: Terminal, container: HTMLElement): { cols: nu
       };
     };
   })._core;
-  const cellW = core?._renderService?.dimensions?.css?.cell?.width || 0;
-  const cellH = core?._renderService?.dimensions?.css?.cell?.height || 0;
+  let cellW = core?._renderService?.dimensions?.css?.cell?.width || 0;
+  let cellH = core?._renderService?.dimensions?.css?.cell?.height || 0;
+
+  // 兜底与动态校准：若 renderService 尚未刷出 dimensions（或由于隐藏处于 paused），
+  // 按照等宽字体比例基于当前 fontSize 精准推算，确保网格始终铺满且计算可用
+  if (cellW <= 0 || cellH <= 0) {
+    const fs = term.options.fontSize || 12;
+    // Cascadia Mono / Consolas 等宽字体的长宽比通常为 0.605 : 1
+    cellW = Math.round(fs * 0.605 * 100) / 100;
+    cellH = Math.round(fs * (term.options.lineHeight || 1) * 1.25 * 100) / 100;
+  }
   if (cellW <= 0 || cellH <= 0) return null;
+
   const style = window.getComputedStyle(container);
   const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
   const padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
@@ -50,77 +84,7 @@ function measureTerminalGrid(term: Terminal, container: HTMLElement): { cols: nu
 export interface TerminalPanelProps {
   cwd?: string;
   active?: boolean;
-}
-
-export interface ShellOption {
-  id: string;
-  name: string;
-  icon: string;
-}
-
-export type HostPlatform = 'windows' | 'macos' | 'linux';
-
-export const SHELL_CONFIGS: Record<HostPlatform, ShellOption[]> = {
-  windows: [
-    { id: 'powershell', name: 'PowerShell', icon: '⚡' },
-    { id: 'cmd', name: 'CMD', icon: '⬛' },
-    { id: 'gitbash', name: 'Git Bash', icon: '🌲' },
-    { id: 'wsl', name: 'WSL (Ubuntu)', icon: '🐧' },
-  ],
-  macos: [
-    { id: 'zsh', name: 'Zsh', icon: '🐚' },
-    { id: 'bash', name: 'Bash', icon: '🐚' },
-  ],
-  linux: [
-    { id: 'bash', name: 'Bash', icon: '🐚' },
-    { id: 'zsh', name: 'Zsh', icon: '🐚' },
-    { id: 'sh', name: 'Sh', icon: '🐚' },
-  ],
-};
-
-export function resolveHostPlatform(cwd?: string): HostPlatform {
-  const trimmed = (cwd || '').trim();
-  // 1. 如果路径含有 Windows 盘符特征（例如 E:/code/jeikcode 或 C:\...），100% 确定宿主机为 Windows！
-  if (/^[a-zA-Z]:[/\\]/.test(trimmed) || /^[/\\][a-zA-Z]:/.test(trimmed)) {
-    return 'windows';
-  }
-  // 2. 本地持久化缓存的真实宿主机平台 (由后端 API 返回并记住)
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const cached = window.localStorage.getItem('jeikcode:host_platform');
-      if (cached === 'windows' || cached === 'macos' || cached === 'linux') {
-        return cached as HostPlatform;
-      }
-    }
-  } catch {}
-  // 3. 常见路径推断
-  if (trimmed.startsWith('/Users/')) return 'macos';
-  if (trimmed.startsWith('/home/') || trimmed.startsWith('/root/') || trimmed.startsWith('/var/')) return 'linux';
-  // 4. 客户端自身判定（仅在桌面浏览器且无盘符时作为弱参考）
-  if (typeof navigator !== 'undefined') {
-    const ua = navigator.userAgent || '';
-    const isMobile = /android|iphone|ipad|ipod|mobile/i.test(ua);
-    if (!isMobile) {
-      if (/win/i.test(ua) || /windows/i.test(navigator.platform)) return 'windows';
-      if (/mac/i.test(ua) || /macintosh|macintel/i.test(navigator.platform)) return 'macos';
-    }
-  }
-  return 'windows';
-}
-
-export function getPlatformShells(platform: HostPlatform = 'windows'): ShellOption[] {
-  return SHELL_CONFIGS[platform] || SHELL_CONFIGS.windows;
-}
-
-export function getDefaultShellForPlatform(platform: HostPlatform = 'windows'): string {
-  return platform === 'windows' ? 'powershell' : platform === 'macos' ? 'zsh' : 'bash';
-}
-
-export const PLATFORM_SHELLS: ShellOption[] = SHELL_CONFIGS.windows;
-export const DEFAULT_SHELL = 'powershell';
-
-export function getMainstreamShell(platform: HostPlatform = 'windows'): string {
-  return getDefaultShellForPlatform(platform);
+  onTabsCountChange?: (count: number) => void;
 }
 
 const DARK_TERMINAL_THEME = {
@@ -171,129 +135,46 @@ const LIGHT_TERMINAL_THEME = {
   brightWhite: '#8c959f',
 };
 
-interface TerminalTab {
-  id: string;
-  name: string;
-  cwd: string;
-  shell?: string;
-  timestamp: number;
-}
-
-export function inferShellFromTab(tab: { name?: string; shell?: string }, platform?: HostPlatform): string {
-  const p = platform || resolveHostPlatform();
-  const direct = (tab.shell || '').toLowerCase().trim();
-  if (direct) {
-    if (direct.includes('git') || (direct.includes('bash') && p === 'windows')) return 'gitbash';
-    if (direct.includes('wsl') || direct.includes('ubuntu')) return 'wsl';
-    if (direct.includes('cmd')) return 'cmd';
-    if (direct.includes('zsh')) return 'zsh';
-    if (direct.includes('power') || direct.includes('pwsh')) return 'powershell';
-    if (direct.includes('bash')) return 'bash';
-    if (direct.includes('sh')) return 'sh';
-    return direct;
-  }
-  const name = (tab.name || '').toLowerCase().trim();
-  if (name.includes('git') || (name.includes('bash') && p === 'windows')) return 'gitbash';
-  if (name.includes('wsl') || name.includes('ubuntu')) return 'wsl';
-  if (name.includes('cmd')) return 'cmd';
-  if (name.includes('zsh')) return 'zsh';
-  if (name.includes('power') || name.includes('pwsh')) return 'powershell';
-  return getDefaultShellForPlatform(p);
-}
-
-const getProjectTerminalStorageKey = (projectCwd?: string) => {
-  const norm = (projectCwd || 'default').replace(/\\/g, '/').trim().toLowerCase();
-  return `jeikcode:terminal:sessions:${norm}`;
-};
-
-function getSavedSessions(projectCwd?: string): TerminalTab[] | null {
-  try {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      const key = getProjectTerminalStorageKey(projectCwd);
-      const raw = window.sessionStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((t) => ({
-            ...t,
-            shell: inferShellFromTab(t),
-          }));
-        }
-      }
-    }
-  } catch {}
-  return null;
-}
-
-function saveSessions(tabs: TerminalTab[], projectCwd?: string) {
-  try {
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      const key = getProjectTerminalStorageKey(projectCwd);
-      const normalized = tabs.map((t) => ({
-        ...t,
-        shell: inferShellFromTab(t),
-      }));
-      window.sessionStorage.setItem(key, JSON.stringify(normalized));
-    }
-  } catch {}
-}
-
-interface TerminalRecord {
-  term: Terminal;
-  fitAddon: FitAddon;
-  container: HTMLElement | null;
-  ws: WebSocket | null;
-  ro?: ResizeObserver;
-  layoutSync?: (immediate: boolean) => void;
-  lastPtyCols?: number;
-  lastPtyRows?: number;
-  resizeSettledAt?: number;
-  wsOpenedAt?: number;
-  lastOutputAt?: number;
-  firstFrameSeen?: boolean;
-  startupProbeAnswered?: boolean;
-  replayingCount?: number;
-  liveDsrPendingUntil?: number;
-  dsrSettledAt?: number;
-  promptReady?: boolean;
-  hasConnectedOnce?: boolean;
-  flushTimer?: ReturnType<typeof setTimeout> | null;
-}
-
-export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
+export function TerminalPanel({ cwd, active, onTabsCountChange }: TerminalPanelProps) {
   const t = useT();
-  const { theme } = useSettings();
-  const isDark =
-    theme === 'dark' ||
-    (theme === 'system' &&
-      typeof window !== 'undefined' &&
-      window.matchMedia('(prefers-color-scheme: dark)').matches) ||
-    (typeof document !== 'undefined' && document.documentElement.dataset.theme !== 'light');
+  const { theme, effectiveTheme } = useSettings();
+  const isDark = effectiveTheme ? effectiveTheme === 'dark' : (theme === 'dark');
 
   const sessionScopeKey = cwd || 'default';
 
-  const stableDefaultId = useMemo(() => {
-    const norm = (cwd || 'default').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    return `term_main_${norm}`;
-  }, [cwd]);
-
   const [tabs, setTabs] = useState<TerminalTab[]>(() => {
+    if (areAllTerminalsClosed(cwd)) return [];
     const saved = getSavedSessions(cwd);
-    if (saved && saved.length > 0) return saved;
-    const norm = (cwd || 'default').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    const id = `term_main_${norm}`;
-    return [
-      {
-        id,
-        name: `${DEFAULT_SHELL} 1`,
-        cwd: cwd || '.',
-        shell: DEFAULT_SHELL,
-        timestamp: 0,
-      },
-    ];
+    return saved ?? [];
   });
 
-  const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0]?.id || '');
+  const [activeTabId, setActiveTabIdState] = useState<string>(() => {
+    const saved = getSavedActiveTab(cwd);
+    if (saved && tabs.some((t) => t.id === saved)) return saved;
+    return tabs[0]?.id || '';
+  });
+
+  // 仅真正激活看过的标签页才实例化 xterm 与建立 WebSocket，其余后台标签页延后到首次点击时再建连
+  const [activatedTabIds, setActivatedTabIds] = useState<Record<string, boolean>>(() => {
+    const initialId = getSavedActiveTab(cwd) || tabs[0]?.id || '';
+    return initialId ? { [initialId]: true } : {};
+  });
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    setActivatedTabIds((prev) => (prev[activeTabId] ? prev : { ...prev, [activeTabId]: true }));
+  }, [activeTabId]);
+
+  const setActiveTabId = useCallback(
+    (idOrFn: string | ((prev: string) => string)) => {
+      setActiveTabIdState((prev) => {
+        const next = typeof idOrFn === 'function' ? idOrFn(prev) : idOrFn;
+        saveActiveTab(next, cwd);
+        return next;
+      });
+    },
+    [cwd]
+  );
 
   const [hostPlatform, setHostPlatform] = useState<HostPlatform>(() => resolveHostPlatform(cwd));
   const isHostWin = hostPlatform === 'windows';
@@ -306,7 +187,9 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
     }
   }, [cwd, hostPlatform]);
 
-  // 细分 Shell 下拉选项控制（+号默认创建主流终端，下拉三角▾才选择具体 Shell）
+  useEffect(() => {
+    onTabsCountChange?.(tabs.length);
+  }, [tabs.length, onTabsCountChange]);
   const [shellDropdownOpen, setShellDropdownOpen] = useState(false);
   const shellDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -373,16 +256,48 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
   });
 
   // 每个 Tab 对应一个真实的 xterm 终端仿真器与 WebSocket 实例
-  const activeRef = useRef<boolean>(active !== false);
-  activeRef.current = active !== false;
-  const tabsRef = useRef<TerminalTab[]>(tabs);
-  tabsRef.current = tabs;
-  const activeTabIdRef = useRef<string>(activeTabId);
-  activeTabIdRef.current = activeTabId;
-  const pendingCommandsRef = useRef<
-    Map<string, { command: string; enqueuedAt: number }>
+  const pendingCommandsRef = useRef<Map<string, string>>(new Map());
+  const termMap = useRef<
+    Map<
+      string,
+      {
+        term: Terminal;
+        fitAddon: FitAddon;
+        container: HTMLElement | null;
+        ws: WebSocket | null;
+        ro?: ResizeObserver;
+        layoutSync?: (immediate: boolean, force?: boolean) => void;
+        lastSentCols?: number;
+        lastSentRows?: number;
+      }
+    >
   >(new Map());
-  const termMap = useRef<Map<string, TerminalRecord>>(new Map());
+  // 终端只在「用户主动打开/切换终端」时抢焦点。页面刷新时右侧终端可能仍是
+  // 上次保存的 active tab，但焦点必须留给对话输入框，绝不能由挂载阶段抢走。
+  const focusOnNextLayoutRef = useRef(false);
+  const panelActiveRef = useRef(active !== false);
+
+  // 画面失效标记：面板隐藏或页面挂起时置位，回来后必须整体重绘一次。
+  // 只在真的可能失效时才重绘，避免无谓的 DOM 重绘（重绘会重建行节点、清掉终端里的文本选区）。
+  const stalePaintRef = useRef(false);
+
+  // 面板恢复可见时，把所有终端（含挂机后台标签）整屏重绘一次。
+  // xterm v6 在容器不可见时会暂停渲染（RenderService._isPaused），期间所有渲染请求被丢弃，
+  // 恢复可见只有命中“自愈标记”才会补画；挂机期间没有任何写入时标记不会置位，
+  // 于是所有终端（不只是当前可见的那个）都会停在空白（黑屏）。
+  //
+  // 安全性：term.refresh() 只走渲染器重绘（CoreBrowserTerminal.refresh → RenderService.refreshRows），
+  // 不经过 onData、不发送任何字节到 PTY、不做 resize，因此绝不会让已运行的终端掉线。
+  // 这里只做重绘、不做尺寸同步：遍历后台终端触发 ConPTY resize 会打乱后台命令行对齐。
+  const repaintAllTerminals = useCallback((force = false) => {
+    if (!force && !stalePaintRef.current) return;
+    stalePaintRef.current = false;
+    for (const record of termMap.current.values()) {
+      try {
+        record.term.refresh(0, Math.max(0, record.term.rows - 1));
+      } catch {}
+    }
+  }, []);
 
   // 1. 终端内部 Ctrl + 鼠标滚轮独立调整字号（在捕获阶段拦截，阻止触发全局缩放）
   useEffect(() => {
@@ -516,94 +431,25 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
     };
   }, [active, activeTabId]);
 
-  // 终端统一使用专业沉浸的暗黑主题（即使全局为亮色模式，终端视口亦保持经典深色黑底）
+  // 终端主题跟随全局亮/暗：亮色模式用高对比浅色终端，暗色用经典深色终端。
   useEffect(() => {
     for (const { term } of termMap.current.values()) {
-      term.options.theme = DARK_TERMINAL_THEME;
+      term.options.theme = isDark ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME;
     }
   }, [isDark]);
 
   // 建立或重新连接指定 Tab 的 WebSocket PTY 串流（支持休眠唤醒与意外断线自愈）
-  const tryFlushPendingCommand = useCallback((tabId: string) => {
-    const pending = pendingCommandsRef.current.get(tabId);
-    const record = termMap.current.get(tabId);
-    if (!pending || !record) return;
-
-    if (record.flushTimer) {
-      clearTimeout(record.flushTimer);
-      record.flushTimer = null;
-    }
-
-    const reschedule = (delayMs: number) => {
-      record.flushTimer = setTimeout(() => {
-        record.flushTimer = null;
-        tryFlushPendingCommand(tabId);
-      }, Math.max(16, delayMs));
-    };
-
-    const el = record.container;
-    if (!el || el.clientWidth < 40 || el.clientHeight < 24) {
-      if (Date.now() - pending.enqueuedAt < 2500) {
-        reschedule(50);
-        return;
-      }
-    } else {
-      record.layoutSync?.(true);
-    }
-
-    if (!record.ws || record.ws.readyState !== WebSocket.OPEN) {
-      if (Date.now() - pending.enqueuedAt < 8000) {
-        reschedule(60);
-      } else {
-        pendingCommandsRef.current.delete(tabId);
-      }
-      return;
-    }
-
-    const now = Date.now();
-    if ((record.replayingCount || 0) > 0) {
-      if (now - pending.enqueuedAt < 4000) {
-        reschedule(40);
-        return;
-      }
-    }
-
-    const settledUntil = Math.max(record.resizeSettledAt || 0, record.dsrSettledAt || 0);
-    if (now < settledUntil) {
-      reschedule(settledUntil - now + 10);
-      return;
-    }
-
-    if (record.liveDsrPendingUntil && now < record.liveDsrPendingUntil && now - pending.enqueuedAt < 600) {
-      reschedule(45);
-      return;
-    }
-
-    const openedAt = record.wsOpenedAt || pending.enqueuedAt;
-    const elapsedSinceOpen = now - openedAt;
-    const quietMs = now - (record.lastOutputAt || openedAt);
-    const readyByPrompt = Boolean(record.promptReady) && quietMs >= 120;
-    const readyByFallback = (elapsedSinceOpen >= 2400 && quietMs >= 150) || elapsedSinceOpen >= 3500;
-    if (!readyByPrompt && !readyByFallback) {
-      reschedule(80);
-      return;
-    }
-
-    pendingCommandsRef.current.delete(tabId);
-    const trimmed = pending.command.trimEnd();
-    const normalized = trimmed.replace(/\r?\n/g, '\r') + '\r';
-    record.ws.send(normalized);
-    setTimeout(() => {
-      try {
-        record.term?.focus();
-      } catch {}
-    }, 50);
-  }, []);
-
   const connectTabSocket = useCallback(
     (
       tab: TerminalTab,
-      record: TerminalRecord,
+      record: {
+        term: Terminal;
+        fitAddon: FitAddon;
+        ws: WebSocket | null;
+        layoutSync?: (immediate: boolean, force?: boolean) => void;
+        lastSentCols?: number;
+        lastSentRows?: number;
+      },
       isInitial = false
     ) => {
       if (
@@ -614,21 +460,19 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
       }
       try {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const tabShell = inferShellFromTab(tab);
+        const tabShell = inferShellFromTab(tab, hostPlatform);
         const cols = Math.min(500, Math.max(2, record.term.cols || 80));
         const rows = Math.min(200, Math.max(1, record.term.rows || 24));
         let token = '';
         try {
           token =
-            sessionStorage.getItem('zap_webui_token') ||
             sessionStorage.getItem('jeikcode_webui_token') ||
-            localStorage.getItem('zap_webui_token') ||
             localStorage.getItem('jeikcode_webui_token') ||
             '';
         } catch {}
         if (!token) {
           try {
-            const m = document.cookie.match(/(?:zap_webui|jeikcode_webui)(?:_\d+)?=([^;]+)/);
+            const m = document.cookie.match(/jeikcode_webui(?:_\d+)?=([^;]+)/);
             if (m && m[1]) token = m[1].trim();
           } catch {}
         }
@@ -640,85 +484,44 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
         }
         const wsUrl = `${protocol}//${window.location.host}/terminal/ws?id=${encodeURIComponent(tab.id)}&cwd=${encodeURIComponent(cwd || '')}&shell=${encodeURIComponent(tabShell)}&cols=${cols}&rows=${rows}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
         const ws = new WebSocket(wsUrl);
+        record.lastSentCols = 0;
+        record.lastSentRows = 0;
         record.ws = ws;
-        record.hasConnectedOnce = true;
-        record.firstFrameSeen = false;
-        record.promptReady = false;
-        record.replayingCount = 0;
-        record.lastPtyCols = cols;
-        record.lastPtyRows = rows;
 
         let receivedAnyData = false;
 
         ws.onopen = () => {
-          record.wsOpenedAt = Date.now();
-          record.lastOutputAt = Date.now();
-          record.layoutSync?.(true);
-          if (pendingCommandsRef.current.has(tab.id)) {
-            tryFlushPendingCommand(tab.id);
+          record.layoutSync?.(true, true);
+          if (isInitial) {
+            const initialCmd = pendingCommandsRef.current.get(tab.id);
+            if (initialCmd) {
+              pendingCommandsRef.current.delete(tab.id);
+              setTimeout(() => {
+                if (record.ws && record.ws.readyState === WebSocket.OPEN) {
+                  const trimmed = initialCmd.trimEnd();
+                  const normalized = trimmed.replace(/\r?\n/g, '\r') + '\r';
+                  record.ws.send(normalized);
+                  setTimeout(() => {
+                    try {
+                      record.term.focus();
+                    } catch {}
+                  }, 50);
+                }
+              }, 400);
+            }
           }
         };
 
         ws.onmessage = (event) => {
           receivedAnyData = true;
-          record.lastOutputAt = Date.now();
-          const raw = typeof event.data === 'string' ? event.data : String(event.data || '');
-          if (raw.startsWith('{')) {
-            try {
-              const msg = JSON.parse(raw);
-              if (msg?.type === 'history' && typeof msg.data === 'string') {
-                const cleaned = stripTerminalQueries(msg.data);
-                if (hasShellPromptOutput(cleaned)) {
-                  record.promptReady = true;
-                }
-                if (cleaned.length > 0) {
-                  record.replayingCount = (record.replayingCount || 0) + 1;
-                  record.term.write(cleaned, () => {
-                    record.replayingCount = Math.max(0, (record.replayingCount || 1) - 1);
-                    if (pendingCommandsRef.current.has(tab.id)) {
-                      tryFlushPendingCommand(tab.id);
-                    }
-                  });
-                }
-                return;
-              }
-            } catch {}
-          }
-          if (!record.firstFrameSeen) {
-            record.firstFrameSeen = true;
-            const init = sanitizeInitialFrame(raw, Boolean(record.startupProbeAnswered));
-            if (init.hasLiveDsr) {
-              record.startupProbeAnswered = true;
-              record.liveDsrPendingUntil = Date.now() + 1500;
-            }
-            if (hasShellPromptOutput(init.text)) {
-              record.promptReady = true;
-            }
-            if (init.isReplay) {
-              record.replayingCount = (record.replayingCount || 0) + 1;
-              record.term.write(init.text, () => {
-                record.replayingCount = Math.max(0, (record.replayingCount || 1) - 1);
-                if (pendingCommandsRef.current.has(tab.id)) {
-                  tryFlushPendingCommand(tab.id);
-                }
-              });
-            } else {
-              record.term.write(init.text);
-              if (pendingCommandsRef.current.has(tab.id)) {
-                tryFlushPendingCommand(tab.id);
-              }
-            }
-            return;
-          }
-          if (hasLiveDsrQuery(raw)) {
-            record.liveDsrPendingUntil = Date.now() + 1500;
-          }
-          if (hasShellPromptOutput(raw)) {
-            record.promptReady = true;
-          }
-          record.term.write(raw);
-          if (pendingCommandsRef.current.has(tab.id)) {
-            tryFlushPendingCommand(tab.id);
+          // 防御性剔除 Windows ConPTY 残留的光标查询序列 (\x1b[6n / \x1b[?6n)，
+          // 彻底阻断 xterm.js 自动生成 CPR 响应（\x1b[1;1R）导致向终端敲入 1R1R。
+          const raw = event.data;
+          const clean = typeof raw === 'string' && raw.includes('\x1b[')
+            ? raw.replace(/\x1b\[\??6n/g, '')
+            : raw;
+          if (clean) {
+            record.term.write(clean);
           }
         };
 
@@ -732,7 +535,7 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
             if (!receivedAnyData && (!record.ws || record.ws.readyState !== WebSocket.OPEN)) {
               const promptChar = tabShell.includes('powershell') ? 'PS ' : tabShell.includes('cmd') ? '' : '$ ';
               const cwdDisplay = (cwd || '.').replace(/\\/g, '/');
-              record.term.write(`\r\n\x1b[32m[Zap Terminal - ${tabShell}]\x1b[0m\r\n${promptChar}${cwdDisplay}> `);
+              record.term.write(`\r\n\x1b[32m[JeikCode Terminal - ${tabShell}]\x1b[0m\r\n${promptChar}${cwdDisplay}> `);
             }
           }, 800);
         };
@@ -755,7 +558,7 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
           fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
           lineHeight: 1,
           letterSpacing: 0,
-          theme: DARK_TERMINAL_THEME,
+          theme: isDark ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME,
           allowProposedApi: true,
           scrollback: 10000,
           windowsPty: isHostWin ? { backend: 'conpty' } : undefined,
@@ -782,14 +585,13 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
 
         term.open(el);
 
-        let lastSentCols = 0;
-        let lastSentRows = 0;
         let resizeTimer: ReturnType<typeof setTimeout> | null = null;
         let fitting = false;
 
         const measureAndFit = () => {
-          if (!el || el.clientWidth < 40 || el.clientHeight < 24) return;
-          const grid = measureTerminalGrid(term, el);
+          const targetEl = termMap.current.get(tabId)?.container || el;
+          if (!targetEl || targetEl.clientWidth < 40 || targetEl.clientHeight < 24) return;
+          const grid = measureTerminalGrid(term, targetEl);
           if (!grid) {
             try {
               fitAddon.fit();
@@ -806,35 +608,39 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
           }
         };
 
-        const sendPtySize = () => {
+        const sendPtySize = (force = false) => {
           const cur = termMap.current.get(tabId);
           if (!cur?.ws || cur.ws.readyState !== WebSocket.OPEN) return;
           const cols = term.cols;
           const rows = term.rows;
           if (cols < 2 || rows < 1) return;
-          if (cols === cur.lastPtyCols && rows === cur.lastPtyRows) return;
-          lastSentCols = cols;
-          lastSentRows = rows;
-          cur.lastPtyCols = cols;
-          cur.lastPtyRows = rows;
-          cur.resizeSettledAt = Date.now() + 240;
+          if (!force && cols === cur.lastSentCols && rows === cur.lastSentRows) return;
+          cur.lastSentCols = cols;
+          cur.lastSentRows = rows;
           cur.ws.send(JSON.stringify({ resize: { cols, rows } }));
         };
 
         // immediate：立刻把格子同步给 PTY（打开、切标签）。
         // 否则防抖，避免字号滚轮每一步都让 ConPTY 重绘并打乱命令对齐。
-        const layoutSync = (immediate: boolean) => {
+        const layoutSync = (immediate: boolean, force = false) => {
           measureAndFit();
+          // xterm v6 内部用 IntersectionObserver 在容器不可见时暂停渲染（display:none 会命中），
+          // 恢复可见时只有“隐藏期间发生过写入/尺寸变化”才会自愈重绘，否则视口会一直停在空白（黑屏）。
+          // 这里无条件整屏重绘一次：可见时立刻出画；仍处于暂停态时 xterm 只记录待刷新标记，
+          // 等真正恢复可见时由它自身补画，两条路径都能保证画面回来。
+          try {
+            term.refresh(0, Math.max(0, term.rows - 1));
+          } catch {}
           if (immediate) {
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = null;
-            sendPtySize();
+            sendPtySize(force);
             return;
           }
           if (resizeTimer) clearTimeout(resizeTimer);
           resizeTimer = setTimeout(() => {
             resizeTimer = null;
-            sendPtySize();
+            sendPtySize(force);
           }, 160);
         };
 
@@ -843,28 +649,14 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
         });
         ro.observe(el);
 
-        record = { term, fitAddon, container: el, ws: null, ro, layoutSync };
+        record = { term, fitAddon, container: el, ws: null, ro, layoutSync, lastSentCols: 0, lastSentRows: 0 };
         termMap.current.set(tabId, record);
 
-        if (activeRef.current && el.clientWidth >= 40 && el.clientHeight >= 24) {
-          measureAndFit();
-          connectTabSocket(tab, record, true);
-        }
+        measureAndFit();
+        connectTabSocket(tab, record, true);
         term.onData((data) => {
           const cur = termMap.current.get(tabId);
-          if (!cur) return;
-          if ((cur.replayingCount || 0) > 0 && isTerminalProtocolReply(data)) {
-            return;
-          }
-          if (isColumnOneCursorReport(data)) {
-            const now = Date.now();
-            if (!cur.liveDsrPendingUntil || now > cur.liveDsrPendingUntil) {
-              return;
-            }
-            cur.liveDsrPendingUntil = 0;
-            cur.dsrSettledAt = now + 80;
-          }
-          if (cur.ws && cur.ws.readyState === WebSocket.OPEN) {
+          if (cur?.ws && cur.ws.readyState === WebSocket.OPEN) {
             cur.ws.send(data);
           }
         });
@@ -888,79 +680,106 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
           return true;
         });
 
-        term.focus();
+        // 不在挂载阶段 focus：刷新时终端会被重建，focus 会把键盘从对话输入框抢走。
+        // 用户点击终端视口时 xterm 自己会获取焦点；主动打开终端面板由下方 effect 处理。
       } else if (record.container !== el) {
+        // 容器 DOM 节点发生变更（如切换 session 重新挂载、tabs 重排等）：
+        // 1. 断开旧容器的 ResizeObserver 监听，并在新容器上重新建立监听
+        try {
+          record.ro?.disconnect();
+        } catch {}
         record.container = el;
-        record.term.open(el);
-        record.layoutSync?.(true);
-        record.term.focus();
+
+        // 2. 将终端 DOM 挂载到新容器
+        if (record.term.element && record.term.element.parentElement !== el) {
+          el.appendChild(record.term.element);
+        } else if (!record.term.element) {
+          record.term.open(el);
+        }
+
+        // 3. 重新建立 ResizeObserver 监听新的容器 el
+        const ro = new ResizeObserver(() => {
+          record?.layoutSync?.(false);
+        });
+        ro.observe(el);
+        record.ro = ro;
+
+        // 4. 强制执行自适应排版和刷新；焦点留待用户真正切到终端页签时再给。
+        record.layoutSync?.(true, true);
       }
     },
     [isDark, t, cwd, preferredShell, connectTabSocket]
   );
 
-  // 激活 Tab 切换时：检查连接自愈，平滑重测并立刻聚焦
+  // 激活 Tab 切换 / 终端面板重新可见时：检查连接自愈、平滑重测；
+  // 只有用户主动打开终端（或点击终端页签）才把焦点交给 xterm。
   useEffect(() => {
-    if (active === false) return;
+    const activeNow = active !== false;
+    const becameActive = activeNow && !panelActiveRef.current;
+    panelActiveRef.current = activeNow;
     const record = termMap.current.get(activeTabId);
     const activeTab = tabs.find((t) => t.id === activeTabId);
     if (record && activeTab) {
+      const broken =
+        !record.ws ||
+        record.ws.readyState === WebSocket.CLOSED ||
+        record.ws.readyState === WebSocket.CLOSING;
+      if (broken) {
+        // 面板从隐藏恢复时 active 会翻转，此处必须重做一次断线检查：
+        // 切换右侧面板不会触发 visibilitychange / focus，若 WebSocket 已在隐藏期间断开，
+        // 漏掉这次重连，终端就会永远停在空视口（黑屏）且无法再接收输出。
+        connectTabSocket(activeTab, record, false);
+      }
+      if (!activeNow) return;
+      const shouldFocus = becameActive || focusOnNextLayoutRef.current;
+      focusOnNextLayoutRef.current = false;
       requestAnimationFrame(() => {
         try {
           record.layoutSync?.(true);
-          if (!record.ws || record.ws.readyState === WebSocket.CLOSED || record.ws.readyState === WebSocket.CLOSING) {
-            connectTabSocket(activeTab, record, !record.hasConnectedOnce);
-          }
-          if (pendingCommandsRef.current.has(activeTab.id)) {
-            tryFlushPendingCommand(activeTab.id);
-          }
-          record.term.focus();
+          record.term.refresh(0, Math.max(0, record.term.rows - 1));
+          if (shouldFocus) record.term.focus();
         } catch {}
       });
     }
-  }, [activeTabId, tabs, connectTabSocket, active, tryFlushPendingCommand]);
+  }, [activeTabId, tabs, connectTabSocket, active]);
 
-  // 当面板从折叠变为展开时，利用两级延迟让 DOM 动画/Flex 布局彻底稳定后二次 fit 并下发尺寸
+  // 当终端切回前台可见状态时 (active 变化或从隐藏恢复)，执行多阶段自愈重绘拟合，杜绝切后台尺寸坍缩与停在黑屏
   useEffect(() => {
-    if (active === false) return;
-    const rAfId = requestAnimationFrame(() => {
-      const tab = tabsRef.current.find((t) => t.id === activeTabId) || tabsRef.current[0];
-      const record = tab ? termMap.current.get(tab.id) : undefined;
-      if (tab && record) {
-        record.layoutSync?.(true);
-        if (!record.ws || record.ws.readyState === WebSocket.CLOSED || record.ws.readyState === WebSocket.CLOSING) {
-          connectTabSocket(tab, record, !record.hasConnectedOnce);
-        }
-        if (pendingCommandsRef.current.has(tab.id)) {
-          tryFlushPendingCommand(tab.id);
-        }
-      }
-    });
+    if (active === false) {
+      // 面板进入隐藏：xterm 渲染被暂停，回来时必须整体重绘一次
+      stalePaintRef.current = true;
+      return;
+    }
+    // 先把全部终端（含挂机后台标签）强制重绘出来，再做当前可见终端的尺寸自愈。
+    repaintAllTerminals(true);
+    const activeRec = termMap.current.get(activeTabId);
+    activeRec?.layoutSync?.(true);
+    try {
+      activeRec?.term.refresh(0, Math.max(0, (activeRec.term.rows || 1) - 1));
+    } catch {}
+
     const timer1 = setTimeout(() => {
-      const record = termMap.current.get(activeTabId);
-      record?.layoutSync?.(false);
-      if (pendingCommandsRef.current.has(activeTabId)) {
-        tryFlushPendingCommand(activeTabId);
-      }
+      termMap.current.get(activeTabId)?.layoutSync?.(false);
+      repaintAllTerminals(true);
     }, 80);
     const timer2 = setTimeout(() => {
-      const record = termMap.current.get(activeTabId);
-      record?.layoutSync?.(true);
-      if (pendingCommandsRef.current.has(activeTabId)) {
-        tryFlushPendingCommand(activeTabId);
-      }
+      termMap.current.get(activeTabId)?.layoutSync?.(true);
+      repaintAllTerminals(true);
     }, 250);
     return () => {
-      cancelAnimationFrame(rAfId);
       clearTimeout(timer1);
       clearTimeout(timer2);
     };
-  }, [active, activeTabId, connectTabSocket, tryFlushPendingCommand]);
+  }, [active, activeTabId, repaintAllTerminals]);
 
   // 页面离开切回（visibilitychange）、窗口恢复焦点（focus）时，自动健康检查并对断开的终端自愈重连
   useEffect(() => {
     const handleWakeup = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        // 页面挂起：浏览器会冻结渲染，回来时画面可能已失效
+        stalePaintRef.current = true;
+        return;
+      }
       for (const tab of tabs) {
         const record = termMap.current.get(tab.id);
         if (record) {
@@ -972,7 +791,11 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
       if (active !== false) {
         setTimeout(() => {
           termMap.current.get(activeTabId)?.layoutSync?.(true);
+          repaintAllTerminals();
         }, 120);
+      } else {
+        // 页面从后台恢复时同样要重绘全部终端，避免挂机标签停在空白黑屏
+        repaintAllTerminals();
       }
     };
     document.addEventListener('visibilitychange', handleWakeup);
@@ -981,7 +804,7 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
       document.removeEventListener('visibilitychange', handleWakeup);
       window.removeEventListener('focus', handleWakeup);
     };
-  }, [tabs, active, activeTabId, connectTabSocket]);
+  }, [tabs, active, activeTabId, connectTabSocket, repaintAllTerminals]);
 
   // 同步并拉取后端项目常驻终端会话（跨页面刷新、多标签、异地访问保持强一致广播同步，彻底消除死尸缓存污染）
   const syncWithBackend = useCallback(async () => {
@@ -995,48 +818,56 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
           } catch {}
         }
         const activePlat = res.platform || hostPlatform;
-        const enriched = (res.terminals || []).map((t: TerminalTab) => ({
-          ...t,
-          shell: inferShellFromTab(t, activePlat),
-        }));
+        const enriched = (res.terminals || []).map((t: TerminalTab) => {
+          const inferred = inferShellFromTab(t, activePlat);
+          let name = t.name;
+          // 关键修复：如果宿主机是 Linux/macOS，但之前标签名被错误赋为 powershell 1 等，自动更正标签名称
+          if (activePlat !== 'windows' && name && name.toLowerCase().includes('powershell')) {
+            name = name.replace(/powershell/gi, inferred);
+          } else if (activePlat === 'windows' && name && name.toLowerCase().startsWith('bash') && !name.toLowerCase().includes('git')) {
+            name = name.replace(/^bash/gi, 'gitbash');
+          }
+          return {
+            ...t,
+            name,
+            shell: inferred,
+          };
+        });
 
         if (enriched.length > 0) {
+          markAllTerminalsClosed(cwd, false);
+          // 清理本地已经不在后端运行的无效记录
+          const validIds = new Set(enriched.map((t: TerminalTab) => t.id));
+          for (const [id, rec] of termMap.current.entries()) {
+            if (!validIds.has(id)) {
+              try { rec.ro?.disconnect(); } catch {}
+              try { rec.ws?.close(); } catch {}
+              try { rec.term.dispose(); } catch {}
+              termMap.current.delete(id);
+            }
+          }
+
           // 以后端真实运行的列表为唯一真值，绝不将本地残留的死尸 merge 回去！
           setTabs(enriched);
           saveSessions(enriched, cwd);
           setActiveTabId((cur) => {
+            const saved = getSavedActiveTab(cwd);
+            if (saved && enriched.some((t: any) => t.id === saved)) return saved;
             const has = enriched.some((t: any) => t.id === cur);
             return has ? cur : enriched[0]!.id;
           });
         } else {
-          // 若当前仅有一个正在建连或有待执行命令的会话，避免初始化竞赛误清空本地实例
-          const singleEntry = termMap.current.size === 1 ? Array.from(termMap.current.entries())[0] : null;
-          if (
-            singleEntry &&
-            (pendingCommandsRef.current.has(singleEntry[0]) ||
-              !singleEntry[1].hasConnectedOnce ||
-              singleEntry[1].ws?.readyState === WebSocket.CONNECTING)
-          ) {
-            return;
-          }
-          // 如果后端已被清空（如在其他浏览器删除了所有终端），本地清理并仅保留一个新创建的干净初始会话！
+          // 后端当前没有终端时保持空列表，不再自动新建并触发 30 条 PTY 复活
           for (const [id, record] of termMap.current.entries()) {
             try { record.ro?.disconnect(); } catch {}
             try { record.ws?.close(); } catch {}
             try { record.term.dispose(); } catch {}
           }
           termMap.current.clear();
-          const newId = stableDefaultId;
-          const newTab: TerminalTab = {
-            id: newId,
-            name: `${preferredShell} 1`,
-            cwd: cwd || '.',
-            shell: preferredShell,
-            timestamp: Date.now(),
-          };
-          setTabs([newTab]);
-          saveSessions([newTab], cwd);
-          setActiveTabId(newId);
+          setTabs([]);
+          saveSessions([], cwd);
+          setActiveTabIdState('');
+          saveActiveTab('', cwd);
         }
       }
     } catch {}
@@ -1095,6 +926,9 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
   // 创建新终端标签
   const createNewTab = useCallback(
     async (shellName = preferredShell, initialCommand?: string) => {
+      markAllTerminalsClosed(cwd, false);
+      // 用户主动新建终端：允许下一次布局把焦点交给新终端。
+      focusOnNextLayoutRef.current = true;
       try {
         const res = await createTerminalSession({ shell: shellName, cwd });
         const newTab: TerminalTab = {
@@ -1105,10 +939,7 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
           timestamp: Date.now(),
         };
         if (initialCommand) {
-          pendingCommandsRef.current.set(newTab.id, {
-            command: initialCommand,
-            enqueuedAt: Date.now(),
-          });
+          pendingCommandsRef.current.set(newTab.id, initialCommand);
         }
         setTabs((prev) => [...prev, newTab]);
         setActiveTabId(newTab.id);
@@ -1122,10 +953,7 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
           timestamp: Date.now(),
         };
         if (initialCommand) {
-          pendingCommandsRef.current.set(fallbackTab.id, {
-            command: initialCommand,
-            enqueuedAt: Date.now(),
-          });
+          pendingCommandsRef.current.set(fallbackTab.id, initialCommand);
         }
         setTabs((prev) => [...prev, fallbackTab]);
         setActiveTabId(mockId);
@@ -1134,45 +962,25 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
     [cwd, tabs.length, preferredShell]
   );
 
-  // 监听全局终端执行命令事件（如 /init 构建代码图谱自动拉起主流终端并执行）
+  // 监听全局终端执行命令事件（含懒挂载前暂存队列消费，如 /init 自动拉起并执行）
   useEffect(() => {
+    const unregisterHandler = registerTerminalRunHandler((command, shell) => {
+      const targetShell = shell || getMainstreamShell(hostPlatform);
+      void createNewTab(targetShell, command);
+    });
     const handleRunCommand = (e: Event) => {
       const customEvent = e as CustomEvent<{ command: string; shell?: string }>;
       const { command, shell } = customEvent.detail || {};
       if (!command) return;
-
-      const curTabs = tabsRef.current;
-      const curTab = curTabs.find((t) => t.id === activeTabIdRef.current) || curTabs[0];
-      const curRecord = curTab ? termMap.current.get(curTab.id) : undefined;
-      if (curTab && curRecord) {
-        pendingCommandsRef.current.set(curTab.id, {
-          command,
-          enqueuedAt: Date.now(),
-        });
-        requestAnimationFrame(() => {
-          const liveRecord = termMap.current.get(curTab.id);
-          if (!liveRecord) return;
-          liveRecord.layoutSync?.(true);
-          if (
-            !liveRecord.ws ||
-            liveRecord.ws.readyState === WebSocket.CLOSED ||
-            liveRecord.ws.readyState === WebSocket.CLOSING
-          ) {
-            connectTabSocket(curTab, liveRecord, !liveRecord.hasConnectedOnce);
-          }
-          tryFlushPendingCommand(curTab.id);
-        });
-        return;
-      }
-      const targetShell = shell || getMainstreamShell();
+      const targetShell = shell || getMainstreamShell(hostPlatform);
       void createNewTab(targetShell, command);
     };
-
     window.addEventListener('jeikcode:terminal:run_command', handleRunCommand);
     return () => {
+      unregisterHandler();
       window.removeEventListener('jeikcode:terminal:run_command', handleRunCommand);
     };
-  }, [createNewTab, connectTabSocket, tryFlushPendingCommand]);
+  }, [createNewTab, hostPlatform]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
@@ -1212,13 +1020,9 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
     void createNewTab(shellId);
   };
 
-  // 关闭单个终端 Tab
+  // 关闭单个终端 Tab（允许全部关闭至 0 个，不再强制保留）
   const closeTab = (tabId: string, e: MouseEvent) => {
     e.stopPropagation();
-    if (tabs.length <= 1) {
-      showToast(t('terminal.minOneSession'), 'info');
-      return;
-    }
     const record = termMap.current.get(tabId);
     if (record) {
       try {
@@ -1234,6 +1038,15 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
     }
     const remaining = tabs.filter((t) => t.id !== tabId);
     setTabs(remaining);
+    saveSessions(remaining, cwd);
+    if (remaining.length === 0) {
+      markAllTerminalsClosed(cwd, true);
+      setActiveTabIdState('');
+      saveActiveTab('', cwd);
+    } else if (activeTabId === tabId) {
+      focusOnNextLayoutRef.current = true;
+      setActiveTabId(remaining[remaining.length - 1]!.id);
+    }
     void closeTerminalSession(tabId);
     try {
       if (typeof BroadcastChannel !== 'undefined') {
@@ -1242,12 +1055,9 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
         bc.close();
       }
     } catch {}
-    if (activeTabId === tabId) {
-      setActiveTabId(remaining[remaining.length - 1]!.id);
-    }
   };
 
-  // 关闭所有终端标签（终止所有任务，恢复纯净初始终端）
+  // 关闭所有终端标签（真正清理并保持空列表，绝不复活幽灵终端）
   const closeAllTabs = () => {
     tabs.forEach((tab) => {
       const record = termMap.current.get(tab.id);
@@ -1259,17 +1069,19 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
       }
       void closeTerminalSession(tab.id);
     });
-    const newId = stableDefaultId;
-    const newTab: TerminalTab = {
-      id: newId,
-      name: `${preferredShell} 1`,
-      cwd: cwd || '.',
-      shell: preferredShell,
-      timestamp: Date.now(),
-    };
-    setTabs([newTab]);
-    setActiveTabId(newId);
-    saveSessions([newTab], cwd);
+    markAllTerminalsClosed(cwd, true);
+    setTabs([]);
+    setActivatedTabIds({});
+    setActiveTabIdState('');
+    saveActiveTab('', cwd);
+    saveSessions([], cwd);
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('jeikcode:terminal:sync');
+        bc.postMessage({ type: 'sync', cwd });
+        bc.close();
+      }
+    } catch {}
     showToast(t('terminal.allClosed') || '已关闭所有终端标签并终止任务', 'info');
   };
 
@@ -1317,25 +1129,26 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
               <div
                 key={tab.id}
                 class={'terminal-tab-item' + (isActive ? ' active' : '')}
-                onClick={() => setActiveTabId(tab.id)}
+                onClick={() => {
+                  focusOnNextLayoutRef.current = true;
+                  setActiveTabId(tab.id);
+                }}
                 onDblClick={(e) => {
                   e.stopPropagation();
                   closeTab(tab.id, e as unknown as MouseEvent);
                 }}
                 title={tab.name + ' (双击关闭标签)'}
               >
-                <span class="terminal-tab-icon">💻</span>
+                <span class="terminal-tab-icon" aria-hidden="true">›</span>
                 <span class="terminal-tab-name">{tab.name}</span>
-                {tabs.length > 1 && (
-                  <button
-                    type="button"
-                    class="terminal-tab-close"
-                    onClick={(e) => closeTab(tab.id, e as unknown as MouseEvent)}
-                    title="Close terminal"
-                  >
-                    ×
-                  </button>
-                )}
+                <button
+                  type="button"
+                  class="terminal-tab-close"
+                  onClick={(e) => closeTab(tab.id, e as unknown as MouseEvent)}
+                  title="Close terminal"
+                >
+                  ×
+                </button>
               </div>
             );
           })}
@@ -1402,7 +1215,7 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
             onClick={toggleScratchpad}
             title={t('terminal.scratchpad')}
           >
-            📝
+            ✎
           </button>
         </div>
       </div>
@@ -1420,7 +1233,7 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
                 setScratchpadText('');
               }}
             >
-              {`🚀 ${t('terminal.send')}`}
+              {t('terminal.send')}
             </button>
           </div>
           <textarea
@@ -1440,15 +1253,31 @@ export function TerminalPanel({ cwd, active }: TerminalPanelProps) {
         </div>
       )}
 
-      {/* 现代 xterm 真实终端视口区：绝对定位重叠，visibility 切换，保留完整物理宽高 */}
+      {/* 现代 xterm 真实终端视口区：仅激活过的标签页实例化 xterm 与建立 WebSocket */}
       <div class="terminal-xterm-stage">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            ref={(el) => bindTerminalContainer(tab, el)}
-            class={'terminal-xterm-viewport' + (tab.id === activeTabId ? ' active' : '')}
-          />
-        ))}
+        {tabs.length === 0 ? (
+          <div class="git-empty-state" style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+            <button
+              type="button"
+              class="btn btn-primary"
+              onClick={() => void createNewTab(preferredShell)}
+            >
+              + {t('terminal.newPowerShell')}
+            </button>
+          </div>
+        ) : (
+          tabs.map((tab) => {
+            const isMounted = tab.id === activeTabId || Boolean(activatedTabIds[tab.id]);
+            if (!isMounted) return null;
+            return (
+              <div
+                key={tab.id}
+                ref={(el) => bindTerminalContainer(tab, el)}
+                class={'terminal-xterm-viewport' + (tab.id === activeTabId ? ' active' : '')}
+              />
+            );
+          })
+        )}
       </div>
     </div>
   );

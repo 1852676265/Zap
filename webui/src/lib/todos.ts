@@ -1,16 +1,20 @@
 /**
  * Session todo list — TUI `active_todos` panel parity for WebUI.
  *
- * The `todowrite` / `todo` tools are stateless: the model either sends a full
- * plan (`{"todos":[…]}`), an incremental batch (`{"actions":[…]}`), or a single
- * incremental action (`{"action":"add|update|...",…}`).
+ * The `todowrite` / `todo` tools are stateless: the model sends a full plan
+ * (`{"plan":[…]}`), an incremental patch (`{"update":[…]}`), an incremental
+ * batch (`{"actions":[…]}`), or a single incremental action. A call may carry
+ * both `plan` and `update`: the plan establishes the baseline first, then the
+ * update patches the rebuilt list.
  * Current list is folded over the transcript the same way as
- * `zap_capabilities::tools::todo::reduce_todos`.
+ * `jeikcode_capabilities::tools::todo::reduce_todos`.
  */
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';
 
 export interface TodoItem {
+  /** Stable server identity; legacy transcript-derived rows may omit it. */
+  id?: string;
   content: string;
   status: TodoStatus;
 }
@@ -82,6 +86,9 @@ function validateActionsMix(actions: Record<string, unknown>[]): boolean {
   for (const item of actions) {
     const kind = actionKind(item);
     if (!kind) return false;
+    if (kind === 'clear' && typeof item.content === 'string' && item.content.trim() !== '') {
+      return false;
+    }
     kinds.add(kind);
   }
   if (kinds.has('delete') && [...kinds].some((kind) => kind !== 'delete')) return false;
@@ -187,10 +194,15 @@ export function parseTodosFromOutput(output?: string | null): TodoItem[] | null 
       items.push({ content, status });
     }
   }
-  return items.length > 0 ? items : null;
+  if (items.length > 0) return items;
+  // Canonical empty-list rendering: an explicit authoritative empty snapshot.
+  // `null` means "could not parse"; `[]` means "the backend says the list is empty".
+  return lines.some((line) => line.trim() === '(no tasks)') ? [] : null;
 }
 
-/** Full-list plan shape. Returns null when args are not a valid plan. */
+/** Full-list plan shape. When `update` is present, it is applied after the
+ * plan rebuild (ids/titles refer to the rebuilt list). Returns null when args
+ * are not a valid plan. */
 export function parseTodoPlan(args: string): TodoItem[] | null {
   let value: unknown;
   try {
@@ -203,7 +215,8 @@ export function parseTodoPlan(args: string): TodoItem[] | null {
   // `actions` takes precedence over leftover `todos` field (same as Rust backend).
   if (Array.isArray(value.actions)) return null;
 
-  let todos = value.todos;
+  const hasPlanField = value.plan !== undefined;
+  let todos = hasPlanField ? value.plan : value.todos;
   // Tolerate a single-layer stringified array (same as Rust parse_todos).
   if (typeof todos === 'string') {
     try {
@@ -216,15 +229,24 @@ export function parseTodoPlan(args: string): TodoItem[] | null {
   if (!Array.isArray(todos)) return null;
   const out: TodoItem[] = [];
   for (const raw of todos) {
+    if (typeof raw === 'string') {
+      const content = normalizeTodoContent(raw);
+      if (content) {
+        out.push({ content, status: 'pending' });
+      }
+      continue;
+    }
     if (!isRecord(raw)) return null;
     const content = typeof raw.content === 'string' ? normalizeTodoContent(raw.content) : '';
     const status = typeof raw.status === 'string' ? parseStatus(raw.status) : null;
-    if (!content || !status) return null;
-    const next = upsertTodo(out, content, status, null);
-    out.length = 0;
-    out.push(...next.list);
+    if (!content) continue;
+    out.push({ content, status: status ?? 'pending' });
   }
-  return out;
+  const withUpdate =
+    hasPlanField && (value.update !== undefined || value.updates !== undefined)
+      ? applyUpdateItems(out, value.update ?? value.updates)
+      : out;
+  return withUpdate.length > 0 ? withUpdate : null;
 }
 
 function applyOne(list: TodoItem[], v: Record<string, unknown>): TodoItem[] {
@@ -282,6 +304,121 @@ function applyUpdateAt(
     if (status === 'in_progress') next = ensureSingleInProgress(next, idx);
   }
   return next;
+}
+
+/** `update` entries accept content/title/task as the match key (Rust parity). */
+function updateContent(value: Record<string, unknown>): string {
+  const raw = value.content ?? value.task ?? value.title;
+  return typeof raw === 'string' ? normalizeTodoContent(raw) : '';
+}
+
+function positiveIntField(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 1) return raw;
+  if (typeof raw === 'string') {
+    const parsed = Number.parseInt(raw.trim(), 10);
+    return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : null;
+  }
+  return null;
+}
+
+function isDeleteUpdate(value: Record<string, unknown>): boolean {
+  if (value.delete === true) return true;
+  const raw = typeof value.status === 'string'
+    ? value.status.trim().toLowerCase().replace(/[-_\s]/g, '')
+    : '';
+  return raw === 'delete' || raw === 'remove' || raw === 'deleted' || raw === 'removed';
+}
+
+/** `after`/`after_id` (and legacy `before*`) name the task immediately before the new one. */
+function updateAnchorIndex(list: TodoItem[], value: Record<string, unknown>): number | null {
+  const id = positiveIntField(value.after_id)
+    ?? positiveIntField(value.before_id)
+    ?? positiveIntField(value.after)
+    ?? positiveIntField(value.before);
+  if (id !== null) return id <= list.length ? id - 1 : null;
+  const anchor = value.after ?? value.before ?? value.before_content;
+  if (typeof anchor !== 'string') return null;
+  const key = normalizeTodoContent(anchor);
+  const idx = list.findIndex((item) => normalizeTodoContent(item.content) === key);
+  return idx >= 0 ? idx : null;
+}
+
+function applyUpdateEntry(
+  list: TodoItem[],
+  entry: Record<string, unknown>,
+): { list: TodoItem[]; inProgressIdx: number | null } {
+  const content = updateContent(entry);
+  const contentKey = content ? normalizeTodoContent(content) : '';
+  const id = jsonId(entry);
+  let idx = contentKey
+    ? list.findIndex((item) => normalizeTodoContent(item.content) === contentKey)
+    : -1;
+  if (idx < 0 && id !== null && id <= list.length) idx = id - 1;
+
+  if (isDeleteUpdate(entry)) {
+    if (idx < 0) return { list, inProgressIdx: null };
+    const next = list.slice();
+    next.splice(idx, 1);
+    return { list: next, inProgressIdx: null };
+  }
+
+  const status = typeof entry.status === 'string' ? parseStatus(entry.status) : null;
+  const renamed = entry.new_content ?? entry.new_title;
+  const newContent = typeof renamed === 'string' ? normalizeTodoContent(renamed) : '';
+
+  // Anchor path: insert or move the item right after the named preceding task.
+  const anchorIdx = updateAnchorIndex(list, entry);
+  if (anchorIdx !== null) {
+    if (!content) return { list, inProgressIdx: null };
+    const next = list.slice();
+    const existing = next.findIndex((item) => normalizeTodoContent(item.content) === contentKey);
+    const item = existing >= 0 ? next.splice(existing, 1)[0]! : undefined;
+    const insertAt = anchorIdx + 1;
+    const adjusted = item !== undefined && existing < insertAt ? insertAt - 1 : insertAt;
+    const landing = Math.min(adjusted, next.length);
+    const landingItem: TodoItem = item ? { ...item } : { content, status: 'pending' };
+    if (status) landingItem.status = status;
+    next.splice(landing, 0, landingItem);
+    return {
+      list: status === 'in_progress' ? ensureSingleInProgress(next, landing) : next,
+      inProgressIdx: status === 'in_progress' ? landing : null,
+    };
+  }
+
+  if (idx >= 0) {
+    const next = list.map((item) => ({ ...item }));
+    if (newContent) next[idx] = { ...next[idx]!, content: newContent };
+    if (status) next[idx] = { ...next[idx]!, status };
+    return {
+      list: status === 'in_progress' ? ensureSingleInProgress(next, idx) : next,
+      inProgressIdx: status === 'in_progress' ? idx : null,
+    };
+  }
+
+  // No match: a content-bearing update appends, matching the backend.
+  if (!content) return { list, inProgressIdx: null };
+  const next = list.concat([{ content, status: status ?? 'pending' }]);
+  const landing = next.length - 1;
+  return {
+    list: status === 'in_progress' ? ensureSingleInProgress(next, landing) : next,
+    inProgressIdx: status === 'in_progress' ? landing : null,
+  };
+}
+
+/** Apply a top-level `update`/`updates` patch (content-first, id fallback). */
+function applyUpdateItems(list: TodoItem[], raw: unknown): TodoItem[] {
+  const entries = raw === undefined || raw === null
+    ? []
+    : Array.isArray(raw) ? raw : [raw];
+  let next = list;
+  let lastInProgress: number | null = null;
+  for (const entry of entries) {
+    if (!isRecord(entry)) continue;
+    const applied = applyUpdateEntry(next, entry);
+    next = applied.list;
+    if (applied.inProgressIdx !== null) lastInProgress = applied.inProgressIdx;
+  }
+  return lastInProgress === null ? next : ensureSingleInProgress(next, lastInProgress);
 }
 
 function applyBatch(list: TodoItem[], actions: Record<string, unknown>[]): TodoItem[] {
@@ -351,12 +488,20 @@ export function applyTodoAction(list: TodoItem[], args: string): TodoItem[] {
     return list;
   }
 
+  // `update`/`updates` is the modern incremental patch shape. `plan` (handled by
+  // parseTodoPlan) establishes a baseline first; an update-only call patches the
+  // current list. `actions` loses to `update` when both are present, matching Rust.
+  if (v.update !== undefined || v.updates !== undefined) {
+    return applyUpdateItems(list, v.update ?? v.updates);
+  }
+
   if (Array.isArray(v.actions)) {
     const actions = v.actions.filter(isRecord);
     if (actions.length !== v.actions.length || actions.length === 0) return list;
     return applyBatch(list, actions);
   }
 
+  if (!validateActionsMix([v])) return list;
   return applyOne(list, v);
 }
 
@@ -529,38 +674,6 @@ export type LiveTodoEvent =
   | { type: 'hydrate'; items: TodoItem[] }
   | { type: 'clear' };
 
-export interface SessionTodoSlot {
-  sessionId: string | null;
-  items: TodoItem[] | null;
-}
-
-/**
- * 根据当前展示的会话 ID 解析应渲染的待办清单。
- * 当 sessionId 已切换但 useEffect 尚未刷新 React state 时，立即拒绝显示旧会话的待办，
- * 并在目标会话存在本地实时/缓存清单时直接切换过去，消除切会话残留一帧或漏切的问题。
- */
-export function resolveRenderedTodos(input: {
-  viewedSessionId: string | null;
-  slot: SessionTodoSlot;
-  liveDoc?: LiveTodoDocument | null;
-  cachedItems?: TodoItem[] | null;
-}): TodoItem[] | null {
-  const sid = input.viewedSessionId;
-  if (!sid) {
-    return input.slot.sessionId === null ? input.slot.items : null;
-  }
-  if (input.slot.sessionId === sid) {
-    return input.slot.items;
-  }
-  if (input.liveDoc && input.liveDoc.items.length > 0) {
-    return input.liveDoc.items;
-  }
-  if (input.cachedItems && input.cachedItems.length > 0) {
-    return input.cachedItems;
-  }
-  return null;
-}
-
 /** Bus/hydrate transition. Returns the same document when the event is a replay. */
 export function reduceLiveTodo(
   doc: LiveTodoDocument | null,
@@ -586,6 +699,12 @@ export function reduceLiveTodo(
     revision: event.callId ?? null,
     resultApplied: event.type === 'result',
   };
+}
+
+export function liveTodoPanelItems(
+  items: TodoItem[] | null | undefined,
+): TodoItem[] | null {
+  return Array.isArray(items) && items.length > 0 ? items : null;
 }
 
 /**
@@ -626,19 +745,70 @@ export function restoreStickyTodos(input: {
  */
 export function placeArchivedTodos<T extends {
   role: string;
-  parts: Array<{ kind: string; tool?: { id?: string }; items?: TodoItem[] }>;
+  isSteer?: boolean;
+  parts: Array<{ kind: string; text?: string; tool?: { id?: string }; items?: TodoItem[] }>;
 }>(
   messages: T[],
   items: TodoItem[],
   _revision: string | null,
 ): T[] {
   if (items.length === 0 || !items.every((item) => item.status === 'completed')) return messages;
-  let index = -1;
+  // A steer/new turn can already have an EMPTY assistant placeholder when the
+  // previous turn's terminal arrives. Attaching the completed plan to that
+  // placeholder makes it look glued to the top of the next loop. Prefer the
+  // latest assistant that actually owns content (final text first, then
+  // reasoning/tools), and fall back to a bare assistant only when nothing else
+  // exists.
+  const hasText = (index: number): boolean =>
+    messages[index]!.parts.some(
+      (part) => part.kind === 'text' && (part.text || '').trim().length > 0,
+    );
+  let lastUser = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.role === 'assistant') {
-      index = i;
+    if (messages[i]!.role === 'user') {
+      lastUser = i;
       break;
     }
+  }
+  let withText = -1;
+  let withContent = -1;
+  let lastAssistant = -1;
+  let afterLastUser = -1;
+  let beforeLastUserWithText = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== 'assistant') continue;
+    if (lastAssistant < 0) lastAssistant = i;
+    const meaningful = message.parts.filter((part) => part.kind !== 'todo_list');
+    const text = hasText(i);
+    if (withText < 0 && text) withText = i;
+    if (
+      withContent < 0 &&
+      (text || meaningful.some((part) => part.kind === 'tool' || part.kind === 'reasoning'))
+    ) {
+      withContent = i;
+    }
+    if (lastUser >= 0) {
+      if (i > lastUser) {
+        if (afterLastUser < 0) afterLastUser = i;
+      } else if (i < lastUser && text && beforeLastUserWithText < 0) {
+        beforeLastUserWithText = i;
+      }
+    }
+  }
+  // Normal completion: the assistant after the last user owns the answer.
+  // A steer/new turn may already have an EMPTY placeholder after that user;
+  // in that case the plan belongs to the previous answer instead.
+  const lastUserIsSteer =
+    lastUser >= 0 && (messages[lastUser] as { isSteer?: boolean }).isSteer === true;
+  let index = -1;
+  if (afterLastUser >= 0) {
+    index =
+      beforeLastUserWithText >= 0 && (lastUserIsSteer || !hasText(afterLastUser))
+        ? beforeLastUserWithText
+        : afterLastUser;
+  } else {
+    index = withText >= 0 ? withText : withContent >= 0 ? withContent : lastAssistant;
   }
   if (index < 0) return messages;
   const current = messages[index]!;
@@ -686,6 +856,7 @@ function isTodoActionValid(args: string): boolean {
   try {
     const v = JSON.parse(args);
     if (!isRecord(v)) return false;
+    if (v.update !== undefined || v.updates !== undefined) return true;
     if (Array.isArray(v.actions)) {
       return v.actions.length > 0 && v.actions.every((a) => isRecord(a) && actionKind(a) !== null);
     }

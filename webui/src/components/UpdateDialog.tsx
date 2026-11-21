@@ -1,8 +1,25 @@
 import DOMPurify from 'dompurify';
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { checkUpdate, executeUpdate, getUpdateStatus, UpdateCheckResponse, UpdateStatus, UpdateVersionEntry } from '../api';
+import {
+  checkUpdate,
+  executeUpdate,
+  getUpdateStatus,
+  installPreparedDesktopUpdate,
+  UpdateCheckResponse,
+  UpdateStatus,
+  UpdateVersionEntry,
+} from '../api';
+import { upgradeErrorText } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { shouldReloadUpgradedPage } from '../lib/upgradeReload';
+import {
+  hasNativeTauriRuntime,
+  isLocalDesktopWindow,
+  resolveUpdatePlan,
+  type PathBEngine,
+  type UpdateExecutionMode,
+} from '../lib/updateRouting';
+import { useBackdropDismiss } from '../lib/backdropDismiss';
 import { Markdown } from './Markdown';
 import { useT } from '../settings';
 
@@ -51,19 +68,42 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
 
   const [updating, setUpdating] = useState(false);
   const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [modeOverride, setModeOverride] = useState<UpdateExecutionMode | null>(null);
+  const [activeExecMode, setActiveExecMode] = useState<UpdateExecutionMode | null>(null);
+  const [activePathBEngine, setActivePathBEngine] = useState<PathBEngine>('none');
+  const [pollBackendStatus, setPollBackendStatus] = useState(false);
+  const [installingDesktop, setInstallingDesktop] = useState(false);
 
-  const isDesktop = info?.is_desktop ?? false;
   const isMounted = useRef(true);
   const reloadStarted = useRef(false);
   const sawInstallProgress = useRef(false);
   const targetVersionRef = useRef('');
   const currentVersionRef = useRef('');
+  const initialInstanceIdRef = useRef('');
   const reloadAfterRestartRef = useRef<() => void>(() => {});
+  const tauriUnlistenRef = useRef<(() => void) | null>(null);
+  const activeExecModeRef = useRef<UpdateExecutionMode>('binary');
+  const activePathBEngineRef = useRef<PathBEngine>('none');
+  activeExecModeRef.current = activeExecMode ?? 'binary';
+  activePathBEngineRef.current = activePathBEngine;
+
+  const isBusyUpdating =
+    updating &&
+    status?.status !== 'error' &&
+    !(activeExecMode === 'desktop' && status?.status === 'ready' && !installingDesktop);
+
+  // 遮罩空白处点击关闭：仅在「按下」与「松开」都落在遮罩本身时生效，避免拖拽划词误关。
+  const mainBackdropDismiss = useBackdropDismiss(() => {
+    if (!isBusyUpdating) onClose();
+  });
+  const notesBackdropDismiss = useBackdropDismiss(() => setNotesOpen(false));
 
   useEffect(() => {
     isMounted.current = true;
     return () => {
       isMounted.current = false;
+      tauriUnlistenRef.current?.();
+      tauriUnlistenRef.current = null;
     };
   }, []);
 
@@ -105,10 +145,9 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
     doCheckUpdate(channel);
   }, []);
 
-  // 轮询更新进度。进度变化不能拆掉这次轮询。
-  // 安装开始后，状态变为完成或服务重启，都走和「完成」按钮同一条刷新。
+  // 轮询后端更新进度（用于路径 A 二进制热更，以及路径 B 后端辅助下载桌面安装包阶段）。
   useEffect(() => {
-    if (!updating) return;
+    if (!pollBackendStatus) return;
     let stopped = false;
     let misses = 0;
     const timer = window.setInterval(async () => {
@@ -118,10 +157,22 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
         if (!isMounted.current || stopped) return;
         misses = 0;
         setStatus(s);
-        const progressed =
-          s.status === 'installing' ||
-          s.status === 'done' ||
-          (s.status === 'downloading' && (s.progress ?? 0) >= 90);
+        if (s.status === 'error') {
+          stopped = true;
+          window.clearInterval(timer);
+          setPollBackendStatus(false);
+          return;
+        }
+        // 路径 B 后端辅助模式下载并校验完成后停在 ready，等待用户点击“安装并重启”
+        if (activeExecModeRef.current === 'desktop' && activePathBEngineRef.current === 'backend_assisted') {
+          if (s.status === 'ready') {
+            stopped = true;
+            window.clearInterval(timer);
+            setPollBackendStatus(false);
+          }
+          return;
+        }
+        const progressed = s.status === 'installing' || s.status === 'done';
         if (progressed) sawInstallProgress.current = true;
         const restarted =
           s.status === 'done' ||
@@ -129,12 +180,16 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
         if (!restarted) return;
         stopped = true;
         window.clearInterval(timer);
+        setPollBackendStatus(false);
         reloadAfterRestartRef.current();
       } catch {
+        // 后端辅助下载尚未点击启动安装器前不把偶发轮询抖动当成重启完成
+        if (activeExecModeRef.current === 'desktop') return;
         misses += 1;
         if (!sawInstallProgress.current || misses < 3 || stopped) return;
         stopped = true;
         window.clearInterval(timer);
+        setPollBackendStatus(false);
         reloadAfterRestartRef.current();
       }
     }, 500);
@@ -142,7 +197,7 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [updating]);
+  }, [pollBackendStatus]);
 
   const sameVersion = (a?: string, b?: string) => {
     const n = (v?: string) => (v || '').trim().replace(/^v/i, '').toLowerCase();
@@ -164,6 +219,28 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
   const selectedEntry = versionEntries.find((entry) => sameVersion(entry.version, targetVersion));
   const isLatestPick = !targetVersion || sameVersion(targetVersion, info?.latest_version || versionOptions[0]);
   const forceReinstall = isLatestPick && sameVersion(info?.current_version, targetVersion);
+  const hasTauriIpc = hasNativeTauriRuntime();
+  const inDesktopWindow = isLocalDesktopWindow();
+  const plan = resolveUpdatePlan({
+    info,
+    targetVersion,
+    isLatestPick,
+    forceReinstall,
+    inDesktopWindow,
+    hasTauriIpc,
+  });
+  const effectiveMode: UpdateExecutionMode =
+    modeOverride === 'binary' && plan.canPathA
+      ? 'binary'
+      : modeOverride === 'desktop' && plan.canPathB
+        ? 'desktop'
+        : plan.defaultMode;
+  const isDesktopProgress = (activeExecMode ?? effectiveMode) === 'desktop';
+
+  useEffect(() => {
+    setModeOverride(null);
+  }, [channel, targetVersion, info]);
+
   targetVersionRef.current = targetVersion;
   currentVersionRef.current = info?.current_version || '';
   // 只刷新当前页。桌面壳里这是同一端口的内部导航；换端口会被壳当成外链打开系统浏览器。
@@ -173,20 +250,38 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
     reloadStarted.current = true;
     const want = targetVersionRef.current;
     const from = currentVersionRef.current;
+    const initialInstanceId = initialInstanceIdRef.current;
     const timeoutMessage = t('update.restartTimeout');
     void (async () => {
       let misses = 0;
+      // 类似小地球机制：先给 500ms 让后端完成最后的数据帧并进入平滑停机与重启流程
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
       const deadline = Date.now() + 45000;
       while (Date.now() < deadline) {
         try {
-          const resp = await fetch('/health', {
+          const resp = await fetch(`/health?_t=${Date.now()}`, {
             credentials: 'include',
             signal: AbortSignal.timeout(1500),
+            cache: 'no-store',
           });
           if (resp.ok) {
             const body = await resp.json();
             const got = String(body?.version ?? '');
-            if (shouldReloadUpgradedPage({ want, from, got, consecutiveMisses: misses })) {
+            const currentInstanceId = String(body?.instance_id ?? '');
+            if (
+              shouldReloadUpgradedPage({
+                want,
+                from,
+                got,
+                consecutiveMisses: misses,
+                initialInstanceId,
+                currentInstanceId,
+              })
+            ) {
+              // 刷新前清空版本检测冷却缓存，确保重连新进程后立刻拿到最新桌面壳兼容状态
+              try {
+                localStorage.removeItem('jeikcode_update_cooldown_v1');
+              } catch {}
               window.location.reload();
               return;
             }
@@ -213,18 +308,129 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
   };
 
   const handleStartUpdate = async () => {
-    if (isChecking || !targetVersion) return;
+    if (isChecking || !targetVersion || plan.remoteReadonlyBlocked) return;
+    if (effectiveMode === 'desktop' && plan.pathBEngine === 'manual') {
+      if (plan.desktopHost?.installer_url) {
+        window.open(plan.desktopHost.installer_url, '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+
     reloadStarted.current = false;
     sawInstallProgress.current = false;
+    setInstallingDesktop(false);
+    setActiveExecMode(effectiveMode);
+    setActivePathBEngine(plan.pathBEngine);
+    setStatus(null);
     setUpdating(true);
+
+    if (effectiveMode === 'desktop' && plan.pathBEngine === 'tauri_native') {
+      setPollBackendStatus(false);
+      const tauri = (window as any).__TAURI__;
+      const endpoint = plan.desktopHost?.updater_json_url;
+      if (!tauri?.core?.invoke || !endpoint) {
+        setStatus({
+          status: 'error',
+          progress: 0,
+          bytes: 0,
+          total: 0,
+          error: t('update.startFailed'),
+        });
+        return;
+      }
+      try {
+        tauriUnlistenRef.current?.();
+        tauriUnlistenRef.current = null;
+        if (tauri.event?.listen) {
+          const unlisten = await tauri.event.listen(
+            'jeikcode:desktop:update_progress',
+            (ev: { payload?: Partial<UpdateStatus> }) => {
+              if (!isMounted.current || !ev?.payload) return;
+              const p = ev.payload;
+              setStatus({
+                status: (p.status as UpdateStatus['status']) || 'downloading',
+                progress: typeof p.progress === 'number' ? p.progress : 0,
+                bytes: typeof p.bytes === 'number' ? p.bytes : 0,
+                total: typeof p.total === 'number' ? p.total : 0,
+                error: p.error,
+              });
+            },
+          );
+          if (!isMounted.current) {
+            unlisten?.();
+            return;
+          }
+          tauriUnlistenRef.current = unlisten;
+        }
+        await tauri.core.invoke('start_desktop_shell_update', {
+          endpoint,
+          proxy: plan.desktopHost?.proxy_url ?? null,
+        });
+        if (isMounted.current) {
+          setStatus((prev) => ({
+            status: 'ready',
+            progress: 100,
+            bytes: prev?.bytes ?? 0,
+            total: prev?.total ?? 0,
+          }));
+        }
+      } catch (err: any) {
+        if (isMounted.current) {
+          setStatus({
+            status: 'error',
+            progress: 0,
+            bytes: 0,
+            total: 0,
+            error: typeof err === 'string' ? err : err?.message || t('update.startFailed'),
+          });
+        }
+      }
+      return;
+    }
+
+    if (effectiveMode === 'binary') {
+      // 存量老壳先走路径 A 升级后端后，标记刷新时自动强制检测第 2 跳外壳更新
+      try {
+        if (plan.desktopHost?.legacy_shell) {
+          sessionStorage.setItem('jeikcode_pending_legacy_shell_check', '1');
+        } else {
+          sessionStorage.removeItem('jeikcode_pending_legacy_shell_check');
+        }
+      } catch {}
+
+      // 启动更新前记录当前实例代际 ID，用于重启后瞬间感知新进程上线
+      try {
+        const probe = await fetch(`/health?_t=${Date.now()}`, {
+          credentials: 'include',
+          signal: AbortSignal.timeout(1000),
+          cache: 'no-store',
+        });
+        if (probe.ok) {
+          const body = await probe.json();
+          initialInstanceIdRef.current = String(body?.instance_id ?? '');
+        }
+      } catch {
+        /* 忽略前置失败 */
+      }
+    }
+
     try {
+      setPollBackendStatus(true);
       await executeUpdate({
         channel,
         version: targetVersion,
-        download_url: isLatestPick ? info?.download_url ?? undefined : undefined,
-        force: forceReinstall || !isLatestPick,
+        download_url:
+          effectiveMode === 'binary' && isLatestPick
+            ? info?.download_url ?? undefined
+            : undefined,
+        force:
+          effectiveMode === 'desktop'
+            ? forceReinstall || !isLatestPick || Boolean(plan.desktopHost?.legacy_shell)
+            : forceReinstall || !isLatestPick,
+        mode: effectiveMode === 'desktop' ? 'desktop_installer' : 'binary',
       });
     } catch (err: any) {
+      setPollBackendStatus(false);
       setStatus({
         status: 'error',
         progress: 0,
@@ -232,6 +438,42 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
         total: 0,
         error: err?.message || t('update.startFailed'),
       });
+    }
+  };
+
+  const handleInstallDesktop = async () => {
+    if (installingDesktop) return;
+    setInstallingDesktop(true);
+    setStatus((prev) => ({
+      status: 'installing',
+      progress: 100,
+      bytes: prev?.bytes ?? 0,
+      total: prev?.total ?? 0,
+    }));
+    try {
+      if (activePathBEngine === 'tauri_native') {
+        const tauri = (window as any).__TAURI__;
+        if (!tauri?.core?.invoke) {
+          throw new Error(t('update.startFailed'));
+        }
+        await tauri.core.invoke('install_desktop_shell_update');
+      } else {
+        const res = await installPreparedDesktopUpdate();
+        if (!res?.success) {
+          throw new Error(res?.message || t('update.startFailed'));
+        }
+      }
+    } catch (err: any) {
+      if (isMounted.current) {
+        setInstallingDesktop(false);
+        setStatus({
+          status: 'error',
+          progress: 0,
+          bytes: 0,
+          total: 0,
+          error: typeof err === 'string' ? err : err?.message || t('update.startFailed'),
+        });
+      }
     }
   };
 
@@ -267,39 +509,42 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
   };
 
   const hasUpdate = info?.has_update ?? false;
+  const isDesktopShellUpgrade =
+    effectiveMode === 'desktop' &&
+    Boolean(plan.desktopHost?.shell_has_update || plan.desktopHost?.legacy_shell);
+  // 稳定失败码命中时直接展示自包含的多语言文案；未知码退回 “更新失败: 原始诊断”。
+  const localizedUpdateError = upgradeErrorText(t, status?.error_code);
   const canInstall =
     !isChecking &&
     !checkError &&
     !!targetVersion &&
-    (!isLatestPick || hasUpdate);
+    !plan.remoteReadonlyBlocked &&
+    (effectiveMode === 'desktop' ? plan.canPathB : plan.canPathA);
+  const primaryActionLabel =
+    effectiveMode === 'desktop' && plan.pathBEngine === 'manual'
+      ? t('update.btnDownloadInstaller')
+      : forceReinstall && !isDesktopShellUpgrade
+        ? t('update.btnForce')
+        : t('update.btnUpdate');
+  const displayTargetVersion =
+    !isLatestPick
+      ? targetVersion
+      : (!hasUpdate && isDesktopShellUpgrade && plan.desktopHost?.latest_shell_version
+        ? `v${plan.desktopHost.latest_shell_version.replace(/^v/i, '')}`
+        : (targetVersion || info?.latest_version || '...'));
+  const hasDisplayVersionDiff =
+    hasUpdate || !isLatestPick || (plan.inDesktopWindow && Boolean(plan.desktopHost?.shell_has_update || plan.desktopHost?.legacy_shell));
 
   return (
     <>
     <div
       class="modal-overlay"
-      onClick={(e) => {
-        if (!updating && e.target === e.currentTarget) onClose();
-      }}
+      {...mainBackdropDismiss}
     >
       <div class="modal-card update-modal-card" role="dialog" aria-labelledby="update-dialog-title">
         <div class="modal-header">
-          <span style="font-size: 16px;">🚀</span>
           <h3 id="update-dialog-title">{t('update.modalTitle')}</h3>
-          <div style={{ flex: 1 }} />
-          <a
-            class="update-github-link"
-            href="https://github.com/1852676265/JeikCode"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="GitHub: 1852676265/JeikCode"
-            aria-label="GitHub Repository"
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-            </svg>
-            <span>GitHub</span>
-          </a>
-          {!updating && (
+          {!isBusyUpdating && (
             <button class="ghost-btn modal-close" onClick={onClose} aria-label={t('common.cancel')}>
               ×
             </button>
@@ -349,11 +594,80 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
               <span class="update-version-label">
                 {isLatestPick ? t('update.latestVersion') : t('update.targetVersion')}
               </span>
-              <span class={`update-version-val ${hasUpdate || !isLatestPick ? 'latest' : 'current'}`}>
-                {isChecking ? '...' : (targetVersion || info?.latest_version || '...')}
+              <span class={`update-version-val ${hasDisplayVersionDiff ? 'latest' : 'current'}`}>
+                {isChecking ? '...' : displayTargetVersion}
               </span>
             </div>
           </div>
+
+          {plan.inDesktopWindow && plan.desktopHost && (
+            <div class="update-shell-meta">
+              <span class="update-shell-meta-label">{t('update.shellVersionLabel')}:</span>
+              <span class="update-shell-meta-val">
+                {plan.desktopHost.shell_version
+                  ? `v${plan.desktopHost.shell_version.replace(/^v/i, '')}`
+                  : t('update.shellLegacyValue')}
+                {(plan.desktopHost.shell_has_update || plan.desktopHost.legacy_shell) &&
+                  plan.desktopHost.latest_shell_version && (
+                    <span class="update-shell-meta-arrow">
+                      {' ➔ '}v{plan.desktopHost.latest_shell_version.replace(/^v/i, '')}
+                    </span>
+                  )}
+              </span>
+            </div>
+          )}
+
+          {!updating && !isChecking && !checkError && plan.canPathA && plan.canPathB && (
+            <div class="update-channel-section">
+              <div class="update-channel-header">
+                <span class="update-channel-label">{t('update.modeLabel')}:</span>
+                <div class="update-channel-toggle-group">
+                  <button
+                    type="button"
+                    class={`update-channel-btn ${effectiveMode === 'binary' ? 'active' : ''}`}
+                    onClick={() => setModeOverride('binary')}
+                  >
+                    {t('update.modeBinary')}
+                  </button>
+                  <button
+                    type="button"
+                    class={`update-channel-btn ${effectiveMode === 'desktop' ? 'active' : ''}`}
+                    onClick={() => setModeOverride('desktop')}
+                  >
+                    {t('update.modeDesktop')}
+                  </button>
+                </div>
+              </div>
+              <p class="update-channel-desc">
+                {effectiveMode === 'desktop' ? t('update.modeDesktopDesc') : t('update.modeBinaryDesc')}
+              </p>
+            </div>
+          )}
+
+          {!isChecking && !checkError && (
+            <>
+              {plan.remoteReadonlyBlocked && (
+                <div class="update-mode-notice warning">
+                  {t('update.remoteReadonlyNotice')}
+                </div>
+              )}
+              {plan.inDesktopWindow && plan.shellRequired && (
+                <div class="update-mode-notice warning">
+                  {t('update.shellRequiredNotice')}
+                </div>
+              )}
+              {plan.inDesktopWindow && plan.legacyStep2Ready && (
+                <div class="update-mode-notice info">
+                  {t('update.legacyShellStep2Notice')}
+                </div>
+              )}
+              {plan.inDesktopWindow && effectiveMode === 'desktop' && plan.pathBEngine === 'manual' && (
+                <div class="update-mode-notice">
+                  {t('update.manualPackageNotice')}
+                </div>
+              )}
+            </>
+          )}
 
           {/* 状态展示与进度条 */}
           {!updating ? (
@@ -365,18 +679,29 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
                 </div>
               ) : checkError ? (
                 <div class="update-status-row error">
-                  <span class="update-status-error-icon">⚠️</span>
                   <span>{t('update.failed', { error: checkError })}</span>
                 </div>
               ) : !isLatestPick && targetVersion ? (
                 <div class="update-status-row has-update">
-                  <span class="update-status-sparkle">✨</span>
                   <span>{t('update.dialogDescTarget', { version: targetVersion })}</span>
                 </div>
               ) : hasUpdate ? (
                 <div class="update-status-row has-update">
-                  <span class="update-status-sparkle">✨</span>
                   <span>{t('update.dialogDesc', { version: info?.latest_version || '' })}</span>
+                </div>
+              ) : plan.inDesktopWindow && (plan.desktopHost?.shell_has_update || plan.desktopHost?.legacy_shell) ? (
+                <div class="update-status-row has-update">
+                  <span>
+                    {t('update.dialogDesc', {
+                      version: plan.desktopHost?.latest_shell_version
+                        ? `v${plan.desktopHost.latest_shell_version.replace(/^v/i, '')}`
+                        : info?.latest_version || '',
+                    })}
+                  </span>
+                </div>
+              ) : forceReinstall ? (
+                <div class="update-status-row has-update">
+                  <span>{t('update.dialogDescForce', { version: info?.latest_version || '' })}</span>
                 </div>
               ) : (
                 <div class="update-status-row latest">
@@ -394,20 +719,29 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
                 />
               </div>
               <div class="update-progress-status-row">
-                <span class="update-progress-text">
+                <span
+                  class="update-progress-text"
+                  // 原始诊断（URL / HTTP 状态）保留在悬浮提示里，正文只用本地化文案。
+                  title={status?.status === 'error' ? status?.error || undefined : undefined}
+                >
                   {status?.status === 'downloading'
-                    ? isDesktop
+                    ? isDesktopProgress
                       ? t('update.downloadingSetup', { percent: status?.progress ?? 0 })
                       : t('update.downloadingCli', { percent: status?.progress ?? 0 })
-                    : status?.status === 'ready' || status?.status === 'installing'
-                      ? isDesktop
+                    : status?.status === 'ready'
+                      ? isDesktopProgress
                         ? t('update.readyDesktop')
                         : t('update.downloadingCli', { percent: 100 })
-                      : status?.status === 'done'
-                        ? t('update.readyCli')
-                        : status?.status === 'error'
-                          ? t('update.failed', { error: status?.error || '' })
-                          : t('update.downloading')}
+                      : status?.status === 'installing'
+                        ? isDesktopProgress
+                          ? t('update.installingSetup')
+                          : t('update.downloadingCli', { percent: 100 })
+                        : status?.status === 'done'
+                          ? t('update.readyCli')
+                          : status?.status === 'error'
+                            ? (localizedUpdateError ??
+                              t('update.failed', { error: status?.error || '' }))
+                            : t('update.downloading')}
                 </span>
                 <span class="update-progress-percent">
                   {status?.progress ?? 0}%
@@ -459,7 +793,7 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
                     class="btn btn-primary update-confirm-btn"
                     onClick={handleStartUpdate}
                   >
-                    {forceReinstall ? t('update.btnForce') : t('update.btnUpdate')}
+                    {primaryActionLabel}
                   </button>
                 </>
               ) : (
@@ -499,6 +833,25 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
                 {t('update.btnRetry')}
               </button>
             </>
+          ) : isDesktopProgress && (status?.status === 'ready' || installingDesktop) ? (
+            <>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                disabled={installingDesktop}
+                onClick={onClose}
+              >
+                {t('update.btnCancel')}
+              </button>
+              <button
+                type="button"
+                class="btn btn-primary update-confirm-btn"
+                disabled={installingDesktop}
+                onClick={handleInstallDesktop}
+              >
+                {installingDesktop ? t('update.installingSetup') : t('update.btnRestartInstall')}
+              </button>
+            </>
           ) : status?.status === 'done' ? (
             <button
               type="button"
@@ -513,9 +866,9 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
               class={sawInstallProgress.current ? 'btn btn-primary' : 'btn btn-secondary'}
               disabled={!sawInstallProgress.current}
               onClick={() => reloadAfterRestartRef.current()}
-              title={t('update.reloadNowTitle')}
+              title={isDesktopProgress ? undefined : t('update.reloadNowTitle')}
             >
-              {sawInstallProgress.current ? t('update.reloadNow') : (isDesktop ? t('update.preparing') : t('update.installing'))}
+              {sawInstallProgress.current ? t('update.reloadNow') : (isDesktopProgress ? t('update.preparing') : t('update.installing'))}
             </button>
           )}
           </div>
@@ -525,9 +878,7 @@ export function UpdateDialog({ info: initialInfo, onClose, onUpdateInfoChange }:
     {notesOpen && (
       <div
         class="release-notes-overlay"
-        onClick={(e) => {
-          if (e.target === e.currentTarget) setNotesOpen(false);
-        }}
+        {...notesBackdropDismiss}
       >
         <div
           class="release-notes-card"

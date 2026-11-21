@@ -3,6 +3,8 @@
 
 import { createPortal } from 'preact/compat';
 import { useEffect, useState, useRef } from 'preact/hooks';
+import { useT } from '../settings';
+import { useBackdropDismiss } from '../lib/backdropDismiss';
 
 export interface ConfirmDialogProps {
   title: string;
@@ -32,16 +34,30 @@ export interface ConfirmDialogProps {
 export function ConfirmDialog({
   title,
   body,
-  confirmLabel = '确定',
-  cancelLabel = '取消',
-  icon,
+  confirmLabel,
+  cancelLabel,
   danger = true,
   alertOnly = false,
   input,
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
-  const displayIcon = icon ?? (danger ? '🗑' : '💡');
+  const t = useT();
+  const effectiveConfirm = confirmLabel || t('common.confirm') || 'Confirm';
+  const effectiveCancel = cancelLabel || t('common.cancel') || 'Cancel';
+  const modalIcon = danger ? (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M8 2.2l6 10.8H2z" />
+      <path d="M8 6v3.2" />
+      <circle cx="8" cy="11.4" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  ) : (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 7v4" />
+      <circle cx="8" cy="4.9" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState(input?.defaultValue ?? '');
@@ -49,6 +65,11 @@ export function ConfirmDialog({
   const cancelBtnRef = useRef<HTMLButtonElement>(null);
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
   const [selectedOption, setSelectedOption] = useState<'cancel' | 'confirm'>('confirm');
+
+  // 遮罩空白处点击关闭：仅在「按下」与「松开」都落在遮罩本身时生效，避免拖拽划词误关。
+  const backdropDismiss = useBackdropDismiss(() => {
+    if (!busy) onClose();
+  });
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -123,13 +144,11 @@ export function ConfirmDialog({
   const overlay = (
     <div
       class="modal-overlay confirm-modal-overlay"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !busy) onClose();
-      }}
+      {...backdropDismiss}
     >
       <div class="modal-card modal-card-sm" role="dialog" aria-modal="true">
         <div class="modal-header">
-          <span style="font-size: 16px;">{displayIcon}</span>
+          <span class="confirm-modal-icon" aria-hidden="true">{modalIcon}</span>
           <h3>{title}</h3>
           <button class="ghost-btn modal-close" onClick={onClose} aria-label={cancelLabel}>
             ×
@@ -168,7 +187,7 @@ export function ConfirmDialog({
               disabled={busy}
               style={selectedOption === 'cancel' ? { outline: '2px solid var(--app-primary, #3b82f6)', outlineOffset: '2px' } : undefined}
             >
-              {cancelLabel}
+              {effectiveCancel}
             </button>
           )}
           <button
@@ -179,7 +198,7 @@ export function ConfirmDialog({
             disabled={busy}
             style={selectedOption === 'confirm' ? { outline: '2px solid var(--app-primary, #3b82f6)', outlineOffset: '2px' } : undefined}
           >
-            {confirmLabel}
+            {effectiveConfirm}
           </button>
         </div>
       </div>
@@ -263,7 +282,7 @@ export function modalPrompt(options: {
     }
     setGlobalModalState({
       props: {
-        title: options.title || '请输入',
+        title: options.title || '',
         body: options.body || '',
         icon: options.icon || '✏️',
         danger: false,

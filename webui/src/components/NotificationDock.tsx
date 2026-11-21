@@ -9,11 +9,11 @@ import {
   ChatPendingInteractive,
   getActiveChatSessions,
   getApprovalMode,
+  getBootstrap,
   getChatPending,
   getRuntimeSessions,
   listSessions,
   postChatUserInput,
-  postLivePermission,
   postLiveUserInput,
   postSystemNotify,
   respondPermission,
@@ -29,9 +29,7 @@ import {
   isWindowAway,
   shouldOsNotifyTerminal,
   shouldToastTerminal,
-  showPermissionNotice,
-  takeTerminalEdges,
-  TerminalKind,
+  showPermissionNotice,  TerminalKind,
   TerminalNoticeContext,
   isSessionNoticeSuppressed,
   permissionInstanceKey,
@@ -41,6 +39,12 @@ import { onGlobalEvent } from '../lib/globalEvents';
 import { useT } from '../settings';
 import { PermissionCard } from './PermissionCard';
 import { UserInputCard } from './UserInputCard';
+import { showToast } from './Toast';
+import {
+  PermissionRetiredError,
+  permissionRetiredInfo,
+  stillPendingApproval,
+} from '../lib/pendingPermission';
 
 export interface LiveReviewState {
   sessionId: string | null;
@@ -114,8 +118,8 @@ export function NotificationDock({
   const [polled, setPolled] = useState<PolledPrompt[]>([]);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
   const [toasts, setToasts] = useState<TerminalToast[]>([]);
-  const seenSeq = useRef(new Map<string, number>());
-  const primedSeq = useRef(false);
+  /** A decision POST is in flight: resume-reconciliation must never race it. */
+  const decisionInFlight = useRef(false);
   const recent = useRef(new Map<string, number>());
   const sentReview = useRef(new Set<string>());
   /** 推送终态通知的本地序号（跨实例推送没有服务端 seq，用递增序号保证 toast id 唯一）。 */
@@ -236,6 +240,9 @@ export function NotificationDock({
   }
 
   function pushTerminal(sessionId: string, kind: TerminalKind, seq: number) {
+    // 手动停止、中途 steer、立即发送导致的 stopped 不是任务真正结束：
+    // 不进右下角卡片、不响系统通知（连去重窗口都不占用）。
+    if (kind === 'stopped') return;
     // 严格遵循用户偏好：手动点击停止、中途steer、或者日常stopped打断，严禁发送系统通知骚扰
     if (isSessionNoticeSuppressed(sessionId)) return;
     const key = `${sessionId}:${kind}`;
@@ -251,8 +258,7 @@ export function NotificationDock({
     if (shouldToastTerminal(noticeCtx)) {
       setToasts((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, { id, sessionId, kind }]));
     }
-    // 日常单纯的 stopped（中途打断/停止）严禁向操作系统发通知；只在真正完成且离开窗口时发
-    if (kind === 'stopped') return;
+    // 日常单纯的 stopped（中途打断/停止）已经在函数入口拦掉；这里只处理真正的完成/失败。
     if (!shouldOsNotifyTerminal(noticeCtx)) return;
     const session = labelFor(sessionId);
     const title = tRef.current(
@@ -303,6 +309,11 @@ export function NotificationDock({
     // review_asked 只对该会话做一次定向 pending 拉取（单会话小请求）；
     // review_resolved 按 id 就地移除；activity.terminal 直接推右下角通知。
     return onGlobalEvent((event) => {
+      if (event.type === 'sync') {
+        // 重连 / 唤醒对账：与服务端单真值进行绝对校准，消除半开断线期间遗留的幽灵审批卡片
+        void reconcileAuthoritativePending({ force: true });
+        return;
+      }
       if (event.type === 'session_upsert') {
         const row = event.session;
         setHints((prev) => ({
@@ -353,91 +364,88 @@ export function NotificationDock({
         });
         return;
       }
-      if (event.type === 'activity' && event.terminal) {
-        pushedTerminalSeqRef.current += 1;
-        pushTerminal(event.session_id, event.terminal, pushedTerminalSeqRef.current);
+      if (event.type === 'activity') {
+        // 全局 activity 只用于侧栏/运行状态，绝不作为终态通知源：
+        // 工具轮 / 子任务 / steer 期间都可能出现临时 terminal。
+        // 真正的结束由本端回合的 done 处理器发出 `jeikcode:terminal` 事件。
+        return;
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 真正的终态通知只由本端回合的 done 处理器发出（带 finality 判定），
+  // 全局 activity.terminal 不再参与。
+  useEffect(() => {
+    const onTerminal = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionId?: string; kind?: TerminalKind }>).detail;
+      if (!detail?.sessionId || !detail.kind) return;
+      pushedTerminalSeqRef.current += 1;
+      pushTerminal(detail.sessionId, detail.kind, pushedTerminalSeqRef.current);
+    };
+    window.addEventListener('jeikcode:terminal', onTerminal);
+    return () => window.removeEventListener('jeikcode:terminal', onTerminal);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    let namesLoaded = false;
 
-    // 冷启动仅拉取一次会话名称，后续绝对不周期性拉取全量会话列表
-    async function initNamesOnce() {
-      if (namesLoaded) return;
-      namesLoaded = true;
-      try {
-        const sessions = await listSessions();
-        if (cancelled) return;
-        setHints((prev) => {
-          const next = { ...prev };
-          for (const session of sessions) {
-            next[session.id] = {
-              name: session.name,
-              workingDir: session.working_dir,
-            };
-          }
-          return next;
-        });
-      } catch {
-        // Names are decorative.
-      }
-    }
+    const applySessionsHints = (sessions: Array<{ id: string; name: string; working_dir: string }>) => {
+      setHints((prev) => {
+        const next = { ...prev };
+        for (const session of sessions) {
+          next[session.id] = {
+            name: session.name,
+            workingDir: session.working_dir,
+          };
+        }
+        return next;
+      });
+    };
 
-    // 冷启动仅拉取一次审批模式初始状态，后续完全走事件广播，彻底拔除定时轮询
-    getApprovalMode()
-      .then((initMode) => {
-        if (cancelled) return;
-        setMode(initMode);
-        modeRef.current = initMode;
-      })
-      .catch(() => {});
-
-    void initNamesOnce();
-
-    async function tick() {
-      // 视口感知：前台且无活动时或在页面隐藏时，跳过空转请求，彻底释放 CPU
-      if (typeof document !== 'undefined' && document.hidden) return;
-
+    // 冷启动优先单次消费 `/api/bootstrap` 聚合响应；旧版后端降级为分接口拉取。
+    async function initColdStart() {
       let runtime: Awaited<ReturnType<typeof getRuntimeSessions>> = [];
       let active: string[] = [];
-      try {
-        const [nextRuntime, nextActive] = await Promise.all([
-          getRuntimeSessions(),
-          getActiveChatSessions(),
-        ]);
-        if (cancelled) return;
-        runtime = nextRuntime;
-        active = nextActive;
-      } catch {
-        return;
-      }
 
-      const edges = takeTerminalEdges(
-        seenSeq.current,
-        runtime.map((row) => ({
-          sessionId: row.session_id,
-          seq: row.terminal_seq ?? 0,
-          kind: row.last_terminal,
-        })),
-        { baseline: !primedSeq.current },
-      );
-      primedSeq.current = true;
-      for (const edge of edges) {
-        const row = runtime.find((item) => item.session_id === edge.sessionId);
-        if (row?.working_dir) {
-          setHints((prev) => ({
-            ...prev,
-            [edge.sessionId]: {
-              name: prev[edge.sessionId]?.name,
-              workingDir: row.working_dir,
-            },
-          }));
+      const boot = await getBootstrap().catch(() => null);
+      if (cancelled) return;
+
+      if (boot) {
+        if (Array.isArray(boot.sessions)) applySessionsHints(boot.sessions);
+        if (boot.approval_mode?.mode) {
+          setMode(boot.approval_mode.mode);
+          modeRef.current = boot.approval_mode.mode;
         }
-        pushTerminal(edge.sessionId, edge.kind, edge.seq);
+        runtime = boot.runtime_sessions ?? [];
+        active = boot.active_chat_ids ?? [];
+      } else {
+        getApprovalMode()
+          .then((initMode) => {
+            if (cancelled) return;
+            setMode(initMode);
+            modeRef.current = initMode;
+          })
+          .catch(() => {});
+
+        void listSessions()
+          .then((sessions) => {
+            if (!cancelled) applySessionsHints(sessions);
+          })
+          .catch(() => {});
+
+        try {
+          const [nextRuntime, nextActive] = await Promise.all([
+            getRuntimeSessions(),
+            getActiveChatSessions(),
+          ]);
+          if (cancelled) return;
+          runtime = nextRuntime;
+          active = nextActive;
+        } catch {
+          return;
+        }
       }
 
       const ids = new Set(active);
@@ -461,6 +469,7 @@ export function NotificationDock({
         }
       }
 
+      if (ids.size === 0) return;
       const prompts = await Promise.all(
         [...ids].map(async (sessionId) => {
           try {
@@ -476,7 +485,7 @@ export function NotificationDock({
     }
 
     // 冷启动仅拉取一次初始状态，后续完全由单事件总线及卡片状态驱动，彻底拔除周期性定时轮询
-    void tick();
+    void initColdStart();
     return () => {
       cancelled = true;
     };
@@ -490,10 +499,72 @@ export function NotificationDock({
     return () => window.clearTimeout(timer);
   }, [toasts]);
 
-  const livePermission = liveReview?.permission ?? null;
+  const allowPermission = showPermissionNotice(mode);
   const liveUserInput = liveReview?.userInput ?? null;
   const liveSessionId = liveReview?.sessionId ?? null;
-  const chatPerm = chatPermission;
+  const chatPerm = allowPermission ? chatPermission : null;
+  const chatPermRef = useRef(chatPerm);
+  chatPermRef.current = chatPerm;
+
+  async function reconcileAuthoritativePending(opts?: { force?: boolean }) {
+    if (!opts?.force && typeof document !== 'undefined' && document.hidden) return;
+    if (decisionInFlight.current) return;
+
+    let runtime: Awaited<ReturnType<typeof getRuntimeSessions>> = [];
+    let active: string[] = [];
+    try {
+      const [nextRuntime, nextActive] = await Promise.all([
+        getRuntimeSessions(),
+        getActiveChatSessions(),
+      ]);
+      runtime = nextRuntime;
+      active = nextActive;
+    } catch {
+      return;
+    }
+
+    const ids = new Set(active);
+    for (const row of runtime) {
+      if (row.activity === 'waiting_approval' || row.activity === 'waiting_user_input') {
+        ids.add(row.session_id);
+      }
+    }
+    if (activeSession?.id) ids.add(activeSession.id);
+    if (chatPermRef.current?.session_id) ids.add(chatPermRef.current.session_id);
+
+    const prompts = await Promise.all(
+      [...ids].map(async (sessionId) => {
+        try {
+          const pending = await getChatPending(sessionId);
+          return { sessionId, permission: pending.permission, userInput: pending.user_input } satisfies PolledPrompt;
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    const validPrompts = prompts.filter((item): item is PolledPrompt => item !== null);
+    setPolled(validPrompts);
+
+    // 对前台正展示的 chatPerm 进行绝对真值校准：
+    // 若服务端最新 pending 已无此 approval_id，说明已在异地端处理或已失效，就地撤卡并提示。
+    const currentChatPerm = chatPermRef.current;
+    if (currentChatPerm) {
+      const sid = currentChatPerm.session_id;
+      const targetPrompt = validPrompts.find((p) => p.sessionId === sid);
+      const serverPending = targetPrompt?.permission;
+      if (!stillPendingApproval(serverPending, { approval_id: currentChatPerm.approval_id, call_id: currentChatPerm.call_id })) {
+        dismissCardLocally(
+          `chat:${permissionInstanceKey(sid, currentChatPerm)}`,
+          sid,
+          currentChatPerm.call_id,
+          currentChatPerm.approval_id,
+        );
+        onDismissChatPermission();
+        showToast(tRef.current('perm.stale'), 'info');
+      }
+    }
+  }
 
   const permissionCards: Array<{
     key: string;
@@ -508,14 +579,6 @@ export function NotificationDock({
     arguments: unknown;
     live: boolean;
   }> = [];
-  if (livePermission && liveSessionId && !samePermissionInstance(chatPerm, livePermission)) {
-    permissionCards.push({
-      key: `live:${permissionInstanceKey(liveSessionId, livePermission)}`,
-      sessionId: liveSessionId,
-      ...livePermission,
-      live: true,
-    });
-  }
   if (chatPerm) {
     permissionCards.push({
       key: `chat:${permissionInstanceKey(chatPerm.session_id, chatPerm)}`,
@@ -530,7 +593,7 @@ export function NotificationDock({
   }
   for (const item of polled) {
     const perm = item.permission;
-    if (!perm) continue;
+    if (!allowPermission || !perm) continue;
     const identityKey = permissionInstanceKey(item.sessionId, perm);
     if (dismissedKeys.has(`poll:${identityKey}`) || dismissedKeys.has(identityKey)) {
       continue;
@@ -597,6 +660,28 @@ export function NotificationDock({
       pingReview(`ask:${card.sessionId}:${card.req.request_id}`, card.sessionId, detail, true);
     }
   }, [mode, permissionCards.map((card) => card.key).join('|'), questionCards.map((card) => card.key).join('|')]);
+
+  // 卡片可能比审批活得更久：用户把弹窗晾了几个小时后，该审批可能早已在别的实例
+  // 被处理（或回合已结束），而本该清掉它的 SSE 可能已经静默断连——留在屏幕上的
+  // 卡片看起来还能点，实际每次都撞在已被消费的路由上。用户回来的那一刻（窗口
+  // 重新获得焦点 / 页面恢复可见）向 daemon 复核一次，确认不再是同一个审批就撤掉。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let lastCheck = 0;
+    const verify = () => {
+      const now = Date.now();
+      // 焦点事件会连发（alt-tab / devtools），2s 内只复核一次。
+      if (now - lastCheck < 2000) return;
+      lastCheck = now;
+      void reconcileAuthoritativePending({ force: true });
+    };
+    window.addEventListener('focus', verify);
+    document.addEventListener('visibilitychange', verify);
+    return () => {
+      window.removeEventListener('focus', verify);
+      document.removeEventListener('visibilitychange', verify);
+    };
+  }, []);
 
   const interactiveCards: Array<
     | { kind: 'permission'; card: (typeof permissionCards)[0] }
@@ -673,7 +758,12 @@ export function NotificationDock({
           onClick={() => setMobileExpanded(true)}
           aria-label={t('notify.action.expand')}
         >
-          <span class="mobile-notify-bell">🔔</span>
+          <span class="mobile-notify-bell" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 6.5a4 4 0 0 1 8 0c0 3 1 4 1 4H3s1-1 1-4z" />
+              <path d="M6.5 12.5a1.5 1.5 0 0 0 3 0" />
+            </svg>
+          </span>
           <div class="mobile-notify-pill-content">
             <span class="mobile-notify-pill-session">
               {labelFor(currentCard.card.sessionId)}
@@ -770,25 +860,29 @@ export function NotificationDock({
                 onDismissChatPermission();
             }}
             onDecide={async (decision, toolName) => {
-              if (currentCard.card.live) {
-                await postLivePermission(
+              decisionInFlight.current = true;
+              try {
+                const result = await respondPermission(
+                  currentCard.card.sessionId,
+                  currentCard.card.approval_id ?? '',
                   decision,
                   toolName,
-                  currentCard.card.sessionId,
-                  currentCard.card.runtime_instance_id,
-                  currentCard.card.generation,
-                  currentCard.card.request_id,
                 );
-                return;
+                const retired = permissionRetiredInfo(result);
+                if (retired) {
+                  // Already applied (lost reply / another client) or dead for good:
+                  // retrying this exact approval can never succeed. The card retires
+                  // and explains why through `onRetired`.
+                  throw new PermissionRetiredError(retired);
+                }
+                if (!result.success) {
+                  throw new Error(result.error ?? 'permission request is no longer pending');
+                }
+              } finally {
+                decisionInFlight.current = false;
               }
-              const result = await respondPermission(
-                currentCard.card.sessionId,
-                currentCard.card.approval_id ?? '',
-                decision,
-                toolName,
-              );
-              if (!result.success) throw new Error('permission request is no longer pending');
             }}
+            onRetired={() => showToast(tRef.current('perm.stale'), 'info')}
           />
         </section>
       );

@@ -138,10 +138,11 @@ export const TurnNavigator = memo(function TurnNavigator({
               const isPreview = index === previewIndex;
 
               const markClasses = ['turn-navigator-mark'];
-              if (item.unloaded) markClasses.push('turn-mark-unloaded');
+              if (item.pending) markClasses.push('turn-mark-unloaded');
               if (active) markClasses.push('turn-mark-active');
               else if (isPreview) markClasses.push('turn-mark-preview');
               if (busy) markClasses.push('turn-mark-busy');
+              const turnNum = item.ordinal + 1;
 
               return (
                 <button
@@ -150,8 +151,8 @@ export const TurnNavigator = memo(function TurnNavigator({
                   class={markClasses.join(' ')}
                   style={{ top: `${index * TURN_SPACING_PX + RAIL_INSET_PX - 5}px` }}
                   aria-label={t(
-                    item.unloaded ? 'chat.turnNavigation.jumpLoad' : 'chat.turnNavigation.jump',
-                    { turn: String(item.turn) },
+                    item.pending ? 'chat.turnNavigation.jumpLoad' : 'chat.turnNavigation.jump',
+                    { turn: String(turnNum) },
                   )}
                   aria-current={active ? 'true' : undefined}
                   aria-busy={busy ? 'true' : undefined}
@@ -177,11 +178,11 @@ export const TurnNavigator = memo(function TurnNavigator({
           >
             <div class="turn-navigator-preview-header">
               <span class="turn-navigator-preview-turn">
-                {t('chat.turnNavigation.turn', { turn: String(preview.turn) })}
+                {t('chat.turnNavigation.turn', { turn: String(preview.ordinal + 1) })}
               </span>
             </div>
             <div class="turn-navigator-preview-prompt">
-              {preview.prompt || t('chat.turnNavigation.turn', { turn: String(preview.turn) })}
+              {preview.fullText || preview.label || preview.text || t('chat.turnNavigation.turn', { turn: String(preview.ordinal + 1) })}
             </div>
             {turnActions.length > 0 && (
               <div class="turn-navigator-preview-actions">

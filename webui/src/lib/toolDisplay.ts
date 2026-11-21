@@ -518,47 +518,6 @@ export function prettyToolText(raw: string): { text: string; lang: 'json' | 'tex
   };
 }
 
-const LONG_TEXT_KEYS = new Set([
-  'content',
-  'code_content',
-  'old_string',
-  'new_string',
-  'replacement',
-  'patch',
-  'diff',
-  'prompt',
-  'instruction',
-  'source',
-  'body',
-]);
-
-const PATH_OR_IDENT_KEYS = new Set([
-  'file_path',
-  'path',
-  'target_directory',
-  'cwd',
-  'url',
-  'query',
-  'pattern',
-  'command',
-  'name',
-  'symbol',
-  'action',
-]);
-
-export interface CompactJsonOptions {
-  /** Max length for payload / big content strings (e.g. content, old_string). Default: 40 */
-  maxPayloadLen?: number;
-  /** Max length for identifier / path / command strings. Default: 120 */
-  maxPathLen?: number;
-  /** Max length for other generic strings. Default: 80 */
-  maxStringLen?: number;
-  /** Max elements in an array before truncating. Default: 3 */
-  maxArrayElements?: number;
-  /** Max total length of the resulting single-line JSON string. Default: 400 */
-  maxTotalLen?: number;
-}
-
 /** Lower rank is shown first. Unknown keys keep their original order after these. */
 const KEY_RANK: Record<string, number> = {
   summary: 0,
@@ -592,66 +551,17 @@ const KEY_RANK: Record<string, number> = {
 
 const UNKNOWN_KEY_RANK = 40;
 
-function cleanSingleLineString(str: string, maxLen: number): string {
-  const singleLine = str.replace(/\s+/g, ' ').trim();
-  if (singleLine.length <= maxLen) {
-    return singleLine;
-  }
-  return singleLine.slice(0, maxLen).trim() + '…';
-}
-
-function compactValue(
-  val: unknown,
-  key: string | null,
-  depth: number,
-  opts: Required<CompactJsonOptions>,
-): unknown {
-  if (val === null || val === undefined) return val;
-  if (typeof val === 'number' || typeof val === 'boolean') return val;
-  if (typeof val === 'string') {
-    let limit = opts.maxStringLen;
-    if (key && LONG_TEXT_KEYS.has(key)) {
-      limit = opts.maxPayloadLen;
-    } else if (key && PATH_OR_IDENT_KEYS.has(key)) {
-      limit = opts.maxPathLen;
-    }
-    return cleanSingleLineString(val, limit);
-  }
-  if (Array.isArray(val)) {
-    if (depth >= 2) return '[…]';
-    const items = val
-      .slice(0, opts.maxArrayElements)
-      .map((item) => compactValue(item, null, depth + 1, opts));
-    if (val.length > opts.maxArrayElements) {
-      items.push(`+${val.length - opts.maxArrayElements} more`);
-    }
-    return items;
-  }
-  if (typeof val === 'object') {
-    if (depth >= 2) return '{…}';
-    const entries = Object.entries(val as Record<string, unknown>);
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of entries) {
-      if (v !== undefined) {
-        result[k] = compactValue(v, k, depth + 1, opts);
-      }
-    }
-    return result;
-  }
-  return String(val);
-}
-
-function stringifyCompactJson(val: unknown, opts: Required<CompactJsonOptions>): string {
+function stringifyCompactJson(val: unknown): string {
   if (val === null || val === undefined) return 'null';
   if (typeof val === 'number' || typeof val === 'boolean') return String(val);
   if (typeof val === 'string') return JSON.stringify(val);
   if (Array.isArray(val)) {
-    return '[' + val.map((item) => stringifyCompactJson(item, opts)).join(', ') + ']';
+    return '[' + val.map(stringifyCompactJson).join(', ') + ']';
   }
   if (typeof val === 'object') {
     const rawEntries = Object.entries(val as Record<string, unknown>);
     const formatted = rawEntries.map(([k, v], idx) => ({
-      fieldStr: `${JSON.stringify(k)}: ${stringifyCompactJson(v, opts)}`,
+      fieldStr: `${JSON.stringify(k)}: ${stringifyCompactJson(v)}`,
       idx,
       rank: KEY_RANK[k] ?? UNKNOWN_KEY_RANK,
     }));
@@ -662,14 +572,11 @@ function stringifyCompactJson(val: unknown, opts: Required<CompactJsonOptions>):
 }
 
 /**
- * Format a tool argument JSON blob into a compact, single-line JSON string.
- * Long strings (e.g. file content, old/new diff strings) are shortened with ellipsis
- * so the collapsed tool header doesn't blow up or hide vital arguments (like offset/limit/path).
+ * Format a tool argument JSON blob into a single-line, key-sorted JSON string.
+ * Values are never shortened: the collapsed header relies on CSS ellipsis, and
+ * the expanded body shows the same full payload.
  */
-export function formatToolCompactJson(
-  argsJson: string,
-  options?: CompactJsonOptions,
-): string {
+export function formatToolCompactJson(argsJson: string): string {
   const trimmed = argsJson.trim();
   if (!trimmed) return '';
 
@@ -677,9 +584,7 @@ export function formatToolCompactJson(
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    // Non-JSON plain text fallback
-    const fallback = trimmed.replace(/\s+/g, ' ');
-    return fallback.length > 120 ? fallback.slice(0, 120).trim() + '…' : fallback;
+    return trimmed.replace(/\s+/g, ' ');
   }
 
   if (parsed === null || parsed === undefined) return '';
@@ -688,21 +593,7 @@ export function formatToolCompactJson(
   if (Array.isArray(parsed) && parsed.length === 0) return '';
   if (!Array.isArray(parsed) && Object.keys(parsed).length === 0) return '';
 
-  const opts: Required<CompactJsonOptions> = {
-    maxPayloadLen: options?.maxPayloadLen ?? 40,
-    maxPathLen: options?.maxPathLen ?? 120,
-    maxStringLen: options?.maxStringLen ?? 80,
-    maxArrayElements: options?.maxArrayElements ?? 3,
-    maxTotalLen: options?.maxTotalLen ?? 400,
-  };
-
-  const compacted = compactValue(parsed, null, 0, opts);
-  const jsonStr = stringifyCompactJson(compacted, opts);
-
-  if (jsonStr.length > opts.maxTotalLen) {
-    return jsonStr.slice(0, opts.maxTotalLen).trim() + '…';
-  }
-  return jsonStr;
+  return stringifyCompactJson(parsed);
 }
 
 /**
@@ -793,5 +684,112 @@ export function formatToolDetail(name: string, argsJson: string): string {
     }
   }
   return formatToolCompactJson(argsJson);
+}
+
+function basenameOfPath(value: string): string {
+  // Normalize both separators, then keep the rightmost non-empty segment.
+  // Works for directories, file paths and slash/backslash-shaped artifact ids.
+  const clean = value.trim().replace(/[\\/]+$/, '');
+  if (!clean) return '';
+  const parts = clean.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || clean;
+}
+
+function finiteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Mobile / compact tool-row summary: only the parameter a developer needs at a glance.
+ * - Read: `app.css 123-567` (file name + requested line range)
+ * - Edit / Write / list_directory: `app.css` (last path segment)
+ * - Shell: the first command line
+ * - Other tools: path/query/url if present, else a short compact JSON preview.
+ * The expanded body still renders the complete argument payload.
+ */
+export function compactToolDetail(name: string, argsJson: string): string {
+  const trimmed = argsJson.trim();
+  if (!trimmed) return '';
+  let args: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return trimmed.replace(/\s+/g, ' ').slice(0, 80);
+    }
+    args = parsed as Record<string, unknown>;
+  } catch {
+    return trimmed.replace(/\s+/g, ' ').slice(0, 80);
+  }
+
+  const norm = name.trim().toLowerCase().replace(/[-_]/g, '');
+  const pathKeys = [
+    'path', 'file_path', 'filepath', 'filePath', 'file', 'target_file', 'targetFile',
+    'filename', 'fileName', 'dir', 'directory', 'cwd', 'artifact_id', 'artifactid', 'artifact',
+  ];
+  let path = '';
+  for (const key of pathKeys) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim()) { path = value; break; }
+  }
+  // Some edit tools only put the path inside the edits array.
+  if (!path && Array.isArray(args.edits)) {
+    for (const edit of args.edits) {
+      if (edit && typeof edit === 'object') {
+        const row = edit as Record<string, unknown>;
+        const value = row.path ?? row.file_path ?? row.filePath ?? row.file;
+        if (typeof value === 'string' && value.trim()) { path = value; break; }
+      }
+    }
+  }
+  const base = path ? basenameOfPath(path) : '';
+
+  if (norm === 'read' || norm === 'readfile') {
+    const offset =
+      finiteNumber(args.offset) ?? finiteNumber(args.start_line) ?? finiteNumber(args.start) ?? finiteNumber(args.line_start);
+    const limit = finiteNumber(args.limit);
+    const end =
+      finiteNumber(args.end_line) ?? finiteNumber(args.end) ?? finiteNumber(args.line_end) ??
+      (offset != null && limit != null ? offset + limit - 1 : null);
+    if (base) {
+      if (offset != null && end != null) return `${base} ${offset}-${end}`;
+      if (offset != null) return `${base} ${offset}+`;
+      if (limit != null) return `${base} 1-${limit}`;
+      return base;
+    }
+  }
+
+  if (base && [
+    'edit', 'editfile', 'write', 'writefile', 'createfile',
+    'searchreplace', 'paralleleditfiles', 'listdirectory', 'changedir',
+  ].includes(norm)) {
+    return base;
+  }
+
+  // Search tools: the pair that matters is the scanned directory and the matcher.
+  if (['grep', 'glob', 'codeexplore', 'codesearch', 'search'].includes(norm)) {
+    const matcher = args.pattern ?? args.query ?? args.glob ?? args.expression;
+    const matcherText = typeof matcher === 'string' ? matcher.trim().split(/\r?\n/)[0].slice(0, 80) : '';
+    if (base && matcherText) return `${base} · ${matcherText}`;
+    if (matcherText) return matcherText;
+    if (base) return base;
+  }
+
+  const command = args.command ?? args.cmd ?? args.script;
+  if (typeof command === 'string' && command.trim()) {
+    return command.trim().split(/\r?\n/)[0].slice(0, 80);
+  }
+
+  const query = args.query ?? args.pattern ?? args.url ?? args.expression;
+  if (typeof query === 'string' && query.trim()) {
+    return `${base ? base + ' · ' : ''}${query.trim().split(/\r?\n/)[0].slice(0, 80)}`;
+  }
+
+  if (base) return base;
+  return formatToolDetail(name, argsJson).slice(0, 100);
 }
 

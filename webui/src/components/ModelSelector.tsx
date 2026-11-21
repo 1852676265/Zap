@@ -1,9 +1,20 @@
 import { useState, useEffect, useRef, useMemo } from 'preact/hooks';
 import { createPortal } from 'preact/compat';
-import { getModels, ModelInfo, postLiveReasoningEffort } from '../api';
+import {
+  getBootstrap,
+  getDesktopSettings,
+  getModels,
+  ModelInfo,
+  postDesktopSettings,
+  postLiveReasoningEffort,
+  probeUpstreamModel,
+  type DesktopSettings,
+} from '../api';
 import { useT } from '../settings';
 import { MsgKey } from '../i18n';
 import { modelAliasLabel } from '../lib/modelLabel';
+import { useBackdropDismiss } from '../lib/backdropDismiss';
+import { showToast } from './Toast';
 
 function areModelsEqual(a: ModelInfo[], b: ModelInfo[]): boolean {
   if (a.length !== b.length) return false;
@@ -59,7 +70,7 @@ function HighlightText({ text, query }: { text: string; query: string }) {
 /** 各思考等级的默认预算数值（单位 Tokens）。 */
 const DEFAULT_EFFORT_BUDGETS: Record<string, number> = {
   low: 2048,
-  medium: 5120, // 5 * 1024 = 5120
+  medium: 8192,
   high: 16384,
   xhigh: 32768,
   max: 65536,
@@ -84,17 +95,24 @@ export function ModelSelector({
   onChange,
   onDefaultChange,
   sessionId,
+  sessionEffort,
+  sessionBudget,
+  onEffortChange,
   direction = 'down',
   onOpenModelConfig,
-  hideEffort = false,
 }: {
   value: string | null;
   onChange: (p: string) => void;
   onDefaultChange?: (p: string) => void;
   sessionId?: string | null;
+  /** This session's own reasoning effort; `undefined` inherits the provider default. */
+  sessionEffort?: string | null;
+  /** This session's own thinking budget; `undefined` inherits the provider default. */
+  sessionBudget?: number | null;
+  /** Mirror a local effort choice into the per-session cache (survives view switches). */
+  onEffortChange?: (effort: string | null, budget: number | null) => void;
   direction?: 'up' | 'down';
   onOpenModelConfig?: () => void;
-  hideEffort?: boolean;
 }) {
   const t = useT();
   const narrow = useNarrowScreen();
@@ -116,8 +134,63 @@ export function ModelSelector({
   // 思考强度每一项输入的自定义预算数值
   const [budgetInputs, setBudgetInputs] = useState<Record<string, number>>({});
 
+  // 批量并发探活状态与结果缓存
+  const [probingProviders, setProbingProviders] = useState<Set<string>>(new Set());
+  const [probeResults, setProbeResults] = useState<
+    Map<string, { ok: boolean; latencyMs: number; error?: string }>
+  >(new Map());
+  // 允许运行中切换模型（与系统设置共享并全局持久化/广播）
+  const [runtimeModelSwitch, setRuntimeModelSwitch] = useState(false);
+  const [savingRuntimeSwitch, setSavingRuntimeSwitch] = useState(false);
+
+  const runBatchProbe = async (providerGroup: string, targetModels: ModelInfo[]) => {
+    if (probingProviders.has(providerGroup) || targetModels.length === 0) return;
+    setProbingProviders((prev) => new Set(prev).add(providerGroup));
+
+    // 并发工作池（最大 5 个并发请求异步多线程测试）
+    const concurrency = 5;
+    const queue = [...targetModels];
+    const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const m = queue.shift();
+        if (!m) break;
+        try {
+          const res = await probeUpstreamModel({
+            account: m.account,
+            provider_name: m.provider,
+            model: m.model,
+          });
+          setProbeResults((prev) => {
+            const next = new Map(prev);
+            next.set(m.provider, { ok: res.ok, latencyMs: res.latency_ms, error: res.error });
+            return next;
+          });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setProbeResults((prev) => {
+            const next = new Map(prev);
+            next.set(m.provider, { ok: false, latencyMs: 0, error: msg });
+            return next;
+          });
+        }
+      }
+    });
+
+    await Promise.allSettled(workers);
+    setProbingProviders((prev) => {
+      const next = new Set(prev);
+      next.delete(providerGroup);
+      return next;
+    });
+  };
+
   const ref = useRef<HTMLDivElement>(null);
   const effortRef = useRef<HTMLDivElement>(null);
+
+  // 遮罩空白处点击关闭：仅在「按下」与「松开」都落在遮罩本身时生效，避免拖拽划词误关。
+  // stopPropagation 保留原行为：点击弹窗内部时不惊扰其它 document 级 mousedown 监听。
+  const effortBackdropDismiss = useBackdropDismiss(() => setEffortOpen(false), { stopPropagation: true });
+  const modalBackdropDismiss = useBackdropDismiss(() => setOpen(false), { stopPropagation: true });
 
   const modelsRef = useRef(models);
   modelsRef.current = models;
@@ -152,25 +225,36 @@ export function ModelSelector({
       });
   };
 
+  const onDefaultChangeRef = useRef(onDefaultChange);
+  onDefaultChangeRef.current = onDefaultChange;
+
   useEffect(() => {
     let active = true;
+    const applyModels = (next: ModelInfo[]) => {
+      if (!active) return;
+      if (!areModelsEqual(modelsRef.current, next)) {
+        setModels(next);
+        const defaultModel = next.find((model) => model.is_default) ?? next[0];
+        if (defaultModel) onDefaultChangeRef.current?.(defaultModel.provider);
+      }
+    };
     const fetchLatest = () => {
-      getModels()
-        .then((next) => {
-          if (!active) return;
-          if (!areModelsEqual(modelsRef.current, next)) {
-            setModels(next);
-            const defaultModel = next.find((model) => model.is_default) ?? next[0];
-            if (defaultModel) onDefaultChange?.(defaultModel.provider);
-          }
-        })
-        .catch(() => {});
+      getModels().then(applyModels).catch(() => {});
     };
 
-    // 冷启动拉取一次模型列表
-    fetchLatest();
+    // 冷启动优先复用共享的 `/api/bootstrap`，避免额外并发 `/models`
+    getBootstrap()
+      .then((boot) => {
+        if (!active) return;
+        if (Array.isArray(boot.models) && boot.models.length > 0) {
+          applyModels(boot.models);
+        } else {
+          fetchLatest();
+        }
+      })
+      .catch(() => fetchLatest());
 
-    // 联动：当 zap_config (reload) 或外部触发重载时静默刷新一次，彻底杜绝无脑 2s 轮询！
+    // 联动：当 jeikcode_config (reload) 或外部触发重载时静默刷新一次，彻底杜绝无脑 2s 轮询！
     const onReload = () => fetchLatest();
     window.addEventListener('jeikcode:config-reloaded', onReload);
     window.addEventListener('jeikcode:reload-models', onReload);
@@ -180,20 +264,76 @@ export function ModelSelector({
       window.removeEventListener('jeikcode:config-reloaded', onReload);
       window.removeEventListener('jeikcode:reload-models', onReload);
     };
-  }, [onDefaultChange]);
+  }, []);
 
-  // 当弹窗展开时，按需静默同步一次模型列表
+  // 当弹窗展开时，按需静默同步一次模型列表与运行时切换开关
   useEffect(() => {
-    if (open) {
-      getModels()
-        .then((next) => {
-          if (!areModelsEqual(modelsRef.current, next)) {
-            setModels(next);
-          }
-        })
-        .catch(() => {});
-    }
+    if (!open) return;
+    let cancelled = false;
+    getModels()
+      .then((next) => {
+        if (!cancelled && !areModelsEqual(modelsRef.current, next)) {
+          setModels(next);
+        }
+      })
+      .catch(() => {});
+    getDesktopSettings()
+      .then((settings) => {
+        if (!cancelled && typeof settings.runtime_model_switch === 'boolean') {
+          setRuntimeModelSwitch(settings.runtime_model_switch);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
+
+  // 与全局系统设置双向联动（本标签页或跨标签页变更立即对齐）
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let active = true;
+    getDesktopSettings()
+      .then((settings) => {
+        if (active && typeof settings.runtime_model_switch === 'boolean') {
+          setRuntimeModelSwitch(settings.runtime_model_switch);
+        }
+      })
+      .catch(() => {});
+    const onDesktopSettingsChanged = (event: Event) => {
+      const settings = (event as CustomEvent<{ settings?: Partial<DesktopSettings> }>).detail?.settings;
+      if (typeof settings?.runtime_model_switch === 'boolean') {
+        setRuntimeModelSwitch(settings.runtime_model_switch);
+      }
+    };
+    window.addEventListener('jeikcode:desktop_settings_changed', onDesktopSettingsChanged);
+    return () => {
+      active = false;
+      window.removeEventListener('jeikcode:desktop_settings_changed', onDesktopSettingsChanged);
+    };
+  }, []);
+
+  const handleToggleRuntimeModelSwitch = async (next: boolean) => {
+    if (savingRuntimeSwitch) return;
+    const previous = runtimeModelSwitch;
+    setRuntimeModelSwitch(next);
+    setSavingRuntimeSwitch(true);
+    try {
+      const saved = await postDesktopSettings({ runtime_model_switch: next });
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('jeikcode:desktop_settings_changed', {
+            detail: { settings: saved ?? { runtime_model_switch: next } },
+          }),
+        );
+      }
+    } catch {
+      setRuntimeModelSwitch(previous);
+      showToast(t('gitWebhook.saveFailed'), 'error');
+    } finally {
+      setSavingRuntimeSwitch(false);
+    }
+  };
 
   // 桌面端思考强度仍是触发器下的下拉；窄屏改为 portal 底栏，由 overlay 关闭。
   useEffect(() => {
@@ -215,26 +355,39 @@ export function ModelSelector({
   useEffect(() => {
     setEffortOverride(undefined);
     setBudgetOverride(undefined);
-    // 初始化当前模型的 budget 状态
-    if (current?.thinking_budget) {
-      const eff = current.reasoning_effort?.toLowerCase() || 'medium';
+    // 初始化当前会话/模型的 budget 状态：会话自带预算优先，否则继承 provider 默认。
+    const effectiveBudget = sessionBudget !== undefined ? sessionBudget : current?.thinking_budget;
+    if (effectiveBudget && effectiveBudget > 0) {
+      const eff =
+        (sessionEffort !== undefined ? sessionEffort : current?.reasoning_effort)?.toLowerCase() ||
+        'medium';
       setBudgetChecked({ [eff]: true });
-      setBudgetInputs({ [eff]: current.thinking_budget });
+      setBudgetInputs({ [eff]: effectiveBudget });
     } else {
       setBudgetChecked({});
       setBudgetInputs({});
     }
-  }, [current?.provider, current?.thinking_budget]);
+  }, [
+    current?.provider,
+    current?.thinking_budget,
+    current?.reasoning_effort,
+    sessionEffort,
+    sessionBudget,
+  ]);
 
   const effort =
     effortOverride !== undefined
       ? effortOverride
-      : (current?.reasoning_effort ?? null);
+      : (sessionEffort !== undefined
+        ? sessionEffort
+        : (current?.reasoning_effort ?? null));
 
   const activeBudget =
     budgetOverride !== undefined
       ? budgetOverride
-      : (current?.thinking_budget ?? null);
+      : (sessionBudget !== undefined
+        ? sessionBudget
+        : (current?.thinking_budget ?? null));
 
   // 提供商与模型按提供商分组
   const providerGroups = useMemo(() => {
@@ -362,6 +515,11 @@ export function ModelSelector({
       setBudgetOverride(budgetVal);
     }
     if (!keepOpen) setEffortOpen(false);
+    // 先就地回写会话级缓存，切走再切回时不被其他会话的强度覆盖。
+    onEffortChange?.(
+      lvl,
+      lvl === 'off' || lvl === null || clearBudget ? null : (budgetVal ?? activeBudget ?? null),
+    );
 
     if (current) {
       void postLiveReasoningEffort(
@@ -373,6 +531,7 @@ export function ModelSelector({
       ).catch((err) => {
         setEffortOverride(prevEffort);
         setBudgetOverride(prevBudget);
+        onEffortChange?.(prevEffort, prevBudget);
         console.error('Failed to update reasoning effort', err);
       });
     }
@@ -381,27 +540,34 @@ export function ModelSelector({
   const handleToggleBudgetCheck = (lvl: string, e: MouseEvent) => {
     e.stopPropagation();
     const nextChecked = !budgetChecked[lvl];
-    setBudgetChecked((prev) => ({ ...prev, [lvl]: nextChecked }));
     if (nextChecked) {
-      const budgetVal = budgetInputs[lvl] || DEFAULT_EFFORT_BUDGETS[lvl] || 2048;
+      // 勾选预算：独占勾选当前等级，并填入计算机二进制默认值，同时支持用户在弹出框中手动输入
+      const defaultVal = DEFAULT_EFFORT_BUDGETS[lvl] || 16384;
+      const budgetVal = budgetInputs[lvl] || defaultVal;
+      setBudgetChecked({ [lvl]: true });
       setBudgetInputs((prev) => ({ ...prev, [lvl]: budgetVal }));
       handleSelectEffort(lvl, budgetVal, false, true);
     } else {
+      // 取消勾选预算：清空预算，向后端显式传递 clearThinkingBudget，不填预算字段
+      setBudgetChecked({});
       handleSelectEffort(lvl, null, true, true);
     }
   };
 
   const handleBudgetInputChange = (lvl: string, rawVal: string) => {
     const num = parseInt(rawVal, 10);
-    const val = isNaN(num) || num < 0 ? 0 : num;
+    // Anthropic rejects budget_tokens < 1024; keep the picker from persisting
+    // a value the provider can only answer with HTTP 400.
+    const val = isNaN(num) ? 1024 : Math.max(1024, num);
     setBudgetInputs((prev) => ({ ...prev, [lvl]: val }));
   };
 
   const handleBudgetInputCommit = (lvl: string, overrideVal?: number) => {
+    const defaultVal = DEFAULT_EFFORT_BUDGETS[lvl] || 16384;
     const budgetVal =
       overrideVal !== undefined
         ? overrideVal
-        : (budgetInputs[lvl] !== undefined ? budgetInputs[lvl] : DEFAULT_EFFORT_BUDGETS[lvl] || 2048);
+        : (budgetInputs[lvl] !== undefined ? budgetInputs[lvl] : defaultVal);
     handleSelectEffort(lvl, budgetVal, false, true);
   };
 
@@ -427,12 +593,17 @@ export function ModelSelector({
               class="effort-row-main-btn"
               onClick={() => {
                 if (o.val === 'off') {
+                  setBudgetChecked({});
                   handleSelectEffort('off', 0, true);
                 } else if (o.val === null) {
+                  setBudgetChecked({});
                   handleSelectEffort(null, null, true);
                 } else if (isChecked) {
+                  // 如果已勾选预算，保留当前预算并选择
                   handleSelectEffort(o.val, currentInputVal, false);
                 } else {
+                  // 如果只选择了思考强度没勾选预算，清空预算，不填预算字段
+                  setBudgetChecked({});
                   handleSelectEffort(o.val, null, true);
                 }
               }}
@@ -462,7 +633,7 @@ export function ModelSelector({
                     <input
                       type="number"
                       class="effort-budget-input"
-                      min="0"
+                      min="1024"
                       step="1024"
                       value={currentInputVal}
                       onInput={(e) =>
@@ -501,7 +672,7 @@ export function ModelSelector({
   return (
     <div class="model-controls">
       {/* 思考强度选择器 */}
-      {!hideEffort && current?.effort_applicable && (
+      {current?.effort_applicable && (
         <div class={`model-selector effort-selector ${direction === 'down' ? 'model-selector-down' : 'model-selector-up'}`} ref={effortRef}>
           <button
             class={'model-selector-trigger effort-capsule-trigger' + (effortOpen ? ' is-active' : '')}
@@ -525,20 +696,16 @@ export function ModelSelector({
         </div>
       )}
 
-      {!hideEffort && effortOpen && (narrow || open) && typeof document !== 'undefined' && createPortal(
+      {effortOpen && (narrow || open) && typeof document !== 'undefined' && createPortal(
         <div
           class="modal-overlay effort-selector-modal-overlay"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setEffortOpen(false);
-          }}
+          {...effortBackdropDismiss}
           role="dialog"
           aria-modal="true"
           aria-label={t('effort.label')}
         >
           <div class="modal-card effort-selector-modal-card" onClick={(e) => e.stopPropagation()}>
             <div class="modal-header">
-              <span aria-hidden="true">🧠</span>
               <h3>{t('effort.label')}</h3>
               <button
                 type="button"
@@ -589,10 +756,7 @@ export function ModelSelector({
       {open && typeof document !== 'undefined' && createPortal(
         <div
           class="modal-overlay model-selector-modal-overlay"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setOpen(false);
-          }}
+          {...modalBackdropDismiss}
           role="dialog"
           aria-modal="true"
           aria-label={t('model.label')}
@@ -601,7 +765,6 @@ export function ModelSelector({
             {/* 单行精炼头部：左侧图标+Model标签，中间搜索框，右侧叉叉，一行搞定 */}
             <div class="modal-header model-streamlined-header">
               <div class="model-header-title-badge">
-                <span class="modal-title-icon">🎯</span>
                 <span class="model-header-title-text">{t('model.label') || 'Model'}</span>
               </div>
 
@@ -682,7 +845,6 @@ export function ModelSelector({
                   title={t('effort.label')}
                   aria-label={t('effort.label')}
                 >
-                  <span class="model-header-effort-icon" aria-hidden="true">🧠</span>
                   <span class="model-header-effort-label">{effortLabel(effort)}</span>
                   <span class={'model-header-effort-chevron' + (effortOpen ? ' rotated' : '')}>▾</span>
                 </button>
@@ -743,12 +905,57 @@ export function ModelSelector({
                     <div class="model-empty-hint">{t('settings.noSearchResults')}</div>
                   )}
                 </div>
+
+                {/* 左下角：运行时切换模型快捷开关（与系统设置实时双向同步、持久化并全局广播） */}
+                <div class="model-provider-footer">
+                  <label
+                    class={'model-runtime-switch-row' + (runtimeModelSwitch ? ' is-active' : '') + (savingRuntimeSwitch ? ' is-saving' : '')}
+                    title={t('settings.runtimeModelSwitchHint')}
+                  >
+                    <input
+                      type="checkbox"
+                      class="model-runtime-switch-checkbox"
+                      checked={runtimeModelSwitch}
+                      disabled={savingRuntimeSwitch}
+                      onChange={(e) => {
+                        void handleToggleRuntimeModelSwitch((e.target as HTMLInputElement).checked);
+                      }}
+                    />
+                    <span class="model-runtime-switch-label">{t('settings.runtimeModelSwitchLabel')}</span>
+                  </label>
+                </div>
               </div>
 
               {/* 右栏：当前提供商下的所有模型列表 */}
               <div class="model-cascade-models-column">
                 <div class="model-column-title">
-                  <span>{activeProvider || t('model.label')}</span>
+                  <div class="model-column-title-left">
+                    <span class="model-column-provider-name">{activeProvider || t('model.label')}</span>
+                    {activeProvider && activeModels.length > 0 && (
+                      <button
+                        type="button"
+                        class={'model-batch-probe-btn' + (probingProviders.has(activeProvider) ? ' is-probing' : '')}
+                        disabled={probingProviders.has(activeProvider)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void runBatchProbe(activeProvider, activeModels);
+                        }}
+                        title={t('settings.probeAllHint')}
+                        aria-label={t('settings.probeAll')}
+                      >
+                        {probingProviders.has(activeProvider) ? (
+                          <>
+                            <span class="model-probe-spinner" aria-hidden="true" />
+                            <span>{t('settings.probing')}</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>{t('settings.probeAll')}</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
                   <span class="model-count-tag">{activeModels.length}</span>
                 </div>
                 <div class="model-models-list">
@@ -756,6 +963,7 @@ export function ModelSelector({
                     const isSelected = m.provider === (value ?? current?.provider);
                     const alias = modelAliasLabel(m);
                     const wireModel = m.model;
+                    const probe = probeResults.get(m.provider);
 
                     return (
                       <button
@@ -773,8 +981,18 @@ export function ModelSelector({
                               <HighlightText text={alias} query={searchQuery} />
                             </span>
                             {m.is_default && <span class="model-badge-default">{t('settings.default')}</span>}
-                            {m.effort_applicable && (
-                              <span class="model-badge-thinking" title={t('settings.reasoningModel')}>🧠</span>
+                            {/* 探活结果标签：成功显示绿色延迟，失败显示红色 Failed，未测不带标签也不带大脑 */}
+                            {probe && (
+                              <span
+                                class={'model-probe-tag ' + (probe.ok ? 'ok' : 'failed')}
+                                title={
+                                  probe.ok
+                                    ? t('settings.probeSuccess', { ms: probe.latencyMs })
+                                    : t('settings.probeFailed', { error: probe.error || '' })
+                                }
+                              >
+                                {probe.ok ? `${probe.latencyMs} ms` : 'Failed'}
+                              </span>
                             )}
                           </div>
                           {wireModel && wireModel !== alias && (

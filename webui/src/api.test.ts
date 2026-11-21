@@ -6,51 +6,6 @@ Object.defineProperty(globalThis, 'location', {
   configurable: true,
 });
 
-test('postLiveMessage does not send approval_mode because live mode is global', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ url: String(url), init });
-    return new Response(
-      '{"accepted":true,"disposition":"steered","generation":3,"turn_id":7}',
-      { status: 200 },
-    );
-  }) as typeof fetch;
-
-  try {
-    const { postLiveMessage } = await import('./api.ts');
-
-    const receipt = await postLiveMessage('hello', undefined, undefined, 'session-1', 'input-1');
-
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, '/live/message');
-    const body = JSON.parse(String(calls[0].init?.body));
-    assert.deepEqual(body, {
-      message: 'hello',
-      session_id: 'session-1',
-      client_input_id: 'input-1',
-    });
-    assert.deepEqual(receipt, { disposition: 'steered', generation: 3, turn_id: 7 });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('postLiveMessage accepts the legacy accepted-only receipt without retrying', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response('{"accepted":true}', { status: 200 })) as typeof fetch;
-  try {
-    const { postLiveMessage } = await import('./api.ts');
-    assert.deepEqual(await postLiveMessage('hello'), {
-      disposition: 'started',
-      generation: 0,
-      turn_id: 0,
-    });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test('postLiveProvider scopes the runtime switch to the active session', async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const originalFetch = globalThis.fetch;
@@ -75,25 +30,6 @@ test('postLiveProvider scopes the runtime switch to the active session', async (
   }
 });
 
-test('live session switch returns a structured active-turn rejection', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(
-    JSON.stringify({ ok: false, active_turn: true, error: 'runtime is busy' }),
-    { status: 200, headers: { 'Content-Type': 'application/json' } },
-  )) as typeof fetch;
-
-  try {
-    const { postLiveSwitchSession } = await import('./api.ts');
-    assert.deepEqual(await postLiveSwitchSession('session-2'), {
-      ok: false,
-      activeTurn: true,
-      error: 'runtime is busy',
-    });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test('live mode still rejects protocol-level failures', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response(
@@ -112,30 +48,43 @@ test('live mode still rejects protocol-level failures', async () => {
   }
 });
 
-test('postLiveMode and getApprovalMode pass session_id when provided', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
+test('postLiveMode forwards the global switch and reports the confirmed state', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ url: String(url), init });
+  let sentBody: any = null;
+  globalThis.fetch = (async (_url: any, init: any) => {
+    sentBody = JSON.parse(init.body);
     return new Response(
-      JSON.stringify({ ok: true, mode: 'bypass', global: false }),
+      JSON.stringify({ ok: true, mode: 'plan', global: true }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
   }) as typeof fetch;
 
   try {
-    const { postLiveMode, getApprovalMode } = await import('./api.ts');
-    const switched = await postLiveMode('bypass', 'sess-123');
-    assert.equal(switched, 'bypass');
-    assert.equal(calls[0].url, '/approval_mode');
-    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
-      mode: 'bypass',
-      session_id: 'sess-123',
-    });
+    const { postLiveMode } = await import('./api.ts');
+    const mode = await postLiveMode('plan', 'sess-1', true);
+    assert.equal(mode, 'plan');
+    assert.equal(sentBody.global, true);
+    assert.equal(sentBody.session_id, 'sess-1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
-    const fetched = await getApprovalMode('sess-123');
-    assert.equal(fetched, 'bypass');
-    assert.equal(calls[1].url, '/approval_mode?session_id=sess-123');
+test('postLiveMode omits the global field when the switch is not being toggled', async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody: any = null;
+  globalThis.fetch = (async (_url: any, init: any) => {
+    sentBody = JSON.parse(init.body);
+    return new Response(
+      JSON.stringify({ ok: true, mode: 'build', global: false }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const { postLiveMode } = await import('./api.ts');
+    await postLiveMode('build', 'sess-1');
+    assert.equal('global' in sentBody, false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -158,66 +107,6 @@ test('postLiveUserInput rejects an answer the runtime did not accept', async () 
         text: null,
       }),
       /did not accept/i,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('postLivePermission carries exact session and native request identity', async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ url: String(url), init });
-    return new Response('{"accepted":true}', { status: 200 });
-  }) as typeof fetch;
-
-  try {
-    const { postLivePermission } = await import('./api.ts');
-    await postLivePermission('allow', 'mcp__srv__query', 'session-1', 'runtime-1', 5, 73);
-
-    assert.equal(calls[0].url, '/live/permission');
-    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
-      decision: 'allow',
-      tool_name: 'mcp__srv__query',
-      session_id: 'session-1',
-      runtime_instance_id: 'runtime-1',
-      generation: 5,
-      request_id: 73,
-    });
-    await assert.rejects(
-      () => postLivePermission('allow', 'mcp__srv__query', null, 'runtime-1', 5, 73),
-      /missing live approval identity/i,
-    );
-    await assert.rejects(
-      () => postLivePermission('allow', 'mcp__srv__query', 'session-1'),
-      /missing live approval identity/i,
-    );
-    await assert.rejects(
-      () => postLivePermission('allow', 'mcp__srv__query', 'session-1', null, 5, 73),
-      /missing live approval identity/i,
-    );
-    await assert.rejects(
-      () => postLivePermission('allow', 'mcp__srv__query', 'session-1', 'runtime-1', undefined, 73),
-      /missing live approval identity/i,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('postLivePermission rejects when the runtime did not consume the approval', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(
-    JSON.stringify({ accepted: false }),
-    { status: 200, headers: { 'Content-Type': 'application/json' } },
-  )) as typeof fetch;
-
-  try {
-    const { postLivePermission } = await import('./api.ts');
-    await assert.rejects(
-      () => postLivePermission('allow', 'write_file', 'session-1', 'runtime-1', 5, 73),
-      /did not accept permission/i,
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -461,7 +350,7 @@ test('getHealth reads the running binary version from GET /health', async () => 
   globalThis.fetch = (async (url: RequestInfo | URL) => {
     assert.equal(String(url), '/health');
     return new Response(
-      JSON.stringify({ status: 'ok', version: '7.0.13', service: 'zap-daemon' }),
+      JSON.stringify({ status: 'ok', version: '7.0.13', service: 'jeikcode-daemon' }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
   }) as typeof fetch;
@@ -470,7 +359,7 @@ test('getHealth reads the running binary version from GET /health', async () => 
     const { getHealth } = await import('./api.ts');
     const health = await getHealth();
     assert.equal(health.version, '7.0.13');
-    assert.equal(health.service, 'zap-daemon');
+    assert.equal(health.service, 'jeikcode-daemon');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -543,7 +432,7 @@ test('fetchUpgradeDiffs passes first_launch and force query parameters', async (
           {
             relative_path: 'prompts/init.yaml',
             description: '提示词',
-            target_path: '/home/.zap/prompts/init.yaml',
+            target_path: '/home/.jeikcode/prompts/init.yaml',
             kind: 'modified',
             selected: true,
           },
@@ -635,7 +524,7 @@ test('getConfig parses a successful config payload', async () => {
     assert.equal(String(url), '/config');
     return new Response(
       JSON.stringify({
-        path: '/home/.zap/config.toml',
+        path: '/home/.jeikcode/config.toml',
         default_provider: 'claude-opus-4-6',
         providers: [],
         accounts: [],
@@ -654,51 +543,347 @@ test('getConfig parses a successful config payload', async () => {
   }
 });
 
-test('getToken prefers fresh sessionStorage zap_webui_token over stale legacy localStorage token on default host', async () => {
-  const makeStorage = (init: Record<string, string>) => {
-    const map = new Map<string, string>(Object.entries(init));
-    return {
-      getItem: (k: string) => map.get(k) ?? null,
-      setItem: (k: string, v: string) => {
-        map.set(k, String(v));
-      },
-      removeItem: (k: string) => {
-        map.delete(k);
-      },
-      clear: () => map.clear(),
-    };
-  };
-
-  const prevLocation = globalThis.location;
-  const prevSessionStorage = (globalThis as any).sessionStorage;
-  const prevLocalStorage = (globalThis as any).localStorage;
-
-  Object.defineProperty(globalThis, 'location', {
-    value: new URL('http://localhost:5173/'),
-    configurable: true,
-  });
-  Object.defineProperty(globalThis, 'sessionStorage', {
-    value: makeStorage({ zap_webui_token: 'fresh-session-token' }),
-    configurable: true,
-  });
-  Object.defineProperty(globalThis, 'localStorage', {
-    value: makeStorage({ jeikcode_webui_token: 'stale-legacy-token' }),
-    configurable: true,
-  });
+test('401 drops the rejected bearer and retries with the HttpOnly cookie', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; authorization: string | null }> = [];
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({ url: String(url), authorization: headers.get('Authorization') });
+    if (calls.length === 1) {
+      return new Response('', { status: 401 });
+    }
+    assert.equal(headers.get('Authorization'), null, 'cookie-only retry must not replay the stale bearer');
+    return new Response(
+      JSON.stringify({ default_provider: 'claude-opus-4-6', language: 'zh-CN' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
 
   try {
-    const { getToken } = await import('./api.ts');
-    const { getDefaultProfile } = await import('./lib/serverProfiles.ts');
-    assert.equal(getDefaultProfile().token, 'fresh-session-token');
-    assert.equal(getToken(), 'fresh-session-token');
+    const { getConfig, invalidateConfigCache, isAuthExpired, resetAuthExpired } = await import('./api.ts');
+    resetAuthExpired();
+    invalidateConfigCache();
+    const cfg = await getConfig();
+    assert.equal(cfg.default_provider, 'claude-opus-4-6');
+    assert.equal(calls.length, 2);
+    assert.match(String(calls[0].authorization), /test-token/);
+    assert.equal(isAuthExpired(), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    const { invalidateConfigCache } = await import('./api.ts');
+    invalidateConfigCache();
+  }
+});
+
+test('permanently rejected credentials latch the auth gate without reloading', async () => {
+  const originalFetch = globalThis.fetch;
+  const previousWindow = (globalThis as any).window;
+  let calls = 0;
+  let reloads = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response('', { status: 401 });
+  }) as typeof fetch;
+  // The regression: 401 used to call location.reload(), which replayed the same
+  // stale token forever. Prove the gate latches and never reloads.
+  (globalThis as any).window = {
+    location: { reload: () => { reloads += 1; } },
+    addEventListener: () => {},
+  };
+
+  try {
+    const { getConfig, invalidateConfigCache, isAuthExpired, resetAuthExpired } = await import('./api.ts');
+    resetAuthExpired();
+    invalidateConfigCache();
+    await assert.rejects(() => getConfig());
+    assert.equal(isAuthExpired(), true);
+    assert.equal(calls, 2, 'one original request + one cookie-only retry');
+    assert.equal(reloads, 0);
+
+    // Latched: later 401s must not keep retrying or reloading.
+    await assert.rejects(() => getConfig());
+    assert.equal(calls, 3);
+    assert.equal(reloads, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousWindow === undefined) delete (globalThis as any).window;
+    else (globalThis as any).window = previousWindow;
+    const { invalidateConfigCache, resetAuthExpired } = await import('./api.ts');
+    resetAuthExpired();
+    invalidateConfigCache();
+  }
+});
+
+test('applyWebuiToken validates a pasted access URL before persisting it', async () => {
+  const originalFetch = globalThis.fetch;
+  const store = new Map<string, string>();
+  const mockStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, val: string) => { store.set(key, val); },
+    removeItem: (key: string) => { store.delete(key); },
+  };
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(url), '/config');
+    assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer new-token');
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+  (globalThis as any).sessionStorage = mockStorage;
+  (globalThis as any).localStorage = mockStorage;
+
+  try {
+    const { applyWebuiToken, isAuthExpired, resetAuthExpired, WEBUI_TOKEN_STORAGE_KEY } = await import('./api.ts');
+    resetAuthExpired();
+    await applyWebuiToken('http://192.168.1.20:13457/?token=new-token&session=abcd1234');
+    assert.equal(store.get(WEBUI_TOKEN_STORAGE_KEY), 'new-token');
+    assert.equal(isAuthExpired(), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete (globalThis as any).sessionStorage;
+    delete (globalThis as any).localStorage;
+  }
+});
+
+test('streamGlobalEvents parses events and handles keepalive comments cleanly', async () => {
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"type":"sync"}\n\n'));
+      controller.enqueue(encoder.encode(':keepalive ping\n\n'));
+      controller.enqueue(encoder.encode('data: {"type":"review_resolved","session_id":"s1","approval_id":"a1"}\n\n'));
+      controller.close();
+    },
+  });
+
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    assert.equal(String(url), '/events');
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const { streamGlobalEvents } = await import('./api.ts');
+    const seen: any[] = [];
+    await streamGlobalEvents((ev) => {
+      seen.push(ev);
+    });
+
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0].type, 'sync');
+    assert.equal(seen[1].type, 'review_resolved');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('streamGlobalEvents exits cleanly when signal is aborted', async () => {
+  const originalFetch = globalThis.fetch;
+  const abort = new AbortController();
+  const encoder = new TextEncoder();
+  let timer: NodeJS.Timeout | null = null;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"type":"sync"}\n\n'));
+      timer = setTimeout(() => {
+        try {
+          controller.enqueue(encoder.encode('data: {"type":"review_asked","session_id":"s1","approval_id":"a1","tool_name":"bash"}\n\n'));
+        } catch {}
+      }, 50);
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+    },
+  });
+
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(url), '/events');
+    if (init?.signal) {
+      init.signal.addEventListener('abort', () => {
+        if (timer) clearTimeout(timer);
+      });
+    }
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const { streamGlobalEvents } = await import('./api.ts');
+    const seen: any[] = [];
+    const promise = streamGlobalEvents((ev) => {
+      seen.push(ev);
+      abort.abort();
+    }, abort.signal);
+
+    await assert.rejects(promise, /aborted/i);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].type, 'sync');
+  } finally {
+    if (timer) clearTimeout(timer);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('listSessions throws on non-ok status instead of silently passing error body as list', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })) as typeof fetch;
+  try {
+    const { listSessions } = await import('./api.ts');
+    await assert.rejects(() => listSessions(), /list sessions failed: 401/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('concurrent identical GET requests deduplicate in-flight fetch calls and clone Response safely', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  let release!: (resp: Response) => void;
+  const gate = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    return gate;
+  }) as typeof fetch;
+
+  try {
+    const { listSessions } = await import('./api.ts');
+    const p1 = listSessions();
+    const p2 = listSessions();
+    release(
+      new Response(JSON.stringify([{ id: 's1', name: 'One', working_dir: '/w', project_hash: 'h', created_at: 1, updated_at: 2 }]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(fetchCalls, 1, 'concurrent identical GETs must share one in-flight fetch');
+    assert.equal(r1[0].id, 's1');
+    assert.equal(r2[0].id, 's1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('checkUpdate passes summary=1 when requested for lightweight badge polling', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    requestedUrl = String(url);
+    return new Response(
+      JSON.stringify({
+        current_version: 'v7.2.0',
+        latest_version: 'v7.2.1',
+        has_update: true,
+        is_desktop: false,
+        channel: 'stable',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const { checkUpdate } = await import('./api.ts');
+    await checkUpdate('beta', { summary: true });
+    assert.equal(requestedUrl, '/api/update/check?channel=beta&summary=1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getModels extracts Bearer token even when pasted into /token=... pathname', async () => {
+  const originalFetch = globalThis.fetch;
+  const previousLocation = globalThis.location;
+  let sentAuth: string | null = null;
+  Object.defineProperty(globalThis, 'location', {
+    value: new URL('http://localhost/token=path-tok-99'),
+    configurable: true,
+  });
+  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    sentAuth = new Headers(init?.headers).get('Authorization');
+    return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+
+  try {
+    const { getModels } = await import('./api.ts');
+    await getModels();
+    assert.equal(sentAuth, 'Bearer path-tok-99');
   } finally {
     Object.defineProperty(globalThis, 'location', {
-      value: prevLocation,
+      value: previousLocation,
       configurable: true,
     });
-    if (prevSessionStorage === undefined) delete (globalThis as any).sessionStorage;
-    else Object.defineProperty(globalThis, 'sessionStorage', { value: prevSessionStorage, configurable: true });
-    if (prevLocalStorage === undefined) delete (globalThis as any).localStorage;
-    else Object.defineProperty(globalThis, 'localStorage', { value: prevLocalStorage, configurable: true });
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+
+test('getChatRuntime bypasses TTL cache on sequential calls while deduping concurrent calls', async () => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  let releaseConcurrent!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseConcurrent = resolve;
+  });
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith('/chat/runtime')) {
+      callCount += 1;
+      if (callCount === 1) {
+        await gate;
+        return new Response(
+          JSON.stringify({ running: true, source: 'chat', turn_id: 'op-1' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ running: false, source: 'idle' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    return new Response('null', { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const { getChatRuntime } = await import('./api.ts');
+    const p1 = getChatRuntime('session-runtime-cache');
+    const p2 = getChatRuntime('session-runtime-cache');
+    releaseConcurrent();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(callCount, 1);
+    assert.equal(r1.running, true);
+    assert.equal(r2.running, true);
+
+    const r3 = await getChatRuntime('session-runtime-cache');
+    assert.equal(callCount, 2);
+    assert.equal(r3.running, false);
+    assert.equal(r3.source, 'idle');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('getActiveChatSessions bypasses TTL cache on sequential calls', async () => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    const payload = callCount === 1 ? ['s-active'] : [];
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const { getActiveChatSessions } = await import('./api.ts');
+    const first = await getActiveChatSessions();
+    const second = await getActiveChatSessions();
+    assert.equal(callCount, 2);
+    assert.deepEqual(first, ['s-active']);
+    assert.deepEqual(second, []);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

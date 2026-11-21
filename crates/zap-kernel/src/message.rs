@@ -135,6 +135,44 @@ pub struct MessageMeta {
     /// string for older snapshots).
     #[serde(default)]
     pub finish_reason: String,
+    /// Time to first content token (thinking / text / tool chunk) in ms from request open.
+    /// `None` if unavailable or from an older snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+}
+
+/// 持久化到会话消息上的结构化系统通知元数据，使快照回放、`DisplayHook` 与实时事件
+/// 共用同一身份（`event_id`）、因果锚点（`anchor_message_id`）、严重级别与收敛状态。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageNoticeMeta {
+    pub kind: crate::event::NoticeKind,
+    pub severity: crate::event::NoticeSeverity,
+    pub status: crate::event::NoticeStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_part_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
+}
+
+impl From<&crate::event::SystemNotice> for MessageNoticeMeta {
+    fn from(notice: &crate::event::SystemNotice) -> Self {
+        Self {
+            kind: notice.kind,
+            severity: notice.severity,
+            status: notice.status,
+            event_id: Some(notice.event_id.clone()),
+            part_id: Some(notice.part_id.clone()),
+            anchor_message_id: notice.anchor_message_id.clone(),
+            anchor_part_id: notice.anchor_part_id.clone(),
+            revision: Some(notice.revision),
+        }
+    }
 }
 
 /// Provider-neutral message.
@@ -246,6 +284,9 @@ pub struct Message {
     /// (`m-<uuid>`) when absent so a stored message carries its identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// 结构化系统通知元数据（仅 `turn_diagnostic` 等展示型消息携带，绝不进入模型上下文）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<MessageNoticeMeta>,
 }
 
 impl Message {
@@ -265,6 +306,7 @@ impl Message {
             reasoning_blocks: vec![],
             created_at_ms: 0,
             id: None,
+            notice: None,
         }
     }
     pub fn user(text: impl Into<String>) -> Self {
@@ -283,6 +325,7 @@ impl Message {
             reasoning_blocks: vec![],
             created_at_ms: 0,
             id: None,
+            notice: None,
         }
     }
     pub fn assistant(text: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
@@ -301,6 +344,7 @@ impl Message {
             reasoning_blocks: vec![],
             created_at_ms: 0,
             id: None,
+            notice: None,
         }
     }
     /// A tool RESULT. `is_error` is now STORED (a real adapter must echo it to the
@@ -325,6 +369,7 @@ impl Message {
             reasoning_blocks: vec![],
             created_at_ms: 0,
             id: None,
+            notice: None,
         }
     }
     /// A KERNEL-INJECTED synthetic `Role::User` message (compaction cold summary or
@@ -350,6 +395,7 @@ impl Message {
             reasoning_blocks: vec![],
             created_at_ms: 0,
             id: None,
+            notice: None,
         }
     }
     /// A KERNEL-INJECTED synthetic `Role::User` message that opens a new autonomous
@@ -379,6 +425,7 @@ impl Message {
             reasoning_blocks: vec![],
             created_at_ms: 0,
             id: None,
+            notice: None,
         }
     }
     /// A KERNEL-INJECTED `Role::User` message carrying `images` — used by the agent
@@ -402,6 +449,7 @@ impl Message {
             reasoning_blocks: vec![],
             created_at_ms: 0,
             id: None,
+            notice: None,
         }
     }
 
@@ -1224,6 +1272,66 @@ impl Conversation {
         let prepared = self.prepare_plan(plan, sacred_floor);
         self.commit_prepared(prepared)
     }
+
+    /// Emergency intra-turn relief when a single active turn accumulates huge tool
+    /// results that `sacred_floor` prevents `apply_plan` from draining. Keeps the
+    /// most recent `keep_recent_tool_msgs` tool outputs verbatim and trims older
+    /// oversized tool outputs (above `max_chars_per_result`) to head+tail slices.
+    /// Returns bytes saved (`> 0` iff modified, in which case `cache_epoch` bumps).
+    pub fn trim_oversized_active_tool_results(
+        &mut self,
+        keep_recent_tool_msgs: usize,
+        max_chars_per_result: usize,
+    ) -> usize {
+        if max_chars_per_result < 128 {
+            return 0;
+        }
+        let tool_indices: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| (m.role == Role::Tool).then_some(i))
+            .collect();
+        if tool_indices.len() <= keep_recent_tool_msgs {
+            return 0;
+        }
+        let trimmable_count = tool_indices.len() - keep_recent_tool_msgs;
+        let mut bytes_saved = 0usize;
+        let marker = "\n... [trimmed by emergency context compaction] ...\n";
+        for &idx in &tool_indices[..trimmable_count] {
+            let text = &mut self.messages[idx].text;
+            let char_count = text.chars().count();
+            if char_count <= max_chars_per_result {
+                continue;
+            }
+            let head_chars = (max_chars_per_result * 2) / 3;
+            let tail_chars = max_chars_per_result.saturating_sub(head_chars).max(32);
+            let head_end = text
+                .char_indices()
+                .nth(head_chars)
+                .map(|(p, _)| p)
+                .unwrap_or(text.len());
+            let tail_start = text
+                .char_indices()
+                .rev()
+                .nth(tail_chars.saturating_sub(1))
+                .map(|(p, _)| p)
+                .unwrap_or(0);
+            if head_end >= tail_start {
+                continue;
+            }
+            let old_len = text.len();
+            let trimmed = format!("{}{marker}{}", &text[..head_end], &text[tail_start..]);
+            if trimmed.len() < old_len {
+                bytes_saved += old_len - trimmed.len();
+                *text = trimmed;
+            }
+        }
+        if bytes_saved > 0 {
+            self.cache_epoch = self.cache_epoch.saturating_add(1);
+        }
+        bytes_saved
+    }
 }
 
 /// A compaction candidate that passed every kernel invariant but is not live yet.
@@ -1916,6 +2024,7 @@ mod tests {
             provider_model: Some("deepseek-v4-flash".into()),
             session_id: Some("sess-1".into()),
             finish_reason: "stop".into(),
+            ttft_ms: Some(42),
         });
         with_meta.reasoning = Some("thinking…".to_string());
         c.push(with_meta);
@@ -2862,5 +2971,47 @@ mod tests {
         let plan = NoCompaction.plan(&view).await;
         assert!(plan.is_noop(), "NoCompaction must return a noop plan");
         assert_eq!(plan, CompactionPlan::noop());
+    }
+
+    #[test]
+    fn trim_oversized_active_tool_results_keeps_recent_and_bumps_epoch() {
+        let mut c = Conversation::new();
+        c.push(Message::user("audit everything"));
+        for i in 0..6 {
+            c.push(Message::assistant(
+                "",
+                vec![ToolCall {
+                    id: format!("c{i}"),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                }],
+            ));
+            let body = if i < 4 {
+                format!("HEAD_{i}_{}_TAIL_{i}", "x".repeat(4000))
+            } else {
+                format!("RECENT_{i}_{}", "y".repeat(4000))
+            };
+            c.push(Message::tool_result(format!("c{i}"), body, false));
+        }
+        let epoch_before = c.cache_epoch;
+        let saved = c.trim_oversized_active_tool_results(2, 1500);
+        assert!(
+            saved > 5000,
+            "older oversized tool outputs must be trimmed: {saved}"
+        );
+        assert_eq!(c.cache_epoch, epoch_before + 1);
+        let tools: Vec<&Message> = c.messages.iter().filter(|m| m.role == Role::Tool).collect();
+        assert!(tools[0]
+            .text
+            .contains("trimmed by emergency context compaction"));
+        assert!(tools[0].text.starts_with("HEAD_0_"));
+        assert!(tools[0].text.ends_with("TAIL_0"));
+        assert!(tools[4].text.starts_with("RECENT_4_"));
+        assert_eq!(tools[4].text.len(), 4000 + "RECENT_4_".len());
+        assert_eq!(
+            c.trim_oversized_active_tool_results(2, 1500),
+            0,
+            "second pass is a noop"
+        );
     }
 }

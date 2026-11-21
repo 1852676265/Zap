@@ -2802,6 +2802,9 @@ fn execute_slash_command_impl(
             renderer.flush();
         }
         "update" | "upgrade" => {
+            if zap_config::config::runtime_state::is_dead() {
+                return Ok(());
+            }
             // Sub-dispatch: `/upgrade`, `/upgrade rollback`, `/upgrade --force`, `/upgrade set <url>`, `/upgrade get`, `/upgrade reset`.
             // Keep parsing deliberately tolerant — users type these things
             // with assorted capitalization and whitespace; a command that
@@ -5561,6 +5564,7 @@ mod schedule_list_text_tests {
             created_at: 0,
             last_run_at: None,
             last_status: last_status.map(|s| s.to_string()),
+            ..Default::default()
         }
     }
 
@@ -7323,6 +7327,7 @@ mod tests {
         let snap = crate::state::ContextSnapshot {
             system_tokens: 100,
             sent_tokens: 200,
+            used_tokens: None,
             tool_defs_tokens: 0,
             cold_zone_tokens: 0,
             total_messages: 5,
@@ -7341,6 +7346,7 @@ mod tests {
         let snap = crate::state::ContextSnapshot {
             system_tokens: 8_000,
             sent_tokens: 30_000, // includes cold
+            used_tokens: None,
             tool_defs_tokens: 14_500,
             cold_zone_tokens: 2_000,
             total_messages: 42,
@@ -7382,6 +7388,7 @@ mod tests {
         let snap = crate::state::ContextSnapshot {
             system_tokens: 1_000,
             sent_tokens: 10_000,
+            used_tokens: None,
             tool_defs_tokens: 0,
             cold_zone_tokens: 3_000,
             total_messages: 10,
@@ -7411,6 +7418,7 @@ mod tests {
         let snap = crate::state::ContextSnapshot {
             system_tokens: 20_000,
             sent_tokens: 80_000,
+            used_tokens: None,
             tool_defs_tokens: 20_000,
             cold_zone_tokens: 0,
             total_messages: 50,
@@ -7440,6 +7448,7 @@ mod tests {
         let snap = crate::state::ContextSnapshot {
             system_tokens: 1_000,
             sent_tokens: 5_000,
+            used_tokens: None,
             tool_defs_tokens: 500,
             cold_zone_tokens: 0,
             total_messages: 8,
@@ -7465,6 +7474,7 @@ mod tests {
         let snap = crate::state::ContextSnapshot {
             system_tokens: 1_000,
             sent_tokens: 5_000,
+            used_tokens: None,
             tool_defs_tokens: 500,
             cold_zone_tokens: 0,
             total_messages: 8,
@@ -7493,6 +7503,7 @@ mod tests {
         let snap = crate::state::ContextSnapshot {
             system_tokens: 100,
             sent_tokens: 200,
+            used_tokens: None,
             tool_defs_tokens: 0,
             cold_zone_tokens: 0,
             total_messages: 3,

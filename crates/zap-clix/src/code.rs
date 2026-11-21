@@ -26,7 +26,7 @@ use zap_coding::{
     CodingRuntimeStart, DefaultCodingProviderFactory, PrepareOptions, SessionMode,
     StaticPluginHookSource, TurnCompletion, UserInput,
 };
-use zap_kernel::event::{AgentEvent, StopReason};
+use zap_kernel::event::{AgentEvent, NoticeSeverity, NoticeStatus, StopReason};
 
 #[derive(Parser)]
 pub struct CodeArgs {
@@ -426,6 +426,12 @@ async fn drive_turn(
                 eprintln!("\n[error] {message}")
             }
             CodingRuntimeEvent::Agent(AgentEvent::Warning(w)) => eprintln!("[warn] {w}"),
+            CodingRuntimeEvent::Agent(AgentEvent::SystemNotice(n))
+                if n.status != zap_kernel::event::NoticeStatus::Settled
+                    || n.severity != zap_kernel::event::NoticeSeverity::Error =>
+            {
+                eprintln!("[warn] {}", n.text)
+            }
             CodingRuntimeEvent::CompactionStarted { trigger } => {
                 // The kernel fires this ONLY when a real drain/summary (a multi-second
                 // LLM call) will run — manual `/compact`, overflow tier 2, OR an auto

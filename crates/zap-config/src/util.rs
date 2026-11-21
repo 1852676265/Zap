@@ -11,7 +11,16 @@ pub fn stable_project_hash(path: &Path) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut normalized = path.to_string_lossy().replace('\\', "/");
+    // The same project can arrive as `E:\\code\\x`, `E:/code/x`, or
+    // `\\\\?\\E:\\code\\x` (std::fs::canonicalize on Windows). The verbatim
+    // prefix is an IO namespace marker, not project identity; strip it before
+    // hashing or every window creates a second empty project bucket.
+    let raw = path.to_string_lossy();
+    let raw = raw
+        .strip_prefix(r"\\?\")
+        .or_else(|| raw.strip_prefix("//?/"))
+        .unwrap_or(&raw);
+    let mut normalized = raw.replace('\\', "/");
     if normalized.len() > 1 && normalized.ends_with('/') {
         normalized.pop();
     }
@@ -108,9 +117,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stable_project_hash_keeps_existing_disk_key() {
+        // This fixture literal is part of the on-disk key contract: intentionally
+        // renaming it MUST update the golden in the same commit. The previous
+        // atomcode -> jeikcode rename left the golden stale and was initially
+        // misread as a Rust 1.93 hash change.
         assert_eq!(
-            stable_project_hash(Path::new("/tmp/jeikcode-trust-golden")),
-            "8b6a67e0b2c06dae"
+            stable_project_hash(Path::new("/tmp/stable-project-hash-fixture")),
+            "6d9c2b29f6bff579"
+        );
+    }
+
+    #[test]
+    fn verbatim_prefix_does_not_change_project_hash() {
+        assert_eq!(
+            stable_project_hash(Path::new(r"\\?\E:\code\jeikcode")),
+            stable_project_hash(Path::new(r"E:\code\jeikcode"))
+        );
+        assert_eq!(
+            stable_project_hash(Path::new("//?/E:/code/jeikcode")),
+            stable_project_hash(Path::new("E:/code/jeikcode"))
         );
     }
 }

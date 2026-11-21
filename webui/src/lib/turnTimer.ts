@@ -36,45 +36,39 @@ export function turnDurationMs(userTs?: number, endTs?: number): number | undefi
   return endTs - userTs;
 }
 
-/** Done-turn "用时": take the larger of user-bubble → final answer span and
- *  stamped/persisted full-turn elapsed so neither a lone per-round kernel
- *  duration nor a mid-turn steer / trailing tool wait truncates the total. */
+/** Done-turn "用时": prefer user-bubble → final answer, else the stamped
+ *  full-turn elapsed (never a lone last-round kernel duration when a span exists). */
 export function turnTotalElapsedMs(
   userTs?: number,
   endTs?: number,
   elapsedMs?: number,
 ): number | undefined {
   const fromUser = turnDurationMs(userTs, endTs);
-  const stamped =
-    elapsedMs != null && Number.isFinite(elapsedMs) && elapsedMs >= 0
-      ? elapsedMs
-      : undefined;
   if (fromUser && fromUser > 0) {
-    return stamped != null && stamped > fromUser ? stamped : fromUser;
+    if (elapsedMs != null && Number.isFinite(elapsedMs) && elapsedMs > fromUser) {
+      return elapsedMs;
+    }
+    return fromUser;
   }
-  return stamped;
+  return elapsedMs;
 }
 
 /** Stamp `elapsedMs` (and optional completion time) onto the latest assistant
- *  message of the current turn (never crossing back over a `user` bubble).
- *  Idempotent by default; pass `{ force: true }` on an authoritative live turn
- *  terminal so a stale mid-turn round stamp cannot freeze the final bubble. */
+ *  message that does not already have a duration (or overwrite with cumulative duration when `opts.overwrite` is true). */
 export function stampLastAssistantElapsed<T extends { role: string; elapsedMs?: number; ts?: number }>(
   msgs: T[],
   elapsedMs: number,
   finishedAt?: number,
-  opts?: { force?: boolean },
+  opts?: { overwrite?: boolean },
 ): T[] {
-  const force = opts?.force === true;
-  const safeElapsed = Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs : 0);
   for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i]!.role === 'user') return msgs;
     if (msgs[i]!.role !== 'assistant') continue;
-    if (!force && msgs[i]!.elapsedMs != null) return msgs;
+    const prevElapsed = msgs[i]!.elapsedMs;
+    if (prevElapsed != null && !opts?.overwrite) return msgs;
     const next = msgs.slice();
     next[i] = {
       ...msgs[i]!,
-      elapsedMs: safeElapsed,
+      elapsedMs: prevElapsed != null ? Math.max(prevElapsed, elapsedMs) : elapsedMs,
       ts: finishedAt ?? Date.now(),
     };
     return next;
@@ -82,22 +76,117 @@ export function stampLastAssistantElapsed<T extends { role: string; elapsedMs?: 
   return msgs;
 }
 
-/** Strip stale per-round `ts` / `elapsedMs` from the trailing assistant of an
- *  active (still-running) turn — e.g. after reattaching from an inflight disk
- *  snapshot whose intermediate round carried its own `created_at` / kernel
- *  per-round `elapsed_ms`. */
-export function clearInFlightAssistantTiming<
-  T extends { role: string; elapsedMs?: number; ts?: number },
->(msgs: T[]): T[] {
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i]!.role === 'user') return msgs;
-    if (msgs[i]!.role !== 'assistant') continue;
-    if (msgs[i]!.elapsedMs == null && msgs[i]!.ts == null) return msgs;
-    const next = msgs.slice();
-    const { elapsedMs: _elapsed, ts: _ts, ...rest } = msgs[i]!;
-    next[i] = rest as T;
-    return next;
+/**
+ * 为中途「立即发送」或跨轮延续的 Steer 卡片附加转向标记，确保后端落盘与刷新后仍能识别为 Steer 延续。
+ */
+export function composeSteerWireText(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.includes('[jeikcode-steer]') || /<user-query>[\s\S]*?<\/user-query>/i.test(trimmed)) {
+    return text;
   }
-  return msgs;
+  return trimmed ? `${trimmed}\n\n[jeikcode-steer]` : '[jeikcode-steer]';
 }
+
+/**
+ * 判断一条用户消息是否为中途转向注入（Steer）消息。
+ * 判定依据（任一满足即可）：
+ * 1. 显式标记 isSteer === true 或带有 pendingSteerId 关联；
+ * 2. 文本中包含标准转向标记 [jeikcode-steer] 或包裹在 <user-query> ... </user-query> 转向信封中。
+ */
+export function isSteerUserMessage(msg: {
+  role?: string;
+  isSteer?: boolean;
+  pendingSteerId?: string;
+  parts?: Array<{ kind?: string; text?: string }>;
+  content?: string;
+}): boolean {
+  if (msg.role && msg.role !== 'user') return false;
+  if (msg.isSteer === true || Boolean(msg.pendingSteerId)) return true;
+
+  const rawText =
+    msg.content ??
+    msg.parts
+      ?.filter((p) => p.kind === 'text')
+      .map((p) => p.text)
+      .join('\n') ??
+    '';
+
+  if (!rawText) return false;
+  return rawText.includes('[jeikcode-steer]') || /<user-query>[\s\S]*?<\/user-query>/i.test(rawText);
+}
+
+/**
+ * 寻找当前 Assistant 消息所属轮次的真正根用户提问时间戳（Root Turn User Timestamp）。
+ * 遇到中途插入的 Steer 转向消息时自动向上穿透，直到找到发起该整趟任务的最初用户提问。
+ * 如果没有更早的非 Steer 用户提问，则回退使用找到的最早用户提问。
+ */
+export function rootTurnUserTs<
+  T extends {
+    role: string;
+    ts?: number;
+    /** Persisted kernel turn id (display/session detail). */
+    turnId?: number;
+    isSteer?: boolean;
+    pendingSteerId?: string;
+    parts?: Array<{ kind?: string; text?: string }>;
+    content?: string;
+  },
+>(
+  msgs: T[],
+  idx: number,
+  opts?: {
+    /**
+     * `true` (default): mid-turn steers continue the SAME continuous work timer.
+     * `false`: after a real turn terminal, the next user row is a NEW root even
+     * when it is a steer — the previous task completed, so the timer must reset.
+     */
+    penetrateSteers?: boolean;
+  },
+): number | undefined {
+  const penetrate = opts?.penetrateSteers !== false;
+  const userIndices: number[] = [];
+  for (let i = 0; i < idx && i < msgs.length; i++) {
+    if (msgs[i]!.role === 'user') {
+      userIndices.push(i);
+    }
+  }
+  let fallbackTs: number | undefined = undefined;
+  let afterTurnId: number | undefined = msgs[idx]?.turnId;
+  for (let k = userIndices.length - 1; k >= 0; k--) {
+    const uIdx = userIndices[k]!;
+    const m = msgs[uIdx]!;
+    if (fallbackTs === undefined && m.ts != null) {
+      fallbackTs = m.ts;
+    }
+    if (!penetrate || !isSteerUserMessage(m)) {
+      return m.ts ?? fallbackTs;
+    }
+    // Durable boundary (survives refresh): a steer row whose persisted turn id
+    // differs from the user row BELOW it belongs to a NEW turn — the previous
+    // task stopped, so do not penetrate to the old root. A mid-turn steer shares
+    // the turn id with the turn's root and continues the continuous timer.
+    const prevIdx = k > 0 ? userIndices[k - 1]! : undefined;
+    const below = prevIdx !== undefined ? msgs[prevIdx] : undefined;
+    if (m.turnId != null && below?.turnId != null && m.turnId !== below.turnId) {
+      return m.ts ?? fallbackTs;
+    }
+    const targetTurnId = m.turnId ?? afterTurnId;
+    if (prevIdx !== undefined && targetTurnId != null) {
+      for (let p = uIdx - 1; p > prevIdx; p--) {
+        const between = msgs[p];
+        if (between?.role === 'assistant' && between.turnId != null) {
+          if (between.turnId !== targetTurnId) {
+            return m.ts ?? fallbackTs;
+          }
+          afterTurnId = between.turnId;
+        }
+      }
+    }
+    if (m.turnId != null) {
+      afterTurnId = m.turnId;
+    }
+  }
+  return fallbackTs;
+}
+
 

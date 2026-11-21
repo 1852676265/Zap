@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use zap_kernel::agent::Agent;
-use zap_kernel::event::{AgentCommand, AgentEvent, StopReason};
+use zap_kernel::event::{AgentCommand, AgentEvent, NoticeSeverity, NoticeStatus, StopReason};
 use zap_review::{
     build_review_agent_with_cancel, shared_review_deadline, Finding, ReviewAgentConfig,
 };
@@ -626,6 +626,12 @@ impl ReviewRun {
                 self.error = Some(message);
             }
             AgentEvent::Warning(w) => eprintln!("    [warn] {w}"),
+            AgentEvent::SystemNotice(n)
+                if n.status != zap_kernel::event::NoticeStatus::Settled
+                    || n.severity != zap_kernel::event::NoticeSeverity::Error =>
+            {
+                eprintln!("    [warn] {}", n.text)
+            }
             AgentEvent::TurnComplete { reason } => {
                 self.stop = reason;
                 return false;

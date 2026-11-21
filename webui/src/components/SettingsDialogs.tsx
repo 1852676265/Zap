@@ -6,6 +6,8 @@ import { createPortal } from 'preact/compat';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   getConfig,
+  peekConfigCache,
+  invalidateConfigCache,
   ConfigInfo,
   ProviderInfo,
   AccountInfo,
@@ -16,23 +18,31 @@ import {
   setDefaultProvider,
   deleteProvider,
   fetchUpstreamModels,
+  probeUpstreamModel,
 } from '../api';
 import { useSettings, Theme } from '../settings';
 import { languageOptions, Lang } from '../i18n';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Select } from './Select';
+import { useBackdropDismiss } from '../lib/backdropDismiss';
 
-// 上下文窗口预设（数值与配置一致，显示时按 /1000 换算为「k tokens」）。
-// 上下文窗口预设（淘汰 256K 以下选项，保留 256K 及以上主流长窗口）。
-const CONTEXT_WINDOW_PRESETS = [256000, 512000, 1000000, 2000000];
+// 上下文窗口预设（计算机标准二进制 1024 进制：256K / 512K / 1M / 2M）。
+const CONTEXT_WINDOW_PRESETS = [262144, 524288, 1048576, 2097152];
 
-/** 最大输出预算预设档位：32K / 64K / 128K / 256K / 384K + 自定义。
- * 该值只是「模型输出能力声明」，会作为各协议的 max budget 原样下发；
- * 它不参与上下文统计与压缩水位计算（水位 = 窗口 − 20K 固定缓冲）。 */
-const MAX_OUTPUT_PRESETS = [32000, 64000, 128000, 256000, 384000];
+/** 最大输出预算预设档位（计算机标准二进制 1024 进制）：32K / 64K / 128K / 256K / 384K / 512K + 自定义。
+ * 该值作为各协议的 max_tokens / max budget 原样下发。 */
+const MAX_OUTPUT_PRESETS = [32768, 65536, 131072, 262144, 393216, 524288];
 
 function fmtMaxTokens(v: number): string {
-  return v >= 1000 ? `${Math.round(v / 1000)}K (${v.toLocaleString()})` : String(v);
+  if (v <= 0) return String(v);
+  if (v >= 1048576 && v % 1048576 === 0) {
+    return `${v / 1048576}M (${v.toLocaleString()})`;
+  }
+  if (v >= 1024) {
+    const k = v % 1024 === 0 ? v / 1024 : v % 1000 === 0 ? v / 1000 : Math.round(v / 1024);
+    return `${k}K (${v.toLocaleString()})`;
+  }
+  return String(v);
 }
 
 /** 与 TUI `/provider` 对齐的可自定义协议 + ollama。 */
@@ -55,6 +65,97 @@ function normalizeProviderType(type: string | undefined): string {
   return t;
 }
 
+// Compact line glyphs for the provider/model manager. Kept inline so the
+// settings dialog does not pull a second icon dependency into its chunk.
+function PlusGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+      <path d="M8 3v10M3 8h10" />
+    </svg>
+  );
+}
+
+function PencilGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10.8 2.6l2.6 2.6-7.3 7.3-3 .7.7-3z" />
+    </svg>
+  );
+}
+
+function TrashGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M2.5 4.5h11M6 4.5V2.8h4v1.7M4.2 4.5v8.2c0 .7.5 1.3 1.2 1.3h5.2c.7 0 1.2-.6 1.2-1.3V4.5" />
+      <path d="M6.6 7.2v4.4M9.4 7.2v4.4" />
+    </svg>
+  );
+}
+
+function StarGlyph({ filled = false }: { filled?: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true">
+      <path d="M8 1.8l1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.2l-3.6 1.9.7-4.1-3-2.9 4.1-.6z" />
+    </svg>
+  );
+}
+
+function ChevronGlyph({ up = false }: { up?: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d={up ? 'M4 10l4-4 4 4' : 'M4 6l4 4 4-4'} />
+    </svg>
+  );
+}
+
+function ContextGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+      <rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4" />
+      <path d="M5.2 3.2v9.6M10.8 3.2v9.6" />
+    </svg>
+  );
+}
+
+function ImageGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+      <circle cx="5.6" cy="6" r="1.2" />
+      <path d="M2.8 12.2l3.6-3.6 2.5 2.5 2-2 2.3 2.3" />
+    </svg>
+  );
+}
+
+function ReasoningGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M6.2 2.5a3.5 3.5 0 0 0-3.4 4.4A2.8 2.8 0 0 0 4 12.3a3.2 3.2 0 0 0 4.2 1.1V2.5z" />
+      <path d="M9.8 2.5a3.5 3.5 0 0 1 3.4 4.4 2.8 2.8 0 0 1-1.2 5.4 3.2 3.2 0 0 1-4.2 1.1V2.5z" />
+    </svg>
+  );
+}
+
+function HistoryGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
+      <path d="M2.5 2.8v3.6H6" />
+      <path d="M8 5.4V8l1.8 1.1" />
+    </svg>
+  );
+}
+
+function protocolTag(type: string | undefined): { label: string; tone: string } | null {
+  const normalized = normalizeProviderType(type);
+  if (normalized === 'ollama') return null;
+  if (normalized === 'openai') return { label: 'completions', tone: 'green' };
+  if (normalized === 'responses') return { label: 'responses', tone: 'green' };
+  if (normalized === 'anthropic') return { label: 'anthropic', tone: 'amber' };
+  if (normalized === 'gemini') return { label: 'gemini', tone: 'blue' };
+  return { label: normalized || 'custom', tone: 'neutral' };
+}
+
 /** Persist account.provider as a curated preset id (align with TUI). */
 function toPresetProviderId(type: string | undefined): string {
   const wire = normalizeProviderType(type);
@@ -63,9 +164,26 @@ function toPresetProviderId(type: string | undefined): string {
   return wire;
 }
 
-/** 把 context_window 数值格式化为下拉标签：1000000 → "1M"，其余 → "<n>K"。 */
+/** 把 context_window 数值格式化为标准计算机 M/K 标签（杜绝 1.048576M 异常）：1048576 → "1M"，262144 → "256K"。 */
 function fmtContextWindow(v: number): string {
-  return v >= 1000000 ? `${v / 1000000}M` : `${Math.round(v / 1000)}K`;
+  if (v <= 0) return String(v);
+  if (v >= 1048576 && v % 1048576 === 0) {
+    return `${v / 1048576}M`;
+  }
+  if (v >= 1000000 && v % 1000000 === 0) {
+    return `${v / 1000000}M`;
+  }
+  if (v >= 950000 && v <= 1100000) {
+    return '1M';
+  }
+  if (v >= 1900000 && v <= 2200000) {
+    return '2M';
+  }
+  if (v >= 1024) {
+    const k = v % 1024 === 0 ? v / 1024 : v % 1000 === 0 ? v / 1000 : Math.round(v / 1024);
+    return `${k}K`;
+  }
+  return String(v);
 }
 
 /** Shared modal chrome for the settings dialogs. */
@@ -89,6 +207,13 @@ function SettingsModal({
 }) {
   const { t } = useSettings();
   const mountTimeRef = useRef(Date.now());
+
+  // 遮罩空白处点击关闭：仅在「按下」与「松开」都落在遮罩本身时生效，避免拖拽划词误关。
+  // 挂载前 150ms 忽略外部点击，防双层弹窗点击穿透。
+  const backdropDismiss = useBackdropDismiss(() => {
+    if (Date.now() - mountTimeRef.current < 150) return;
+    onClose();
+  });
   const sizeClass = extraLarge
     ? ' modal-card-xl'
     : large
@@ -99,16 +224,11 @@ function SettingsModal({
   const modalContent = (
     <div
       class="modal-overlay"
-      onClick={(e) => {
-        // 防双层弹窗点击穿透：挂载前 150ms 忽略外部点击误关
-        if (Date.now() - mountTimeRef.current < 150) return;
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...backdropDismiss}
       style={{ zIndex: 99999 }}
     >
       <div class={'modal-card' + sizeClass} onClick={(e) => e.stopPropagation()}>
         <div class="modal-header">
-          <span>⚙</span>
           <h3>{title}</h3>
           <button class="ghost-btn modal-close" onClick={onClose} aria-label={t('settings.close')}>
             ×
@@ -178,16 +298,17 @@ export function LanguageDialog({ onClose }: { onClose: () => void }) {
     <SettingsModal title={t('settings.menuLang')} onClose={onClose}>
       <div class="field-group">
         <span class="modal-label">{t('settings.language')}</span>
-        <div class="segmented">
+        <div class="segmented-language-grid">
           {options.map((o) => (
             <button
               key={o.value}
-              class={'segmented-btn' + (lang === o.value ? ' active' : '')}
+              class={'segmented-language-btn' + (lang === o.value ? ' active' : '')}
               onClick={() => void chooseLanguage(o.value)}
               disabled={saving}
               type="button"
             >
-              {o.label}
+              <span class="lang-btn-name">{o.label}</span>
+              {lang === o.value && <span class="lang-btn-check">✓</span>}
             </button>
           ))}
         </div>
@@ -320,10 +441,19 @@ function AccountFormDialog({
   );
 }
 
-export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
+function notifyConfigChange() {
+  invalidateConfigCache();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('jeikcode:config-reloaded'));
+    window.dispatchEvent(new CustomEvent('jeikcode:reload-models'));
+  }
+}
+
+export function ModelConfigView({ onDone }: { onDone?: () => void }) {
   const { t } = useSettings();
-  const [config, setConfig] = useState<ConfigInfo | null>(null);
+  const [config, setConfig] = useState<ConfigInfo | null>(() => peekConfigCache());
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
 
   // 折叠状态（按 accountId 控制，默认全部展开）
   const [collapsedAccounts, setCollapsedAccounts] = useState<Record<string, boolean>>({});
@@ -338,16 +468,44 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [deleteAccountTarget, setDeleteAccountTarget] = useState<string | null>(null);
 
-  const reload = () =>
-    getConfig()
-      .then(setConfig)
+  const reload = (notify = false) => {
+    setLoadError(null);
+    setReloading(true);
+    return getConfig()
+      .then((cfg) => {
+        setConfig(cfg);
+        if (notify) {
+          notifyConfigChange();
+        }
+      })
       .catch((e: unknown) => {
         const raw = e instanceof Error ? e.message : String(e);
         const auth = /401|unauthorized|access token/i.test(raw);
         setLoadError(auth ? t('settings.authFailed') : raw);
+      })
+      .finally(() => {
+        setReloading(false);
       });
+  };
 
-  useEffect(() => { reload(); }, []);
+  useEffect(() => { void reload(); }, []);
+
+  // Another instance may change the model catalog / default selection. The
+  // server already broadcasts `config_reloaded`; re-read this pane in place so
+  // the dialog never shows (or saves back) a stale snapshot.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const refresh = () => {
+      getConfig()
+        .then((cfg) => {
+          invalidateConfigCache();
+          setConfig(cfg);
+        })
+        .catch(() => {});
+    };
+    window.addEventListener('jeikcode:config-reloaded', refresh);
+    return () => window.removeEventListener('jeikcode:config-reloaded', refresh);
+  }, []);
 
   const toggleCollapse = (accId: string) => {
     setCollapsedAccounts((prev) => ({ ...prev, [accId]: !prev[accId] }));
@@ -444,9 +602,20 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-    <SettingsModal title={t('settings.menuModel')} extraLarge onClose={onClose}>
       <div class="field-group" style={{ gap: '14px' }}>
-        {loadError && <div class="modal-error">{t('settings.loadFailed')}: {loadError}</div>}
+        {loadError && (
+          <div class="modal-error" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+            <span>{t('settings.loadFailed')}: {loadError}</span>
+            <button
+              type="button"
+              class="btn"
+              disabled={reloading}
+              onClick={() => void reload()}
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        )}
         {!config && !loadError && <div class="modal-loading">{t('settings.loading')}</div>}
         {config && (
           <>
@@ -455,51 +624,46 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
               <div class="model-config-overview-top">
                 <div class="model-config-overview-info">
                   <div class="model-config-overview-title">
-                    <span>⚡</span>
-                    <span>{t('settings.menuModel')}</span>
-                  </div>
-                  <div class="model-config-overview-desc">
-                    {t('settings.modelConfigSubtitle')}
+                    <span>{t('settings.tabModels')}</span>
                   </div>
                 </div>
 
                 <div class="model-config-overview-actions">
                   <button
-                    class="btn btn-primary"
+                    class="btn btn-primary model-config-action-btn"
                     type="button"
                     onClick={() => {
                       setAddModelDefaultAccount(undefined);
                       setShowAddModel(true);
                     }}
                   >
-                    ＋ {t('settings.addModel')}
+                    <PlusGlyph />
+                    <span>{t('settings.addModel')}</span>
                   </button>
                   <button
-                    class="btn"
+                    class="btn model-config-action-btn"
                     type="button"
                     onClick={() => setShowAddAccount(true)}
                   >
-                    ＋ {t('settings.addAccount')}
+                    <PlusGlyph />
+                    <span>{t('settings.addAccount')}</span>
                   </button>
                 </div>
               </div>
 
               <div class="model-config-overview-stats">
                 <div class="model-config-stat-chip default-provider" title={t('settings.activeDefaultModel')}>
-                  <span>🎯 {t('settings.activeDefaultModel')}:</span>
+                  <StarGlyph filled />
                   <strong>{config.default_provider || t('settings.notSet')}</strong>
                 </div>
                 <div class="model-config-stat-chip">
-                  <span>🏢</span>
                   <span>{t('settings.statsProviders', { n: accountGroups.length })}</span>
                 </div>
                 <div class="model-config-stat-chip">
-                  <span>🤖</span>
                   <span>{t('settings.statsModels', { n: config.providers?.length ?? 0 })}</span>
                 </div>
                 {config.path && (
                   <div class="model-config-stat-chip config-path" title={config.path}>
-                    <span>📄</span>
                     <span>{config.path}</span>
                   </div>
                 )}
@@ -509,7 +673,12 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
             {/* Toolbar: Search + Controls */}
             <div class="model-config-toolbar">
               <div class="model-config-search-box">
-                <span class="model-config-search-icon">🔍</span>
+                <span class="model-config-search-icon" aria-hidden="true">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+                    <circle cx="7" cy="7" r="4.5" />
+                    <path d="M10.5 10.5L14 14" />
+                  </svg>
+                </span>
                 <input
                   class="model-config-search-input"
                   type="text"
@@ -531,11 +700,13 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
 
               <div class="model-config-toolbar-actions">
                 <button
-                  class="provider-group-btn"
+                  class="model-config-fold-btn"
                   type="button"
                   onClick={toggleAllCollapse}
+                  title={allCollapsed ? t('settings.expandAll') : t('settings.collapseAll')}
+                  aria-label={allCollapsed ? t('settings.expandAll') : t('settings.collapseAll')}
                 >
-                  {allCollapsed ? `▼ ${t('settings.expandAll')}` : `▲ ${t('settings.collapseAll')}`}
+                  <ChevronGlyph up={!allCollapsed} />
                 </button>
               </div>
             </div>
@@ -544,7 +715,6 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
             <div class="provider-list">
               {filteredAccountGroups.length === 0 && (
                 <div class="model-config-empty">
-                  <span style={{ fontSize: '26px' }}>🔍</span>
                   <span>{t('settings.noSearchResults')}</span>
                   {searchQuery && (
                     <button
@@ -561,6 +731,7 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
 
               {filteredAccountGroups.map(({ account, models }) => {
                 const isCollapsed = Boolean(collapsedAccounts[account.id]);
+                const tag = protocolTag(account.type);
                 return (
                   <div key={account.id} class="provider-group">
                     <div
@@ -571,53 +742,55 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
                         <span class={`provider-group-toggle ${!isCollapsed ? 'open' : ''}`}>
                           ▶
                         </span>
-                        <span class="provider-group-title" title={account.id}>
+                        <span class="provider-group-title" title={account.base_url || account.id}>
                           {account.id}
                         </span>
-                        <span class="provider-group-badge">{account.type}</span>
-                        {account.base_url && (
-                          <span class="provider-group-url" title={account.base_url}>
-                            🔗 {account.base_url}
+                        {tag && (
+                          <span class={`provider-group-badge proto-${tag.tone}`} title={account.type}>
+                            {tag.label}
                           </span>
                         )}
                       </div>
 
                       <div class="provider-group-meta-actions" onClick={(e) => e.stopPropagation()}>
-                        <span class={`provider-status-badge ${account.has_api_key ? 'ok' : 'nok'}`}>
-                          <span style={{ fontSize: '9px' }}>●</span>
-                          <span>{account.has_api_key ? t('settings.apiKeyConfigured') : t('settings.apiKeyNotConfigured')}</span>
-                        </span>
-                        <span class="provider-group-count">
-                          {t('settings.modelsCount', { n: models.length })}
+                        <span
+                          class="provider-group-count"
+                          title={t('settings.modelsCount', { n: models.length })}
+                          aria-label={t('settings.modelsCount', { n: models.length })}
+                        >
+                          {models.length}
                         </span>
 
                         <div class="provider-group-actions">
                           <button
-                            class="provider-group-btn btn-accent"
+                            class="provider-group-icon-btn btn-accent"
                             type="button"
                             onClick={() => {
                               setAddModelDefaultAccount(account.id);
                               setShowAddModel(true);
                             }}
                             title={t('settings.addModel')}
+                            aria-label={t('settings.addModel')}
                           >
-                            ＋ {t('settings.model')}
+                            <PlusGlyph />
                           </button>
                           <button
-                            class="provider-group-btn"
+                            class="provider-group-icon-btn"
                             type="button"
                             onClick={() => setEditAccountTarget(account)}
                             title={t('settings.edit')}
+                            aria-label={t('settings.edit')}
                           >
-                            {t('settings.edit')}
+                            <PencilGlyph />
                           </button>
                           <button
-                            class="provider-group-btn danger"
+                            class="provider-group-icon-btn danger"
                             type="button"
                             onClick={() => setDeleteAccountTarget(account.id)}
                             title={t('settings.delete')}
+                            aria-label={t('settings.delete')}
                           >
-                            {t('settings.delete')}
+                            <TrashGlyph />
                           </button>
                         </div>
                       </div>
@@ -627,7 +800,6 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
                       <div class="provider-group-models">
                         {models.length === 0 ? (
                           <div class="provider-group-empty">
-                            <span>ℹ️</span>
                             <span>{t('settings.noModels')}</span>
                           </div>
                         ) : (
@@ -639,74 +811,94 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
                             .map((p) => (
                               <div
                                 key={p.name}
-                                class={`model-card ${p.is_default ? 'default' : ''}`}
+                                class={`model-card ${p.is_default ? 'default' : ''}${p.is_default ? '' : ' is-selectable'}`}
+                                title={p.is_default ? undefined : t('settings.setAsDefault')}
+                                onClick={async (e) => {
+                                  if (p.is_default) return;
+                                  if ((e.target as HTMLElement).closest('button')) return;
+                                  const selection = window.getSelection?.();
+                                  if (selection && selection.toString().trim()) return;
+                                  await setDefaultProvider(p.name);
+                                  reload(true);
+                                }}
                               >
                                 <div class="model-card-head">
                                   <div class="model-card-name-row">
                                     <span class="model-card-name">{p.name}</span>
                                     {p.is_default && (
-                                      <span class="model-card-badge">★ {t('settings.default')}</span>
+                                      <span class="model-card-default-star" title={t('settings.default')}>
+                                        <StarGlyph filled />
+                                      </span>
                                     )}
-                                    <span class="model-card-id" title={p.model}>ID: {p.model}</span>
+                                    {p.model && p.model !== p.name && (
+                                      <span class="model-card-id" title={p.model}>{p.model}</span>
+                                    )}
                                   </div>
-                                  <div class="model-card-actions">
+                                  <div class="model-card-actions" onClick={(e) => e.stopPropagation()}>
                                     {!p.is_default && (
                                       <button
-                                        class="provider-group-btn btn-accent"
+                                        class="model-card-icon-btn btn-accent"
                                         type="button"
                                         onClick={async () => {
                                           await setDefaultProvider(p.name);
-                                          reload();
+                                          reload(true);
                                         }}
                                         title={t('settings.setAsDefault')}
+                                        aria-label={t('settings.setAsDefault')}
                                       >
-                                        {t('settings.setAsDefault')}
+                                        <StarGlyph />
                                       </button>
                                     )}
                                     <button
-                                      class="provider-group-btn"
+                                      class="model-card-icon-btn"
                                       type="button"
                                       onClick={() => setEditModelTarget(p)}
                                       title={t('settings.edit')}
+                                      aria-label={t('settings.edit')}
                                     >
-                                      {t('settings.edit')}
+                                      <PencilGlyph />
                                     </button>
                                     <button
-                                      class="provider-group-btn danger"
+                                      class="model-card-icon-btn danger"
                                       type="button"
                                       onClick={() => setDeleteModelTarget(p.name)}
                                       title={t('settings.delete')}
+                                      aria-label={t('settings.delete')}
                                     >
-                                      {t('settings.delete')}
+                                      <TrashGlyph />
                                     </button>
                                   </div>
                                 </div>
 
-                                <div class="model-card-meta">
-                                  {p.context_window && (
-                                    <div class="model-card-meta-item">
-                                      <span class="pk">⚡ {t('settings.contextWindow')}:</span>
-                                      <span class="pv">{(p.context_window / 1000).toFixed(0)}k</span>
-                                    </div>
-                                  )}
-                                  <div class="model-card-meta-item">
-                                    <span class="pk">🖼️ {t('settings.supportsVision')}:</span>
-                                    <span class="pv">{p.supports_vision ? t('settings.yes') : t('settings.no')}</span>
-                                  </div>
-                                  <div class="model-card-meta-item">
-                                    <span class="pk">🧠 {t('settings.reasoningModel')}:</span>
-                                    <span class="pv">{p.reasoning_model ? t('settings.yes') : t('settings.no')}</span>
-                                    {p.reasoning_model && p.reasoning_effort && (
-                                      <span class="pv" style={{ marginLeft: '4px' }}>({p.reasoning_effort})</span>
+                                {(p.context_window || p.supports_vision || p.reasoning_model || p.reasoning_history) && (
+                                  <div class="model-card-meta">
+                                    {p.context_window && (
+                                      <span class="model-card-meta-item" title={t('settings.contextWindow')}>
+                                        <ContextGlyph />
+                                        <span class="pv">{fmtContextWindow(p.context_window)}</span>
+                                      </span>
+                                    )}
+                                    {p.supports_vision && (
+                                      <span class="model-card-meta-item" title={t('settings.supportsVision')}>
+                                        <ImageGlyph />
+                                      </span>
+                                    )}
+                                    {p.reasoning_model && (
+                                      <span class="model-card-meta-item" title={t('settings.reasoningModel')}>
+                                        <ReasoningGlyph />
+                                        {p.reasoning_effort && (
+                                          <span class="pv mono">{p.reasoning_effort}</span>
+                                        )}
+                                      </span>
+                                    )}
+                                    {p.reasoning_history && (
+                                      <span class="model-card-meta-item" title={t('settings.reasoningHistory')}>
+                                        <HistoryGlyph />
+                                        <span class="pv mono">{p.reasoning_history}</span>
+                                      </span>
                                     )}
                                   </div>
-                                  {p.reasoning_history && (
-                                    <div class="model-card-meta-item">
-                                      <span class="pk">💭 {t('settings.reasoningHistory')}:</span>
-                                      <span class="pv">{p.reasoning_history}</span>
-                                    </div>
-                                  )}
-                                </div>
+                                )}
                               </div>
                             ))
                         )}
@@ -719,7 +911,6 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
           </>
         )}
       </div>
-    </SettingsModal>
 
     {showAddModel && (
       <ProviderFormDialog
@@ -733,7 +924,7 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
         onSaved={() => {
           setShowAddModel(false);
           setAddModelDefaultAccount(undefined);
-          reload();
+          reload(true);
         }}
       />
     )}
@@ -746,7 +937,7 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
         onClose={() => setEditModelTarget(null)}
         onSaved={() => {
           setEditModelTarget(null);
-          reload();
+          reload(true);
         }}
       />
     )}
@@ -757,7 +948,7 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
         onClose={() => setShowAddAccount(false)}
         onSaved={() => {
           setShowAddAccount(false);
-          reload();
+          reload(true);
         }}
       />
     )}
@@ -769,7 +960,7 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
         onClose={() => setEditAccountTarget(null)}
         onSaved={() => {
           setEditAccountTarget(null);
-          reload();
+          reload(true);
         }}
       />
     )}
@@ -782,7 +973,7 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
         cancelLabel={t('common.cancel')}
         onConfirm={async () => {
           await deleteProvider(deleteModelTarget);
-          reload();
+          reload(true);
         }}
         onClose={() => setDeleteModelTarget(null)}
       />
@@ -796,12 +987,21 @@ export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
         cancelLabel={t('common.cancel')}
         onConfirm={async () => {
           await deleteAccount(deleteAccountTarget);
-          reload();
+          reload(true);
         }}
         onClose={() => setDeleteAccountTarget(null)}
       />
     )}
     </>
+  );
+}
+
+export function ModelConfigDialog({ onClose }: { onClose: () => void }) {
+  const { t } = useSettings();
+  return (
+    <SettingsModal title={t('settings.menuModel')} extraLarge onClose={onClose}>
+      <ModelConfigView onDone={onClose} />
+    </SettingsModal>
   );
 }
 
@@ -848,11 +1048,11 @@ function ProviderFormDialog({
   const [name] = useState(editing?.name ?? '');
   const [nameInput, setNameInput] = useState(editing?.name ?? '');
   const [model, setModel] = useState(editing?.model ?? '');
-  const [contextWindow, setContextWindow] = useState<number>(
-    editing?.context_window ?? 256000,
+  const [contextWindow, setContextWindow] = useState<number | ''>(
+    editing?.context_window ?? 262144,
   );
   const [maxTokens, setMaxTokens] = useState<number | ''>(
-    editing?.max_tokens ?? 64000,
+    editing?.max_tokens ?? 65536,
   );
   const [supportsVision, setSupportsVision] = useState(Boolean(editing?.supports_vision));
   const [reasoningModel, setReasoningModel] = useState(Boolean(editing?.reasoning_model));
@@ -874,12 +1074,15 @@ function ProviderFormDialog({
   const [fetching, setFetching] = useState(false);
   const [fetchStatus, setFetchStatus] = useState<string | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  // 探活：用当前账号 key/url 按协议发一次极小「Hi」，展示 OK+延迟 / Failed。
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<{
+    ok: boolean;
+    latencyMs: number;
+    error?: string;
+  } | null>(null);
   const [highlight, setHighlight] = useState(0);
   const modelWrapRef = useRef<HTMLDivElement | null>(null);
-
-  const cwOptions = CONTEXT_WINDOW_PRESETS.includes(contextWindow)
-    ? CONTEXT_WINDOW_PRESETS
-    : [contextWindow, ...CONTEXT_WINDOW_PRESETS];
 
   const accountOptions = useMemo(
     () =>
@@ -941,6 +1144,33 @@ function ProviderFormDialog({
     }
   };
 
+  const runProbe = async () => {
+    if (!selectedAccount) {
+      setFetchStatus(t('settings.needAccountFirst'));
+      return;
+    }
+    const id = model.trim();
+    if (!id) {
+      setFetchStatus(t('settings.allRequired'));
+      return;
+    }
+    setProbing(true);
+    setProbeResult(null);
+    try {
+      const res = await probeUpstreamModel({
+        account: selectedAccount.id,
+        provider_name: isEdit ? name : undefined,
+        skip_tls_verify: selectedAccount.skip_tls_verify,
+        model: id,
+      });
+      setProbeResult({ ok: res.ok, latencyMs: res.latency_ms, error: res.error });
+    } catch (e: unknown) {
+      setProbeResult({ ok: false, latencyMs: 0, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setProbing(false);
+    }
+  };
+
   const pickModel = (id: string) => {
     setModel(id);
     if (!nameInput.trim()) {
@@ -976,11 +1206,17 @@ function ProviderFormDialog({
       reasoning_effort: reasoningModel && reasoningEffort ? reasoningEffort : null,
       reasoning_history: reasoningModel ? reasoningHistory : null,
       thinking_enabled: reasoningModel ? !isOff : undefined,
-      thinking_type: isOff ? 'disabled' : (reasoningModel ? 'enabled' : undefined),
+      // Only write an explicit disabled marker. "enabled" is protocol-specific
+      // (Claude legacy budget, Kimi K2, ...), so the adapters decide the mode
+      // from the model generation instead of this dialog forcing one.
+      thinking_type: isOff ? 'disabled' : undefined,
       thinking_budget: isOff
         ? 0
-        : (reasoningModel && budgetEnabled && thinkingBudget !== '' ? Number(thinkingBudget) : null),
+        : (reasoningModel && budgetEnabled && thinkingBudget !== ''
+            ? Math.max(1024, Number(thinkingBudget))
+            : null),
     };
+    const cwVal = contextWindow !== '' && Number(contextWindow) > 0 ? Number(contextWindow) : 262144;
     const maxTokensVal = maxTokens !== '' && Number(maxTokens) > 0 ? Number(maxTokens) : null;
     const accountType = normalizeProviderType(selectedAccount.type);
     try {
@@ -989,7 +1225,7 @@ function ProviderFormDialog({
           ...(newName !== name ? { name: newName } : {}),
           model: model.trim(),
           account: selectedAccount.id,
-          context_window: contextWindow,
+          context_window: cwVal,
           max_tokens: maxTokensVal,
           clear_max_tokens: maxTokensVal === null,
           ...advanced,
@@ -1003,7 +1239,7 @@ function ProviderFormDialog({
           type: accountType,
           model: model.trim(),
           account: selectedAccount.id,
-          context_window: contextWindow,
+          context_window: cwVal,
           max_tokens: maxTokensVal,
           set_default: setDefault || undefined,
           ...advanced,
@@ -1038,6 +1274,7 @@ function ProviderFormDialog({
                   setAccount(v);
                   setCandidates([]);
                   setFetchStatus(null);
+                  setProbeResult(null);
                 }}
               />
               <span class="field-hint">{t('settings.inheritAccountCreds')}</span>
@@ -1068,6 +1305,7 @@ function ProviderFormDialog({
               onInput={(e) => {
                 setModel((e.target as HTMLInputElement).value);
                 setModelMenuOpen(true);
+                setProbeResult(null);
               }}
               onKeyDown={(e) => {
                 if (!modelMenuOpen || filtered.length === 0) return;
@@ -1094,6 +1332,23 @@ function ProviderFormDialog({
             >
               {fetching ? '…' : '↻'}
             </button>
+            <button
+              type="button"
+              class="btn model-id-probe"
+              disabled={probing || !selectedAccount || !model.trim()}
+              title={t('settings.probeHint')}
+              onClick={() => void runProbe()}
+            >
+              {probing ? '…' : t('settings.probe')}
+            </button>
+            {probeResult && (
+              <span
+                class={'model-probe-status ' + (probeResult.ok ? 'ok' : 'bad')}
+                title={probeResult.error || ''}
+              >
+                {probeResult.ok ? `OK · ${probeResult.latencyMs} ms` : 'Failed'}
+              </span>
+            )}
           </div>
           {fetchStatus && <span class="field-hint">{fetchStatus}</span>}
           {modelMenuOpen && filtered.length > 0 && (
@@ -1116,20 +1371,53 @@ function ProviderFormDialog({
           )}
         </div>
 
-        {/* 输入与输出控制区（无冗余胶囊，简洁直观） */}
+        {/* 输入与输出控制区（均支持标准计算机 K/M 预设档位与自由自定义输入） */}
         <div class="add-model-io-grid">
           <div class="add-model-field">
             <label class="add-model-label">
               {t('settings.contextWindowInput')}
             </label>
-            <Select
-              value={String(contextWindow)}
-              options={cwOptions.map((v) => ({
-                value: String(v),
-                label: `${fmtContextWindow(v)} tokens`,
-              }))}
-              onChange={(v) => setContextWindow(Number(v))}
-            />
+            <div class="max-tokens-control-row">
+              <div style={{ flex: 1 }}>
+                <Select
+                  value={
+                    contextWindow === ''
+                      ? 'custom'
+                      : CONTEXT_WINDOW_PRESETS.includes(Number(contextWindow))
+                        ? String(contextWindow)
+                        : 'custom'
+                  }
+                  options={[
+                    ...CONTEXT_WINDOW_PRESETS.map((v) => ({
+                      value: String(v),
+                      label: `${fmtContextWindow(v)} tokens`,
+                    })),
+                    { value: 'custom', label: t('settings.customTokens') },
+                  ]}
+                  onChange={(v) => {
+                    if (v === 'custom') {
+                      if (contextWindow === '' || CONTEXT_WINDOW_PRESETS.includes(Number(contextWindow))) {
+                        setContextWindow(262144);
+                      }
+                    } else {
+                      setContextWindow(Number(v));
+                    }
+                  }}
+                />
+              </div>
+              <input
+                type="number"
+                class="menu-input max-tokens-input"
+                min="1"
+                step="1024"
+                placeholder="Tokens"
+                value={contextWindow}
+                onInput={(e) => {
+                  const val = parseInt((e.target as HTMLInputElement).value, 10);
+                  setContextWindow(isNaN(val) || val <= 0 ? '' : val);
+                }}
+              />
+            </div>
           </div>
 
           <div class="add-model-field">
@@ -1156,7 +1444,7 @@ function ProviderFormDialog({
                   onChange={(v) => {
                     if (v === 'custom') {
                       if (maxTokens === '' || MAX_OUTPUT_PRESETS.includes(Number(maxTokens))) {
-                        setMaxTokens(64000);
+                        setMaxTokens(65536);
                       }
                     } else {
                       setMaxTokens(Number(v));
@@ -1199,17 +1487,21 @@ function ProviderFormDialog({
             onClick={() => setSupportsVision((v) => !v)}
           >
             <span class="pill-dot" />
-            <span class="pill-icon">👁️</span>
             <span class="pill-text">{t('settings.supportsVision')}</span>
           </button>
 
           <button
             type="button"
             class={'capsule-toggle-pill' + (reasoningModel ? ' active' : '')}
-            onClick={() => setReasoningModel((v) => !v)}
+            onClick={() => {
+              const next = !reasoningModel;
+              setReasoningModel(next);
+              if (next) {
+                setReasoningHistory('include');
+              }
+            }}
           >
             <span class="pill-dot" />
-            <span class="pill-icon">🧠</span>
             <span class="pill-text">{t('settings.reasoningModel')}</span>
           </button>
         </div>
@@ -1232,10 +1524,11 @@ function ProviderFormDialog({
                         setReasoningEffort(v);
                         if (v === 'off') {
                           setBudgetEnabled(false);
-                        } else if (v && !thinkingBudget) {
+                          setThinkingBudget('');
+                        } else if (budgetEnabled) {
                           const defaults: Record<string, number> = {
                             low: 2048,
-                            medium: 5120,
+                            medium: 8192,
                             high: 16384,
                             xhigh: 32768,
                             max: 65536,
@@ -1252,15 +1545,17 @@ function ProviderFormDialog({
                       onClick={() => {
                         const next = !budgetEnabled;
                         setBudgetEnabled(next);
-                        if (next && !thinkingBudget) {
+                        if (next) {
                           const defaults: Record<string, number> = {
                             low: 2048,
-                            medium: 5120,
+                            medium: 8192,
                             high: 16384,
                             xhigh: 32768,
                             max: 65536,
                           };
-                          setThinkingBudget(defaults[reasoningEffort] || 2048);
+                          setThinkingBudget(thinkingBudget || defaults[reasoningEffort] || 16384);
+                        } else {
+                          setThinkingBudget('');
                         }
                       }}
                     >
@@ -1272,7 +1567,7 @@ function ProviderFormDialog({
                     <input
                       type="number"
                       class="menu-input reasoning-budget-input"
-                      min="0"
+                      min="1024"
                       step="1024"
                       placeholder="Tokens"
                       value={thinkingBudget}
@@ -1293,14 +1588,14 @@ function ProviderFormDialog({
                     class={'history-pill' + (reasoningHistory === 'include' ? ' active' : '')}
                     onClick={() => setReasoningHistory('include')}
                   >
-                    💭 {t('settings.historyInclude')}
+                    {t('settings.historyInclude')}
                   </button>
                   <button
                     type="button"
                     class={'history-pill' + (reasoningHistory === 'exclude' ? ' active' : '')}
                     onClick={() => setReasoningHistory('exclude')}
                   >
-                    🚫 {t('settings.historyExclude')}
+                    {t('settings.historyExclude')}
                   </button>
                 </div>
               </div>

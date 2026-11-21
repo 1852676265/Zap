@@ -13,7 +13,7 @@
 //!   - consecutive user items merge into one user entry with discrete content parts (input_text/input_image);
 //!   - `store: false` (full input is resent; cache is prefix-based, not stored-response).
 
-use super::openai_compat::{build_http_client, resolve_wire_effort, SwappableClient};
+use super::openai_compat::{resolve_wire_effort, SwappableClient};
 use super::reasoning::ReasoningPolicy;
 use super::retry::{self, RetryPolicy};
 use super::sign::RequestSigner;
@@ -23,7 +23,7 @@ use futures::StreamExt;
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 use zap_kernel::message::{Message, Role};
-use zap_kernel::provider::{ChatOptions, LlmProvider, ReasoningEffort, ToolChoice};
+use zap_kernel::provider::{ChatOptions, LlmProvider, ToolChoice};
 use zap_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
 use zap_kernel::tool::{ToolCall, ToolDef};
 
@@ -113,9 +113,12 @@ impl ResponsesProvider {
         let user_agent = cfg.user_agent.clone();
         let url = format!("{}/responses", cfg.base_url.trim_end_matches('/'));
         let initial_tls12 = zap_config::tls::should_cap_url(&url);
-        let client = std::sync::Arc::new(SwappableClient::new(initial_tls12, move |tls12| {
-            build_http_client(connect_timeout, skip_tls_verify, user_agent.clone(), tls12)
-        })?);
+        let client = std::sync::Arc::new(SwappableClient::new_shared(
+            connect_timeout,
+            skip_tls_verify,
+            user_agent,
+            initial_tls12,
+        )?);
         Ok(Self {
             cfg,
             policy,

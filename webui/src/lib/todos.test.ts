@@ -5,12 +5,12 @@ import {
   applyTodoAction,
   foldTodoToolCall,
   isTodoTool,
+  liveTodoPanelItems,
   parseTodoPlan,
   parseTodosFromOutput,
   placeArchivedTodos,
   reduceLiveTodo,
   reduceTodosFromCalls,
-  resolveRenderedTodos,
   restoreStickyTodos,
   settleLiveTodo,
   stickyFromDiskCatchUp,
@@ -18,6 +18,26 @@ import {
   todoCallIdsFromMessages,
   todoCounts,
 } from './todos.ts';
+
+test('live todo panel keeps a completed list visible until terminal settlement clears it', () => {
+  const completed = [{ content: 'last task', status: 'completed' as const }];
+  assert.deepEqual(liveTodoPanelItems(completed), completed);
+  assert.equal(liveTodoPanelItems([]), null);
+  assert.equal(liveTodoPanelItems(null), null);
+});
+
+test('frontend todo preview rejects clear items carrying task text', () => {
+  const before = [{ content: 'keep', status: 'pending' as const }];
+  const batch = applyTodoAction(before, JSON.stringify({
+    actions: [
+      { action: 'clear', content: '' },
+      { action: 'clear', content: 'new task' },
+    ],
+  }));
+  const single = applyTodoAction(before, JSON.stringify({ action: 'clear', content: 'task' }));
+  assert.equal(batch, before, 'invalid batch must not flash a cleared or fabricated list');
+  assert.equal(single, before, 'invalid single action must not clear the list either');
+});
 
 test('parseTodoPlan accepts full list shape', () => {
   const items = parseTodoPlan(
@@ -31,6 +51,52 @@ test('parseTodoPlan accepts full list shape', () => {
   );
   assert.equal(items?.length, 3);
   assert.equal(items?.[1]?.status, 'in_progress');
+});
+
+test('parseTodoPlan applies update after plan (plan is the baseline)', () => {
+  const items = parseTodoPlan(
+    JSON.stringify({
+      plan: ['A', 'B', 'C'],
+      update: [
+        { content: 'B', status: 'completed' },
+        { id: 1, status: 'in_progress' },
+      ],
+    }),
+  );
+  assert.equal(items?.length, 3);
+  assert.equal(items?.[0]?.status, 'in_progress');
+  assert.equal(items?.[1]?.status, 'completed');
+  assert.equal(items?.[2]?.status, 'pending');
+});
+
+test('parseTodoPlan ignores JSON key order (update before plan)', () => {
+  const items = parseTodoPlan(
+    JSON.stringify({
+      update: [{ id: 1, status: 'completed' }],
+      plan: ['A', 'B'],
+    }),
+  );
+  assert.equal(items?.length, 2);
+  assert.equal(items?.[0]?.status, 'completed');
+  assert.equal(items?.[1]?.status, 'pending');
+});
+
+test('foldTodoToolCall applies a combined plan + update once', () => {
+  const cur = foldTodoToolCall(
+    null,
+    'todo_write',
+    JSON.stringify({ plan: ['A', 'B'], update: [{ id: 2, status: 'in_progress' }] }),
+  );
+  assert.equal(cur?.length, 2);
+  assert.equal(cur?.[0]?.status, 'pending');
+  assert.equal(cur?.[1]?.status, 'in_progress');
+});
+
+test('foldTodoToolCall applies a top-level update patch', () => {
+  let cur = foldTodoToolCall(null, 'todo_write', JSON.stringify({ plan: ['A', 'B'] }));
+  cur = foldTodoToolCall(cur, 'todo_write', JSON.stringify({ update: [{ id: 1, status: 'completed' }] }));
+  assert.equal(cur?.[0]?.status, 'completed');
+  assert.equal(cur?.[1]?.status, 'pending');
 });
 
 test('applyTodoAction handles batch actions[] payload', () => {
@@ -972,6 +1038,25 @@ test('parseTodosFromOutput extracts authoritative numbered list across various g
   assert.equal(parsed?.[5]?.status, 'completed');
 });
 
+test('parseTodosFromOutput treats canonical (no tasks) as an authoritative empty list', () => {
+  assert.deepEqual(parseTodosFromOutput('all tasks cleared\n\n(no tasks)'), []);
+  assert.equal(parseTodosFromOutput('some unrelated tool output'), null);
+});
+
+test('a clear result leaves no live doc, so stop archives nothing', () => {
+  const live = reduceLiveTodo(null, {
+    type: 'hydrate',
+    items: [{ content: 'stale task', status: 'in_progress' }],
+  });
+  assert.ok(live);
+  const cleared = reduceLiveTodo(live, {
+    type: 'result',
+    items: parseTodosFromOutput('all tasks cleared\n\n(no tasks)')!,
+  });
+  assert.equal(cleared, null);
+  assert.deepEqual(settleLiveTodo(cleared), { archive: null, next: null });
+});
+
 test('archived tool output does not resurrect the live panel', () => {
   const messages = [
     {
@@ -1039,68 +1124,31 @@ test('archived tool output does not resurrect the live panel', () => {
   );
   assert.equal(placed[0]!.parts.some((part) => part.kind === 'todo_list'), false);
   assert.equal(placed[2]!.parts.some((part) => part.kind === 'todo_list'), true);
+
+  // A natural steer can append an EMPTY assistant placeholder before the old
+  // terminal commits its todo archive. The completed plan belongs to the
+  // previous answer, NOT the new loop's placeholder.
+  const steerPlaced = placeArchivedTodos(
+    [
+      { role: 'user', parts: [{ kind: 'text', text: '上一问' }] },
+      { role: 'assistant', parts: [{ kind: 'text', text: '上一答' }] },
+      { role: 'user', parts: [{ kind: 'text', text: 'steer 自然发出' }] },
+      { role: 'assistant', parts: [] },
+    ],
+    settled.archive ?? [],
+    'call_1',
+  );
+  assert.equal(
+    steerPlaced[1]!.parts.some((part) => part.kind === 'todo_list'),
+    true,
+    'archive must land on the previous answer',
+  );
+  assert.equal(
+    steerPlaced[3]!.parts.some((part) => part.kind === 'todo_list'),
+    false,
+    'an empty next-loop placeholder must never receive the old todo list',
+  );
   assert.equal(placed[2]!.parts.filter((part) => part.kind === 'todo_list').length, 1);
-});
-
-test('resolveRenderedTodos never leaks previous session todos before effect syncs', () => {
-  const sessionATodos = [
-    { content: 'Proxy step 1', status: 'completed' as const },
-    { content: 'Proxy step 2', status: 'in_progress' as const },
-  ];
-  const sessionBTodos = [
-    { content: 'Orbit step 1', status: 'pending' as const },
-  ];
-
-  // Steady state on session A
-  assert.deepEqual(
-    resolveRenderedTodos({
-      viewedSessionId: 'session-a',
-      slot: { sessionId: 'session-a', items: sessionATodos },
-    }),
-    sessionATodos,
-  );
-
-  // Immediately after switching to session B (which has no todos), React state
-  // slot still holds session A until useEffect runs — must immediately hide A's todos
-  assert.equal(
-    resolveRenderedTodos({
-      viewedSessionId: 'session-b',
-      slot: { sessionId: 'session-a', items: sessionATodos },
-      liveDoc: null,
-      cachedItems: null,
-    }),
-    null,
-  );
-
-  // Immediately after switching to session B (which has its own live/cached todos),
-  // must render B's todos instead of A's
-  assert.deepEqual(
-    resolveRenderedTodos({
-      viewedSessionId: 'session-b',
-      slot: { sessionId: 'session-a', items: sessionATodos },
-      liveDoc: { items: sessionBTodos, revision: 'call_b', resultApplied: true },
-    }),
-    sessionBTodos,
-  );
-
-  assert.deepEqual(
-    resolveRenderedTodos({
-      viewedSessionId: 'session-b',
-      slot: { sessionId: 'session-a', items: sessionATodos },
-      liveDoc: null,
-      cachedItems: sessionBTodos,
-    }),
-    sessionBTodos,
-  );
-
-  // Switching to a brand-new session (null) must never inherit session A's todos
-  assert.equal(
-    resolveRenderedTodos({
-      viewedSessionId: null,
-      slot: { sessionId: 'session-a', items: sessionATodos },
-    }),
-    null,
-  );
 });
 
 

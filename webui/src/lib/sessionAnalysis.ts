@@ -1,4 +1,21 @@
-import type { SessionDetail, SessionMessage, TurnStat } from '../api';
+import type { SessionDetail, SessionMessage } from '../api';
+
+export interface TurnStat {
+  turn?: number;
+  duration_ms: number;
+  total_tokens: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cached_tokens?: number;
+  round_count?: number;
+  tool_call_count?: number;
+  errored?: boolean;
+  model_usage?: Array<{
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    cached_tokens?: number;
+  }>;
+}
 
 export interface ParsedTurnAnalysis {
   turnIndex: number;
@@ -76,7 +93,7 @@ export function extractSessionTurnMetrics(detail: SessionDetail): ParsedTurnAnal
     turns.push(currentTurn);
   }
 
-  const turnStats = detail.turn_stats || [];
+  const turnStats = ((detail as SessionDetail & { turn_stats?: TurnStat[] }).turn_stats) || [];
   const result: ParsedTurnAnalysis[] = [];
 
   for (let i = 0; i < turns.length; i++) {

@@ -1,8 +1,10 @@
 import { render } from 'preact';
 import { App } from './app';
+import { AuthExpiredDialog } from './components/AuthExpiredDialog';
 import { SettingsProvider } from './settings';
 import { ensureRandomUUIDPolyfill } from './lib/randomId';
 import { initPageZoom, initEditorFontSize } from './lib/pageZoom';
+import { installViewportSync } from './lib/viewport';
 // Bundled serif for the landing greeting (close to claude.ai's display serif).
 import '@fontsource/source-serif-4/400.css';
 import '@fontsource/source-serif-4/500.css';
@@ -24,6 +26,14 @@ if (typeof window !== 'undefined') {
   window.addEventListener('vite:preloadError', () => {
     window.location.reload();
   });
+
+  // Preact Suspense 用“抛出 Promise”作为控制流。若 lazy 组件在边界重试时
+  // 再次抛出 pending Promise，浏览器会把它记为 unhandled rejection；它既不是
+  // Error 也不是业务失败。这里只吞掉 Promise 类型的原因，真实 chunk 加载错误
+  // （Error）仍然会走上面的 vite:preloadError。
+  window.addEventListener('unhandledrejection', (event) => {
+    if (event.reason instanceof Promise) event.preventDefault();
+  });
 }
 
 // http://LAN-IP (jeikcode serve remote clients) is not a secure context —
@@ -34,24 +44,13 @@ ensureRandomUUIDPolyfill();
 initPageZoom();
 // 初始化代码编辑/预览全局字号
 initEditorFontSize();
+// 同步移动端可视视口：软键盘收起后不残留底部黑边 / 顶部裁切
+installViewportSync();
 
-// 单实例挂载：HMR、重复执行入口或上一轮未清理的挂载都可能在同一 #app 下叠加多份应用，
-// 表现就是侧栏与主区各来自不同实例（点开一个会话却看到“发送消息开始对话…”）。
-// 挂载前先显式卸载旧 Preact 树并清空容器，同时在 HMR dispose 时清理，保证整页只有一个 App 根节点。
-const container = document.getElementById('app');
-if (container) {
-  render(null, container);
-  container.replaceChildren();
-  render(
-    <SettingsProvider>
-      <App />
-    </SettingsProvider>,
-    container,
-  );
-  if (import.meta.hot) {
-    import.meta.hot.dispose(() => {
-      render(null, container);
-      container.replaceChildren();
-    });
-  }
-}
+render(
+  <SettingsProvider>
+    <App />
+    <AuthExpiredDialog />
+  </SettingsProvider>,
+  document.getElementById('app')!,
+);

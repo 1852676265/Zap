@@ -9,11 +9,11 @@ import {
   type ApprovalMode,
 } from './modeSwitch.ts';
 
-test('protocol and new/manual sessions default to Auto', () => {
+test('protocol sessions observe in Auto; new/manual sessions default to Build', () => {
   assert.equal(modeForSessionOrigin('protocol'), 'bypass');
-  assert.equal(modeForSessionOrigin('manual'), 'bypass');
-  assert.equal(modeForSessionOrigin(undefined), 'bypass');
-  assert.equal(modeForSessionOrigin(null), 'bypass');
+  assert.equal(modeForSessionOrigin('manual'), 'build');
+  assert.equal(modeForSessionOrigin(undefined), 'build');
+  assert.equal(modeForSessionOrigin(null), 'build');
 });
 
 test('beginning a mode switch separates confirmed and display mode', () => {

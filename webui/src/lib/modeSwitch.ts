@@ -13,10 +13,10 @@ export function initModeState(mode: ApprovalMode): ApprovalModeState {
   };
 }
 
-/** WebUI pill for a loaded session. Both protocol (OpenAI/Anthropic) and
- *  new / manual sessions default to Auto (`bypass`). */
-export function modeForSessionOrigin(_origin?: string | null): ApprovalMode {
-  return 'bypass';
+/** WebUI pill for a loaded session. Protocol (OpenAI/Anthropic) sessions are
+ *  observed in Auto; new / manual sessions default to Build. */
+export function modeForSessionOrigin(origin?: string | null): ApprovalMode {
+  return origin === 'protocol' ? 'bypass' : 'build';
 }
 
 export function beginModeSwitch(

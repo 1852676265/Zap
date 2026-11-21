@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { listDir } from '../api';
 import { fsBreadcrumbs, joinFsChild, stripExtendedPathPrefix } from '../lib/displayPath';
+import { useBackdropDismiss } from '../lib/backdropDismiss';
 import { useT } from '../settings';
 
 interface FilePickerProps {
@@ -18,6 +19,8 @@ interface FilePickerProps {
 
 export function FilePicker({ current, onPick, onClose }: FilePickerProps) {
   const t = useT();
+  // 遮罩空白处点击关闭：避免弹窗内拖拽划词（左滑选中）时被误判为外部点击而秒关。
+  const backdropDismiss = useBackdropDismiss(onClose);
   const [browsePath, setBrowsePath] = useState(stripExtendedPathPrefix(current || '~'));
   const [dirs, setDirs] = useState<string[]>([]);
   const [files, setFiles] = useState<string[]>([]);
@@ -59,13 +62,10 @@ export function FilePicker({ current, onPick, onClose }: FilePickerProps) {
   return (
     <div
       class="modal-overlay"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...backdropDismiss}
     >
       <div class="modal-card file-picker-modal">
         <div class="modal-header">
-          <span>📄</span>
           <h3>{t('filepicker.title')}</h3>
         </div>
 
@@ -94,14 +94,14 @@ export function FilePicker({ current, onPick, onClose }: FilePickerProps) {
               {!loading &&
                 dirs.map((d) => (
                   <button key={'d:' + d} class="dir-item" onClick={() => enterDir(d)}>
-                    <span>📁</span>
+                    <span aria-hidden="true">▸</span>
                     <span>{d}</span>
                   </button>
                 ))}
               {!loading &&
                 files.map((f) => (
                   <button key={'f:' + f} class="dir-item file-item" onClick={() => pickFile(f)}>
-                    <span>📄</span>
+                    <span aria-hidden="true">·</span>
                     <span>{f}</span>
                   </button>
                 ))}

@@ -160,6 +160,7 @@ async fn main() {
             AttachConsole(ATTACH_PARENT_PROCESS);
         }
     }
+    zap_daemon::logging::init_process_file_logging("zap-daemon.log", "zap-daemon");
 
     // Used by IDE packaging to reject a daemon compiled after the private
     // signer overlay was removed. Keep this check side-effect free.

@@ -413,6 +413,7 @@ fn normalize_legacy_turns(session: &LegacySession) -> anyhow::Result<NormalizedL
             used_tokens: checked_u32(stat.used_tokens, "used_tokens")?,
             ctx_window: checked_u32(stat.ctx_window, "ctx_window")?,
             model_usage: Vec::new(),
+            stop_reason: None,
         });
         previous_after = stat.after_message;
     }
@@ -548,6 +549,8 @@ fn convert_legacy_session_with_diagnostic(
         reasoning_effort: None,
         thinking_budget: None,
         approval_mode: None,
+        parent_session_id: None,
+        parent_call_id: None,
     };
     meta.auto_name_from_messages(&snapshot.messages);
 
@@ -1197,7 +1200,7 @@ pub(crate) fn prepare_catalog_session_resume_in_project_root(
     id: &str,
 ) -> anyhow::Result<Option<PreparedCatalogSessionResume>> {
     validate_project_bucket(project_bucket)?;
-    let scan = SessionManager::scan_catalog(sessions_root);
+    let scan = SessionManager::scan_session_in_bucket(sessions_root, project_bucket, id);
     report_catalog_diagnostics(&scan.diagnostics);
     let Some(entry) = scan
         .entries
@@ -1233,7 +1236,7 @@ fn load_catalog_session_view_in_project_root(
     id: &str,
 ) -> anyhow::Result<Option<CatalogSessionView>> {
     validate_project_bucket(project_bucket)?;
-    let scan = SessionManager::scan_catalog(sessions_root);
+    let scan = SessionManager::scan_session_in_bucket(sessions_root, project_bucket, id);
     report_catalog_diagnostics(&scan.diagnostics);
     let entry = scan
         .entries
@@ -1542,8 +1545,45 @@ fn validate_project_bucket(project_bucket: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn report_catalog_diagnostics(diagnostics: &[zap_capabilities::session::CatalogDiagnostic]) {
+const MAX_CATALOG_DIAGNOSTIC_KEYS: usize = 2048;
+
+fn catalog_diagnostic_dedup_key(
+    diagnostic: &zap_capabilities::session::CatalogDiagnostic,
+) -> (std::path::PathBuf, String) {
+    (
+        diagnostic.path.clone(),
+        format!("{:?}:{}", diagnostic.kind, diagnostic.message),
+    )
+}
+
+fn should_emit_catalog_diagnostic(
+    seen: &mut std::collections::HashSet<(std::path::PathBuf, String)>,
+    diagnostic: &zap_capabilities::session::CatalogDiagnostic,
+) -> bool {
+    let key = catalog_diagnostic_dedup_key(diagnostic);
+    if seen.contains(&key) {
+        return false;
+    }
+    if seen.len() >= MAX_CATALOG_DIAGNOSTIC_KEYS {
+        seen.clear();
+    }
+    seen.insert(key);
+    true
+}
+
+pub(crate) fn report_catalog_diagnostics(
+    diagnostics: &[zap_capabilities::session::CatalogDiagnostic],
+) {
+    static SEEN: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, String)>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut guard = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for diagnostic in diagnostics {
+        if !should_emit_catalog_diagnostic(&mut guard, diagnostic) {
+            continue;
+        }
         tracing::warn!(
             path = %diagnostic.path.display(),
             kind = ?diagnostic.kind,
@@ -1579,6 +1619,13 @@ fn catalog_diagnostic_session_id(path: &std::path::Path) -> Option<&str> {
         ".display.idx.jsonl",
         ".display.jsonl",
         ".display.meta.json",
+        ".toolmetrics.jsonl",
+        ".model-switches.jsonl",
+        ".trace.jsonl",
+        ".trace.jsonl.old",
+        ".images.json",
+        ".bashkw.json",
+        ".pending_permission.json",
         ".rewind.txn.json",
         ".rewind.json",
         ".snapshot",
@@ -2790,6 +2837,7 @@ mod tests {
             used_tokens: 1,
             ctx_window: 128,
             model_usage: Vec::new(),
+            stop_reason: None,
         });
         let native_presentation = PresentationEntry {
             anchor: DisplayAnchor::AfterTurn {
@@ -3066,6 +3114,7 @@ mod tests {
                 used_tokens: 1,
                 ctx_window: 128,
                 model_usage: Vec::new(),
+                stop_reason: None,
             },
         );
         let original_meta = meta.clone();
@@ -3438,7 +3487,7 @@ mod tests {
 
     #[test]
     fn native_rename_preserves_user_priority_over_ai_naming() {
-        use zap_capabilities::session::{CatalogEntry, CatalogPresence};
+        use zap_capabilities::session::{CatalogEntry, CatalogPresence, SessionOrigin};
 
         let dir = tempfile::tempdir().unwrap();
         let bucket = "0123456789abcdef";
@@ -3461,6 +3510,7 @@ mod tests {
             approval_mode: None,
             reasoning_effort: None,
             thinking_budget: None,
+            origin: SessionOrigin::Manual,
             presence: CatalogPresence::NativeOnly,
         };
 
@@ -3536,7 +3586,7 @@ mod tests {
 
     #[test]
     fn catalog_session_view_uses_strict_native_aggregate() {
-        use zap_capabilities::session::{CatalogEntry, CatalogPresence};
+        use zap_capabilities::session::{CatalogEntry, CatalogPresence, SessionOrigin};
 
         let dir = tempfile::tempdir().unwrap();
         let bucket = "0123456789abcdef";
@@ -3566,6 +3616,7 @@ mod tests {
             approval_mode: None,
             reasoning_effort: None,
             thinking_budget: None,
+            origin: SessionOrigin::Manual,
             presence: CatalogPresence::NativeOnly,
         };
 
@@ -3580,7 +3631,7 @@ mod tests {
 
     #[test]
     fn catalog_session_view_repairs_complete_native_placeholder_name() {
-        use zap_capabilities::session::{CatalogEntry, CatalogPresence};
+        use zap_capabilities::session::{CatalogEntry, CatalogPresence, SessionOrigin};
 
         let dir = tempfile::tempdir().unwrap();
         let bucket = "0123456789abcdef";
@@ -3610,6 +3661,7 @@ mod tests {
             approval_mode: None,
             reasoning_effort: None,
             thinking_budget: None,
+            origin: SessionOrigin::Manual,
             presence: CatalogPresence::NativeOnly,
         };
 
@@ -3767,7 +3819,7 @@ mod tests {
 
     #[test]
     fn catalog_session_view_adopts_pre_owner_native_without_presentation() {
-        use zap_capabilities::session::{CatalogEntry, CatalogPresence};
+        use zap_capabilities::session::{CatalogEntry, CatalogPresence, SessionOrigin};
 
         let dir = tempfile::tempdir().unwrap();
         let bucket = "0123456789abcdef";
@@ -3792,6 +3844,7 @@ mod tests {
             approval_mode: None,
             reasoning_effort: None,
             thinking_budget: None,
+            origin: SessionOrigin::Manual,
             presence: CatalogPresence::NativeOnly,
         };
 
@@ -3810,7 +3863,7 @@ mod tests {
 
     #[test]
     fn legacy_catalog_session_view_is_read_only() {
-        use zap_capabilities::session::{CatalogEntry, CatalogPresence};
+        use zap_capabilities::session::{CatalogEntry, CatalogPresence, SessionOrigin};
 
         let dir = tempfile::tempdir().unwrap();
         let bucket = "0123456789abcdef";
@@ -3837,6 +3890,7 @@ mod tests {
             approval_mode: None,
             reasoning_effort: None,
             thinking_budget: None,
+            origin: SessionOrigin::Manual,
             presence: CatalogPresence::LegacyOnly,
         };
 
@@ -3852,7 +3906,7 @@ mod tests {
 
     #[test]
     fn legacy_rename_cuts_over_once_then_writes_only_native_meta() {
-        use zap_capabilities::session::{CatalogEntry, CatalogPresence};
+        use zap_capabilities::session::{CatalogEntry, CatalogPresence, SessionOrigin};
 
         let dir = tempfile::tempdir().unwrap();
         let bucket = "0123456789abcdef";
@@ -3876,6 +3930,7 @@ mod tests {
             approval_mode: None,
             reasoning_effort: None,
             thinking_budget: None,
+            origin: SessionOrigin::Manual,
             presence: CatalogPresence::LegacyOnly,
         };
 
@@ -3964,6 +4019,7 @@ mod tests {
             used_tokens: 1,
             ctx_window: 10,
             model_usage: Vec::new(),
+            stop_reason: None,
         });
         let lease = manager.acquire_lease(id).unwrap();
         manager
@@ -3993,5 +4049,24 @@ mod tests {
             DisplayAnchor::AfterTurn { turn_id: 7 }
         );
         assert_eq!(presentation.entries[0].text, "local note");
+    }
+
+    #[test]
+    fn catalog_diagnostics_deduplicates_repeated_warnings() {
+        use zap_capabilities::session::{CatalogDiagnostic, CatalogDiagnosticKind};
+
+        let mut seen = std::collections::HashSet::new();
+        let diag = CatalogDiagnostic {
+            project_bucket: Some("0123456789abcdef".into()),
+            path: std::path::PathBuf::from("/tmp/orphan.snapshot"),
+            kind: CatalogDiagnosticKind::Corrupt,
+            message: "native session \"orphan\" has sidecars but no metadata".into(),
+        };
+        assert!(should_emit_catalog_diagnostic(&mut seen, &diag));
+        assert!(!should_emit_catalog_diagnostic(&mut seen, &diag));
+
+        let mut other = diag.clone();
+        other.message = "different failure".into();
+        assert!(should_emit_catalog_diagnostic(&mut seen, &other));
     }
 }

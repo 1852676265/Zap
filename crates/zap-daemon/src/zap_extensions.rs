@@ -93,6 +93,7 @@ impl TeamHost for DaemonTeamHost {
                 approval_mode: Some(crate::approval_mode::ApprovalMode::Auto),
                 extra_system_append: req.extra_system_append.clone(),
                 session_title: req.session_title.clone(),
+                is_scheduled: false,
             };
             match crate::admit_chat_turn(&self.0, chat_req, ChatAdmissionMode::RejectIfBusy, None)
                 .await
