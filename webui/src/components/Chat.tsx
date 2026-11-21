@@ -14270,7 +14270,7 @@ export function Chat({
             <div class="chat-landing">
               <div class="landing-inner">
                 <div class="landing-brand">
-                  <span class="landing-brand-name">JeikCode</span>
+                  <span class="landing-brand-name">Zap</span>
                 </div>
                 <div class="landing-tagline">{t('chat.greeting')}</div>
                 {cwd && (
