@@ -658,7 +658,7 @@ async fn run_batch_llm_distill(
     runtime.mcp = false;
     runtime.max_tokens = Some(2600);
 
-    let coding_cfg = crate::kernel_runtime::coding_config_from_runtime(&runtime);
+    let coding_cfg = runtime.agent_config();
     // 强制关闭高档位深度思考：结构化 JSON 整理不需要长时间思维链，速度提升 3~5 倍且大幅省费
     let options = ChatOptions {
         max_tokens: Some(2600),
@@ -668,7 +668,9 @@ async fn run_batch_llm_distill(
         ..coding_cfg.chat_options.clone()
     };
 
-    let factory = crate::runtime_host::coding_provider_factory();
+    let factory: Arc<dyn zap_coding::CodingProviderFactory> = Arc::new(
+        zap_coding::DefaultCodingProviderFactory::new(zap_auth::JEIKCODE_USER_AGENT),
+    );
     let ephemeral_sid = format!("neural-distill-{}", uuid::Uuid::new_v4());
     let provider =
         tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&ephemeral_sid)))

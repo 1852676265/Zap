@@ -1394,12 +1394,7 @@ impl LiveViewHub {
                         .as_ref()
                         .map(|b| b.identity.provider.clone())
                         .unwrap_or_default();
-                    crate::neural_memory::maybe_capture_turn_from_snapshot(
-                        &sid,
-                        &wd,
-                        &snapshot.messages,
-                        &prov,
-                    );
+                    crate::zap_extensions::on_turn_snapshot(&sid, &wd, &snapshot.messages, &prov);
                 }
                 *state.exec_snapshot_mut() = Some(snapshot.clone());
                 *state.exec_snapshot_error_mut() = None;

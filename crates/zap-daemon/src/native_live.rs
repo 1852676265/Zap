@@ -382,11 +382,8 @@ pub async fn ensure_registry_runner(
         &working_dir,
         Some(&session_id),
     );
-    crate::neural_memory::apply_session_static_system_append(
-        &mut runtime_config,
-        Some(&session_id),
-    )
-    .await;
+    let _ =
+        crate::zap_extensions::apply_live_extensions(&mut runtime_config, Some(&session_id)).await;
 
     let session_mode = if let Ok(snapshot) = load_snapshot(&working_dir, &session_id) {
         let _ = take_session_draft(&session_id);
@@ -455,7 +452,7 @@ pub async fn ensure_registry_runner(
                 zap_coding::TurnCompletion::Completed { snapshot, .. },
             ) = &envelope.event
             {
-                crate::neural_memory::maybe_capture_turn_from_snapshot(
+                crate::zap_extensions::on_turn_snapshot(
                     &forward_id,
                     &forward_dir,
                     &snapshot.messages,
@@ -1169,7 +1166,7 @@ pub async fn ensure_headless_runtime(
         &working_dir,
         requested_session_id.as_deref(),
     );
-    let recall_tool = crate::neural_memory::apply_session_static_system_append(
+    let recall_tool = crate::zap_extensions::apply_live_extensions(
         &mut runtime_config,
         requested_session_id.as_deref(),
     )
@@ -1214,7 +1211,7 @@ pub async fn ensure_headless_runtime(
         .ok_or_else(|| "live runtime started without a persistent session".to_string())?;
     recall_tool.bind_session_id(&session_id);
     if was_fresh {
-        crate::neural_memory::note_fresh_session_static_agent(&session_id, &working_dir).await;
+        crate::zap_extensions::note_fresh_session(&session_id, &working_dir).await;
     }
     let binding = bind_after_mcp_ready(
         handle.wait_mcp_ready(zap_capabilities::mcp::FIRST_TURN_SOFT_WAIT),

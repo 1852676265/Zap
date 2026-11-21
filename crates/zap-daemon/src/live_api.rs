@@ -1817,7 +1817,7 @@ pub(crate) async fn run_chat_turn_v2(
         }
     };
     if let Some(terminal) = final_messages {
-        crate::neural_memory::maybe_capture_turn_from_snapshot(
+        crate::zap_extensions::on_turn_snapshot(
             &session_id,
             &runtime_working_dir,
             &terminal.snapshot.messages,

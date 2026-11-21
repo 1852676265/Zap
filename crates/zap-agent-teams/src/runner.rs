@@ -17,9 +17,8 @@ use tokio_util::sync::CancellationToken;
 use zap_kernel::message::Message;
 use zap_kernel::provider::{ChatOptions, ReasoningEffort, ToolChoice};
 use zap_kernel::stream::StreamEvent;
-use zap_telemetry::{CurrentContext, SessionMode};
 
-use crate::{AppState, ChatAdmissionMode, ChatEvent, ChatRequest};
+use crate::host::{HostChildTurnRequest, TeamHost};
 
 use super::planner::{
     build_pipeline_plan_for_run, extract_json_object, generate_unified_interface_spec,
@@ -102,7 +101,7 @@ pub fn is_run_executing(run_id: &str) -> bool {
 }
 
 /// 异步启动阶段 1（主控制定《执行计划》并自动拆解生成对应智能体），完成后停在 `team_binding` 等待用户增删智能体并绑定各自项目目录。
-pub async fn start_design_phase(state: AppState, run_id: String, current_wd: PathBuf) {
+pub async fn start_design_phase(host: Arc<dyn TeamHost>, run_id: String, current_wd: PathBuf) {
     let rid = run_id.trim().to_string();
     let handle = ActiveRunHandle::new();
     {
@@ -114,7 +113,7 @@ pub async fn start_design_phase(state: AppState, run_id: String, current_wd: Pat
     }
 
     tokio::spawn(async move {
-        run_design_pipeline(state, rid.clone(), handle, current_wd, None, false).await;
+        run_design_pipeline(host, rid.clone(), handle, current_wd, None, false).await;
         let mut guard = active_runs().lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&rid);
     });
@@ -122,7 +121,7 @@ pub async fn start_design_phase(state: AppState, run_id: String, current_wd: Pat
 
 /// 阶段 2：用户在 `sql_binding` 阶段配置好 SQL 参考目录 / 规范记忆 / 模型后，派发只读 SQL 架构师设计表结构 DDL。
 pub async fn start_sql_design_phase(
-    state: AppState,
+    host: Arc<dyn TeamHost>,
     run_id: &str,
     current_wd: PathBuf,
     sql_override: Option<(String, String, String)>,
@@ -222,7 +221,7 @@ pub async fn start_sql_design_phase(
     }
 
     tokio::spawn(async move {
-        run_design_pipeline(state, rid.clone(), handle, current_wd, None, true).await;
+        run_design_pipeline(host, rid.clone(), handle, current_wd, None, true).await;
         let mut guard = active_runs().lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&rid);
     });
@@ -232,7 +231,7 @@ pub async fn start_sql_design_phase(
 
 /// 用户在确认台提出修改意见后，异步重新调整《执行计划》或《表结构 DDL》。
 pub async fn revise_design_phase(
-    state: AppState,
+    host: Arc<dyn TeamHost>,
     run_id: String,
     feedback: String,
     current_wd: PathBuf,
@@ -268,7 +267,7 @@ pub async fn revise_design_phase(
 
     tokio::spawn(async move {
         run_design_pipeline(
-            state,
+            host,
             rid.clone(),
             handle,
             current_wd,
@@ -284,7 +283,7 @@ pub async fn revise_design_phase(
 }
 
 async fn run_design_pipeline(
-    state: AppState,
+    host: Arc<dyn TeamHost>,
     run_id: String,
     handle: Arc<ActiveRunHandle>,
     current_wd: PathBuf,
@@ -327,7 +326,7 @@ async fn run_design_pipeline(
         })
         .await;
 
-        match build_pipeline_plan_for_run(&run, &current_wd, fb_str).await {
+        match build_pipeline_plan_for_run(&host, &run, &current_wd, fb_str).await {
             Ok((new_title, requires_db, execution_plan, new_tasks)) => {
                 if handle.cancel.is_cancelled() {
                     return;
@@ -447,7 +446,7 @@ async fn run_design_pipeline(
         .and_then(Result::ok)
         .unwrap_or(tasks);
 
-        match run_sql_designer_turn(&state, &handle, &run, &latest_tasks, &current_wd, fb_str).await
+        match run_sql_designer_turn(&host, &handle, &run, &latest_tasks, &current_wd, fb_str).await
         {
             Ok(ddl_md) => {
                 if handle.cancel.is_cancelled() {
@@ -504,7 +503,7 @@ fn feedback_mentions_db(fb: &str) -> bool {
 }
 
 async fn run_sql_designer_turn(
-    state: &AppState,
+    host: &Arc<dyn TeamHost>,
     handle: &Arc<ActiveRunHandle>,
     run: &TeamRun,
     tasks: &[TeamTask],
@@ -538,7 +537,7 @@ async fn run_sql_designer_turn(
             &format!("team_{}_sql_designer", run_binding.id),
             &wd_binding,
         )?;
-        crate::neural_memory::bind_session_neural_agent(&sid, &run_binding.sql_agent_id)?;
+        zap_neural_memory::bind_session_neural_agent(&sid, &run_binding.sql_agent_id)?;
         with_team_store(|s| {
             update_run_sql_binding_conn(&s.conn, &run_binding.id, None, None, None, Some(&sid))
         })?;
@@ -578,7 +577,7 @@ async fn run_sql_designer_turn(
     );
     let session_title = format!("🗄 [SQL表结构设计] {}", run.title);
     let result = run_native_session_turn(
-        state,
+        host,
         handle,
         run,
         &session_id,
@@ -600,7 +599,7 @@ async fn run_sql_designer_turn(
 }
 
 /// 启动或从断点恢复执行指定的团队任务（后台常驻运行，关掉/刷新网页不中断）。
-pub async fn start_or_resume_run(state: AppState, run_id: &str) -> Result<(), String> {
+pub async fn start_or_resume_run(host: Arc<dyn TeamHost>, run_id: &str) -> Result<(), String> {
     let rid = run_id.trim().to_string();
     if rid.is_empty() {
         return Err("run_id 不能为空".to_string());
@@ -613,7 +612,7 @@ pub async fn start_or_resume_run(state: AppState, run_id: &str) -> Result<(), St
         }
     }
 
-    let current_wd = { state.project.read().await.working_dir.clone() };
+    let current_wd = host.current_working_dir().await;
     let rid_prep = rid.clone();
     let (run_snap, max_parallel) = tokio::task::spawn_blocking(move || {
         with_team_store(|store| {
@@ -692,9 +691,9 @@ pub async fn start_or_resume_run(state: AppState, run_id: &str) -> Result<(), St
 
     if max_parallel == 0 && run_snap.mode == "pipeline" {
         if run_snap.stage == "sql_designing" {
-            start_sql_design_phase(state, &rid, current_wd, None).await?;
+            start_sql_design_phase(host, &rid, current_wd, None).await?;
         } else {
-            start_design_phase(state, rid, current_wd).await;
+            start_design_phase(host, rid, current_wd).await;
         }
         return Ok(());
     }
@@ -790,7 +789,7 @@ pub async fn start_or_resume_run(state: AppState, run_id: &str) -> Result<(), St
             .await;
         }
 
-        orchestrate_run_loop(state, rid_bg.clone(), handle, max_parallel.clamp(1, 6)).await;
+        orchestrate_run_loop(host, rid_bg.clone(), handle, max_parallel.clamp(1, 6)).await;
         let mut guard = active_runs().lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&rid_bg);
     });
@@ -869,7 +868,11 @@ pub async fn cancel_team_run(run_id: &str) -> Result<(), String> {
 }
 
 /// 重置单个失败/未达标子任务并继续运行整条流水线。
-pub async fn retry_single_task(state: AppState, run_id: &str, task_id: &str) -> Result<(), String> {
+pub async fn retry_single_task(
+    host: Arc<dyn TeamHost>,
+    run_id: &str,
+    task_id: &str,
+) -> Result<(), String> {
     let rid = run_id.trim().to_string();
     let tid = task_id.trim().to_string();
     tokio::task::spawn_blocking({
@@ -903,14 +906,14 @@ pub async fn retry_single_task(state: AppState, run_id: &str, task_id: &str) -> 
     .await
     .map_err(|e| e.to_string())??;
 
-    start_or_resume_run(state, &rid).await
+    start_or_resume_run(host, &rid).await
 }
 
 /// 向指定成员发送补充指令：
 /// - 若该成员尚未派生子会话或当前任务正在执行中：将指令追加到子任务描述并写入协作账本（`member_note`）；
 /// - 若该成员已存在独立子会话且当前空闲：直接唤醒其原生子会话执行一轮定向补充回合，并将答复写入账本。
 pub async fn send_member_note(
-    state: AppState,
+    host: Arc<dyn TeamHost>,
     run_id: &str,
     task_id: &str,
     note: &str,
@@ -1010,6 +1013,7 @@ pub async fn send_member_note(
     }
 
     let binding_task = task.clone();
+    let host_for_binding = Arc::clone(&host);
     let binding_result = tokio::task::spawn_blocking(move || {
         let wd = Path::new(binding_task.working_dir.trim());
         let sid = super::sessions::session_id_for_binding(
@@ -1017,13 +1021,13 @@ pub async fn send_member_note(
             &format!("team_{}_{}", binding_task.run_id, binding_task.id),
             wd,
         )?;
-        crate::neural_memory::bind_session_neural_agent(&sid, &binding_task.agent_id)?;
+        zap_neural_memory::bind_session_neural_agent(&sid, &binding_task.agent_id)?;
         with_team_store(|s| {
             let (_, attempt) = claim_task_attempt_conn(
                 &s.conn,
                 &binding_task.id,
                 &sid,
-                &crate::hash_path(wd),
+                &host_for_binding.hash_path(wd),
                 &binding_task.status,
             )?;
             Ok((sid, attempt))
@@ -1089,7 +1093,7 @@ pub async fn send_member_note(
         );
 
         let turn_res = run_native_session_turn(
-            &state,
+            &host,
             &handle,
             &run,
             &session_id,
@@ -1166,7 +1170,7 @@ pub async fn send_member_note(
 }
 
 async fn orchestrate_run_loop(
-    state: AppState,
+    host: Arc<dyn TeamHost>,
     run_id: String,
     handle: Arc<ActiveRunHandle>,
     max_parallel: usize,
@@ -1248,7 +1252,7 @@ async fn orchestrate_run_loop(
 
         let mut joins = Vec::with_capacity(pending_ids.len());
         for tid in pending_ids {
-            let st = state.clone();
+            let h = Arc::clone(&host);
             let rid = run_id.clone();
             let run_cfg = run.clone();
             let hdl = Arc::clone(&handle);
@@ -1260,7 +1264,7 @@ async fn orchestrate_run_loop(
                 if hdl.cancel.is_cancelled() {
                     return false;
                 }
-                execute_single_task_lifecycle(st, rid, tid, run_cfg, hdl).await
+                execute_single_task_lifecycle(h, rid, tid, run_cfg, hdl).await
             }));
         }
 
@@ -1293,12 +1297,13 @@ async fn orchestrate_run_loop(
 }
 
 async fn execute_single_task_lifecycle(
-    state: AppState,
+    host: Arc<dyn TeamHost>,
     run_id: String,
     task_id: String,
     run: TeamRun,
     handle: Arc<ActiveRunHandle>,
 ) -> bool {
+    let host_for_prep = Arc::clone(&host);
     let prep = tokio::task::spawn_blocking({
         let rid = run_id.clone();
         let tid = task_id.clone();
@@ -1315,9 +1320,9 @@ async fn execute_single_task_lifecycle(
                     &format!("team_{}_{}", rid, task.id),
                     Path::new(task.working_dir.trim()),
                 )?;
-                crate::neural_memory::bind_session_neural_agent(&session_id, &task.agent_id)?;
+                zap_neural_memory::bind_session_neural_agent(&session_id, &task.agent_id)?;
                 let wd_clean = task.working_dir.trim().to_string();
-                let proj_hash = crate::hash_path(Path::new(&wd_clean));
+                let proj_hash = host_for_prep.hash_path(Path::new(&wd_clean));
                 let (_attempt_no, attempt_id) =
                     claim_task_attempt_conn(&store.conn, &tid, &session_id, &proj_hash, "running")?;
 
@@ -1461,7 +1466,7 @@ async fn execute_single_task_lifecycle(
         }
 
         let turn_res = run_native_session_turn(
-            &state,
+            &host,
             &handle,
             &run,
             &session_id,
@@ -1689,7 +1694,7 @@ async fn execute_single_task_lifecycle(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_native_session_turn(
-    state: &AppState,
+    host: &Arc<dyn TeamHost>,
     handle: &Arc<ActiveRunHandle>,
     run: &TeamRun,
     session_id: &str,
@@ -1711,173 +1716,21 @@ async fn run_native_session_turn(
         Some(&run.prompt_overrides),
         &globals,
     );
-    let sys_guard = Some(guard);
-
-    let req_images: Vec<crate::ImageInput> = images
-        .iter()
-        .map(|i| crate::ImageInput {
-            media_type: i.media_type.clone(),
-            data: i.data.clone(),
-        })
-        .collect();
-
-    let mut admitted_opt = None;
-    for attempt_idx in 0..8 {
-        let chat_req = ChatRequest {
-            message: prompt.to_string(),
-            working_dir: Some(working_dir.to_path_buf()),
-            provider: provider_override.map(str::to_string),
-            session_id: Some(session_id.to_string()),
-            request_id: Some(format!(
-                "req_team_{}_{}",
-                session_id,
-                uuid::Uuid::new_v4().simple()
-            )),
-            images: req_images
-                .iter()
-                .map(|i| crate::ImageInput {
-                    media_type: i.media_type.clone(),
-                    data: i.data.clone(),
-                })
-                .collect(),
-            approval_mode: Some(crate::approval_mode::ApprovalMode::Auto),
-            extra_system_append: sys_guard.clone(),
-            session_title: Some(session_title.to_string()),
-        };
-        match crate::admit_chat_turn(state, chat_req, ChatAdmissionMode::RejectIfBusy, None).await {
-            Ok(admitted) => {
-                admitted_opt = Some(admitted);
-                break;
-            }
-            Err(crate::ActiveChatAdmissionError::SessionBusy) if attempt_idx < 7 => {
-                if handle.cancel.is_cancelled() {
-                    return Err("已取消或暂停".to_string());
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            Err(e) => {
-                return Err(format!("无法启动子智能体会话 `{session_id}`: {e:?}"));
-            }
-        }
-    }
-    let admitted = admitted_opt
-        .ok_or_else(|| format!("无法启动子智能体会话 `{session_id}`: 会话持续占用中"))?;
-
-    let crate::AdmittedChatTurn {
-        request: admitted_req,
-        operation_id,
-        cancellation: cancel_token,
-        mut rx,
-        fan_tx,
-        terminal_sent,
-        ..
-    } = admitted;
-
-    handle.register_child(cancel_token.clone());
-
-    let cleanup_chats = state.active_chats.clone();
-    let cleanup_op = operation_id.clone();
-    let mcp_pool = state.mcp_pool.clone();
-    let telemetry = state.telemetry.clone();
-    let pending_permissions = state.pending_permissions.clone();
-    let pending_user_inputs = state.pending_user_inputs.clone();
-    let op_for_proc = operation_id.clone();
-    let cancel_for_proc = cancel_token.clone();
-    let active_chats_for_proc = state.active_chats.clone();
-
-    let ctx = CurrentContext {
-        mode: Some(SessionMode::Channel),
-        session_id: None,
-        ..CurrentContext::current()
+    let child_cancel = handle.cancel.child_token();
+    handle.register_child(child_cancel.clone());
+    let req = HostChildTurnRequest {
+        message: prompt.to_string(),
+        working_dir: working_dir.to_path_buf(),
+        provider: provider_override.map(str::to_string),
+        session_id: session_id.to_string(),
+        images: images
+            .iter()
+            .map(|i| (i.media_type.clone(), i.data.clone()))
+            .collect(),
+        extra_system_append: Some(guard),
+        session_title: Some(session_title.to_string()),
     };
-
-    let (proc_err_tx, mut proc_err_rx) = tokio::sync::oneshot::channel::<String>();
-
-    tokio::spawn(async move {
-        let res = CurrentContext::scope(ctx, || async move {
-            crate::process_chat_request(
-                admitted_req,
-                fan_tx,
-                cancel_for_proc,
-                op_for_proc,
-                active_chats_for_proc,
-                mcp_pool,
-                telemetry,
-                pending_permissions,
-                pending_user_inputs,
-                false,
-                false,
-                terminal_sent,
-                true,
-                Some(crate::approval_mode::ApprovalMode::Auto),
-            )
-            .await
-        })
-        .await;
-        if let Err(e) = res {
-            tracing::warn!("[zap-agent-teams] child session turn error: {e}");
-            let _ = proc_err_tx.send(e.to_string());
-        }
-        cleanup_chats.complete(&cleanup_op).await;
-    });
-
-    let mut collected_text = String::new();
-    let mut touched_files = Vec::new();
-    let mut turn_err: Option<String> = None;
-
-    while let Some(evt) = rx.recv().await {
-        match evt {
-            ChatEvent::TextDelta { content, .. } => {
-                collected_text.push_str(&content);
-            }
-            ChatEvent::ToolCallStarted {
-                name, arguments, ..
-            } => {
-                if matches!(name.as_str(), "edit" | "write") {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&arguments) {
-                        if let Some(p) = val.get("path").and_then(|v| v.as_str()) {
-                            let clean = clean_path_str(p);
-                            if !clean.is_empty() && !touched_files.contains(&clean) {
-                                touched_files.push(clean);
-                            }
-                        }
-                    }
-                }
-            }
-            ChatEvent::Done { message, .. } => {
-                if collected_text.trim().is_empty() {
-                    if let Some(m) = message {
-                        collected_text = m;
-                    }
-                }
-                break;
-            }
-            ChatEvent::Error { message, .. } => {
-                turn_err = Some(message);
-                break;
-            }
-            ChatEvent::Stopped => {
-                if handle.cancel.is_cancelled() {
-                    return Err("已取消或暂停".to_string());
-                }
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    if turn_err.is_none() {
-        if let Ok(err) = proc_err_rx.try_recv() {
-            turn_err = Some(err);
-        }
-    }
-
-    if let Some(err) = turn_err {
-        if collected_text.trim().is_empty() {
-            return Err(err);
-        }
-    }
-    Ok((collected_text, touched_files))
+    host.run_child_turn(req, child_cancel).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -1912,7 +1765,7 @@ async fn verify_task_delivery(
         };
     }
 
-    let Ok(config) = crate::api_config::load_config() else {
+    let Ok(config) = crate::host::load_config() else {
         return VerifierVerdict {
             passed: true,
             summary: "已完成执行（配置读取跳过独立复核）".to_string(),
@@ -1964,7 +1817,7 @@ async fn verify_task_delivery(
     );
     rt.mcp = false;
     rt.max_tokens = Some(4096);
-    let coding_cfg = crate::kernel_runtime::coding_config_from_runtime(&rt);
+    let coding_cfg = rt.agent_config();
     let options = ChatOptions {
         max_tokens: Some(4096),
         temperature: None,
@@ -1973,7 +1826,7 @@ async fn verify_task_delivery(
         ..coding_cfg.chat_options.clone()
     };
 
-    let factory = crate::runtime_host::coding_provider_factory();
+    let factory = crate::host::coding_provider_factory();
     let sid = format!("team-verifier-{}", uuid::Uuid::new_v4());
     let Ok(Ok(provider)) =
         tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&sid))).await
@@ -2270,7 +2123,7 @@ async fn synthesize_triage_report(run: &TeamRun, tasks: &[TeamTask]) -> String {
 
     let fallback = format!("### 🩺 跨库联合会诊汇总报告\n\n{findings}");
 
-    let Ok(config) = crate::api_config::load_config() else {
+    let Ok(config) = crate::host::load_config() else {
         return fallback;
     };
     let prov_opt = (!run.lead_model.trim().is_empty()).then_some(run.lead_model.trim());
@@ -2282,7 +2135,7 @@ async fn synthesize_triage_report(run: &TeamRun, tasks: &[TeamTask]) -> String {
         zap_coding::CodingRuntimeConfig::from_config(&config, &wd, prov_opt, None, false, false);
     rt.mcp = false;
     rt.max_tokens = Some(6144);
-    let coding_cfg = crate::kernel_runtime::coding_config_from_runtime(&rt);
+    let coding_cfg = rt.agent_config();
     let options = ChatOptions {
         max_tokens: Some(6144),
         temperature: None,
@@ -2290,7 +2143,7 @@ async fn synthesize_triage_report(run: &TeamRun, tasks: &[TeamTask]) -> String {
         reasoning_effort: Some(ReasoningEffort::Low),
         ..coding_cfg.chat_options.clone()
     };
-    let factory = crate::runtime_host::coding_provider_factory();
+    let factory = crate::host::coding_provider_factory();
     let sid = format!("team-triage-syn-{}", uuid::Uuid::new_v4());
     let Ok(Ok(provider)) =
         tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&sid))).await

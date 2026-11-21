@@ -62,15 +62,14 @@ pub(crate) mod live_api;
 pub use live_api::live_set_mode;
 pub use live_api::live_set_working_dir;
 pub use live_api::live_switch_session;
-pub mod agent_teams;
 pub mod auth_token;
-pub mod neural_memory;
 pub mod permission_bridge;
 pub mod plugin_rpc;
 pub mod plugins_api;
 mod telemetry_scope;
 mod terminal_session;
 pub mod webui;
+mod zap_extensions;
 
 pub(crate) use telemetry_scope::daemon_scope;
 
@@ -15331,12 +15330,7 @@ pub(crate) async fn process_chat_request(
         live_api::apply_session_effort_override(&mut runtime_cfg, &working_dir, Some(&session_id));
         runtime_cfg.shared_mcp_registry = shared_mcp_reg;
         runtime_cfg.extra_system_append = req.extra_system_append.clone();
-        crate::neural_memory::apply_session_static_system_append(
-            &mut runtime_cfg,
-            Some(&session_id),
-        )
-        .await;
-        crate::agent_teams::apply_session_team_tools(&mut runtime_cfg, Some(&session_id));
+        crate::zap_extensions::apply_chat_extensions(&mut runtime_cfg, Some(&session_id)).await;
         runtime_cfg.session_display_name = req.session_title.clone();
         runtime_cfg.dangerously_skip_permissions = approval_mode
             == crate::approval_mode::ApprovalMode::Auto

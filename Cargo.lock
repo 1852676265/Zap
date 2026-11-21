@@ -4920,6 +4920,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "zap-agent-teams"
+version = "1.0.20"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "zap-auth",
+ "zap-capabilities",
+ "zap-coding",
+ "zap-config",
+ "zap-kernel",
+ "zap-neural-memory",
+]
+
+[[package]]
 name = "zap-auth"
 version = "1.0.20"
 dependencies = [
@@ -5096,7 +5119,6 @@ dependencies = [
  "qrcode",
  "regex",
  "reqwest",
- "rusqlite",
  "rust-embed",
  "serde",
  "serde_json",
@@ -5115,11 +5137,13 @@ dependencies = [
  "windows",
  "windows-sys 0.61.2",
  "winreg 0.55.0",
+ "zap-agent-teams",
  "zap-auth",
  "zap-capabilities",
  "zap-coding",
  "zap-config",
  "zap-kernel",
+ "zap-neural-memory",
  "zap-telemetry",
  "zap-updater",
 ]
@@ -5136,6 +5160,28 @@ dependencies = [
  "tokio-util",
  "uuid",
  "zap-config",
+]
+
+[[package]]
+name = "zap-neural-memory"
+version = "1.0.20"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zap-auth",
+ "zap-capabilities",
+ "zap-coding",
+ "zap-config",
+ "zap-kernel",
 ]
 
 [[package]]

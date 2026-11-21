@@ -2,19 +2,16 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::prompts::{get_prompt_meta, list_prompt_metas, preview_role_prompt};
 use super::store::RunDraftExtras;
 use super::types::TeamRun;
 
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Json},
-};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::AppState;
+use crate::host::{HostProjectInfo, TeamHost};
 
 use super::planner::{convert_triage_to_pipeline, create_pending_pipeline_run, plan_team_run};
 use super::runner::{
@@ -75,26 +72,26 @@ fn default_two() -> u32 {
 }
 
 pub async fn handle_rpc(
-    state: AppState,
-    action: String,
+    host: Arc<dyn TeamHost>,
+    action: &str,
     payload: Value,
-) -> axum::response::Response {
-    match dispatch_rpc(state, action.as_str(), payload).await {
-        Ok(val) => Json(val).into_response(),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "success": false, "error": err })),
-        )
-            .into_response(),
-    }
+) -> Result<Value, String> {
+    dispatch_rpc(host, action, payload).await
 }
 
-async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<Value, String> {
-    let current_wd = { state.project.read().await.working_dir.clone() };
+async fn dispatch_rpc(
+    host: Arc<dyn TeamHost>,
+    action: &str,
+    payload: Value,
+) -> Result<Value, String> {
+    let current_wd = host.current_working_dir().await;
 
     match action {
         "teams:bootstrap" => {
             let wd_str = path_to_clean_str(&current_wd);
+            let host_for_init = Arc::clone(&host);
+            let wd_str_spawn = wd_str.clone();
+            let current_wd_spawn = current_wd.clone();
             tokio::task::spawn_blocking(move || {
                 let (cfg, presets, custom_projects, runs, status_map) = with_team_store(|s| {
                     let runs = list_runs_conn(&s.conn, 60)?;
@@ -109,27 +106,24 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
                     ))
                 })?;
 
-                let agents = crate::neural_memory::list_neural_agents().unwrap_or_default();
-                let mut projects = crate::list_projects().unwrap_or_default();
-                if !wd_str.is_empty()
+                let agents = zap_neural_memory::list_neural_agents().unwrap_or_default();
+                let mut projects = host_for_init.list_projects();
+                if !wd_str_spawn.is_empty()
                     && !projects
                         .iter()
-                        .any(|p| path_to_clean_str(&p.working_dir) == wd_str)
+                        .any(|p| path_to_clean_str(&p.working_dir) == wd_str_spawn)
                 {
-                    let name = current_wd
+                    let name = current_wd_spawn
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "current".to_string());
                     projects.insert(
                         0,
-                        crate::ProjectInfo {
-                            hash: crate::hash_path(&current_wd),
+                        HostProjectInfo {
+                            hash: host_for_init.hash_path(&current_wd_spawn),
                             name,
-                            working_dir: current_wd.clone(),
-                            description: None,
+                            working_dir: current_wd_spawn.clone(),
                             session_count: 0,
-                            created_at: 0,
-                            last_updated: u64::MAX,
                         },
                     );
                 }
@@ -146,24 +140,17 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
                     })
                     .collect();
 
-                let (default_model, model_items) = match crate::api_config::load_config() {
-                    Ok(c) => {
-                        let resp = crate::api_config::config_response(&c);
-                        let list: Vec<Value> = resp
-                            .providers
-                            .into_iter()
-                            .map(|p| {
-                                json!({
-                                    "name": p.name,
-                                    "model": p.model,
-                                    "isDefault": p.is_default,
-                                })
-                            })
-                            .collect();
-                        (resp.default_provider, list)
-                    }
-                    Err(_) => (String::new(), Vec::new()),
-                };
+                let (default_model, raw_models) = host_for_init.list_models();
+                let model_items: Vec<Value> = raw_models
+                    .into_iter()
+                    .map(|p| {
+                        json!({
+                            "name": p.name,
+                            "model": p.model,
+                            "isDefault": p.is_default,
+                        })
+                    })
+                    .collect();
 
                 let (runs_json, active_count) = enrich_runs_json(runs, &status_map);
 
@@ -225,6 +212,7 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
             let overrides = parse_prompt_map(&payload, "promptOverrides")?.unwrap_or_default();
             if mode.trim().eq_ignore_ascii_case("triage") {
                 let detail = plan_team_run(
+                    &host,
                     goal,
                     mode,
                     lead_model,
@@ -241,9 +229,16 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
                     "isExecuting": false,
                 }))
             } else {
-                let detail =
-                    create_pending_pipeline_run(goal, lead_model, None, images, overrides).await?;
-                start_design_phase(state, detail.run.id.clone(), current_wd).await;
+                let detail = create_pending_pipeline_run(
+                    host.as_ref(),
+                    goal,
+                    lead_model,
+                    None,
+                    images,
+                    overrides,
+                )
+                .await?;
+                start_design_phase(host, detail.run.id.clone(), current_wd).await;
                 Ok(json!({
                     "success": true,
                     "detail": detail,
@@ -268,8 +263,8 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
             if run_id.is_empty() {
                 return Err("缺少 runId".to_string());
             }
-            save_design_payload(&payload, &run_id).await?;
-            revise_design_phase(state, run_id.clone(), feedback, current_wd).await?;
+            save_design_payload(host.as_ref(), &payload, &run_id).await?;
+            revise_design_phase(host, run_id.clone(), feedback, current_wd).await?;
             let detail = tokio::task::spawn_blocking(move || {
                 with_team_store(|s| load_run_detail_conn(&s.conn, &run_id, 0))
             })
@@ -288,8 +283,8 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
                 .or_else(|| payload.get("runId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let detail = convert_triage_to_pipeline(triage_id).await?;
-            start_design_phase(state, detail.run.id.clone(), current_wd).await;
+            let detail = convert_triage_to_pipeline(host.as_ref(), triage_id).await?;
+            start_design_phase(host, detail.run.id.clone(), current_wd).await;
             Ok(json!({
                 "success": true,
                 "detail": detail,
@@ -345,7 +340,7 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
         "teams:save_draft" => {
             let parsed: SaveDraftPayload =
                 serde_json::from_value(payload).map_err(|e| format!("参数格式无效: {e}"))?;
-            let detail = save_draft_internal(parsed).await?;
+            let detail = save_draft_internal(host.as_ref(), parsed).await?;
             Ok(json!({
                 "success": true,
                 "detail": detail,
@@ -375,8 +370,8 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
                     None
                 }
             };
-            save_design_payload(&payload, &run_id).await?;
-            start_sql_design_phase(state, &run_id, current_wd, sql_override).await?;
+            save_design_payload(host.as_ref(), &payload, &run_id).await?;
+            start_sql_design_phase(host, &run_id, current_wd, sql_override).await?;
             let rid_q = run_id.clone();
             let (detail, presets) = tokio::task::spawn_blocking(move || {
                 with_team_store(|s| {
@@ -549,9 +544,9 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
             if payload.get("tasks").is_some() {
                 let parsed: SaveDraftPayload =
                     serde_json::from_value(payload).map_err(|e| format!("任务参数无效: {e}"))?;
-                let _ = save_draft_internal(parsed).await?;
+                let _ = save_draft_internal(host.as_ref(), parsed).await?;
             }
-            start_or_resume_run(state, &run_id).await?;
+            start_or_resume_run(host, &run_id).await?;
             let rid_q = run_id.clone();
             let detail = tokio::task::spawn_blocking(move || {
                 with_team_store(|s| load_run_detail_conn(&s.conn, &rid_q, 0))
@@ -618,7 +613,7 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            retry_single_task(state, &run_id, &task_id).await?;
+            retry_single_task(host, &run_id, &task_id).await?;
             let detail = tokio::task::spawn_blocking(move || {
                 with_team_store(|s| load_run_detail_conn(&s.conn, &run_id, 0))
             })
@@ -914,7 +909,7 @@ async fn dispatch_rpc(state: AppState, action: &str, payload: Value) -> Result<V
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let (mode, live) = send_member_note(state, &run_id, &task_id, &note).await?;
+            let (mode, live) = send_member_note(host, &run_id, &task_id, &note).await?;
             let detail = tokio::task::spawn_blocking(move || {
                 with_team_store(|s| load_run_detail_conn(&s.conn, &run_id, 0))
             })
@@ -964,16 +959,16 @@ fn enrich_runs_json(
 }
 
 async fn save_draft_internal(
+    host: &dyn TeamHost,
     mut parsed: SaveDraftPayload,
 ) -> Result<super::types::TeamRunDetail, String> {
     if let Some(ref overrides) = parsed.prompt_overrides {
         validate_prompt_map(overrides)?;
     }
-    let agents = tokio::task::spawn_blocking(|| {
-        crate::neural_memory::list_neural_agents().unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default();
+    let agents =
+        tokio::task::spawn_blocking(|| zap_neural_memory::list_neural_agents().unwrap_or_default())
+            .await
+            .unwrap_or_default();
 
     let now = now_ts();
     for (idx, t) in parsed.tasks.iter_mut().enumerate() {
@@ -987,7 +982,7 @@ async fn save_draft_internal(
         t.project_hash = if t.working_dir.is_empty() {
             String::new()
         } else {
-            crate::hash_path(Path::new(&t.working_dir))
+            host.hash_path(Path::new(&t.working_dir))
         };
         t.agent_label = agents
             .iter()
@@ -1204,11 +1199,15 @@ mod prompt_validation_tests {
     }
 }
 
-async fn save_design_payload(payload: &Value, run_id: &str) -> Result<(), String> {
+async fn save_design_payload(
+    host: &dyn TeamHost,
+    payload: &Value,
+    run_id: &str,
+) -> Result<(), String> {
     if payload.get("tasks").is_some() {
         let parsed =
             serde_json::from_value(payload.clone()).map_err(|e| format!("任务参数无效: {e}"))?;
-        save_draft_internal(parsed).await?;
+        save_draft_internal(host, parsed).await?;
     } else {
         let ep = optional_string(payload, "executionPlan")?;
         let sql = optional_string(payload, "sqlSchemaDraft")?;

@@ -10,6 +10,7 @@
 //! - `runner`：波次并发调度、独立验收闸门、最多 `max_repairs` 次自动打回返工与跨库会诊报告汇总
 //! - `rpc`：面向外部插件 `@zap/agent-teams` 的 `teams:*` 统一 RPC 路由
 
+pub mod host;
 mod planner;
 mod prompts;
 mod rpc;
@@ -20,6 +21,7 @@ mod store;
 mod tools;
 mod types;
 
+pub use host::{HostChildTurnRequest, HostModelInfo, HostProjectInfo, TeamHost};
 pub use rpc::handle_rpc;
 pub use tools::apply_session_team_tools;
 pub use types::{

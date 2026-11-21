@@ -28,7 +28,7 @@ pub async fn handle_plugin_rpc(
     Json(req): Json<PluginRpcRequest>,
 ) -> axum::response::Response {
     if req.action.starts_with("teams:") {
-        return crate::agent_teams::handle_rpc(state, req.action, req.payload).await;
+        return crate::zap_extensions::handle_teams_rpc(state, req.action, req.payload).await;
     }
     match tokio::task::spawn_blocking(move || handle_plugin_rpc_sync(plugin_id, req)).await {
         Ok(resp) => resp,
@@ -45,14 +45,7 @@ fn handle_plugin_rpc_sync(plugin_id: String, req: PluginRpcRequest) -> axum::res
     let payload = req.payload;
 
     match action {
-        a if a.starts_with("neural:") => match crate::neural_memory::handle_rpc(a, &payload) {
-            Ok(val) => Json(val).into_response(),
-            Err(err) => (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "success": false, "error": err })),
-            )
-                .into_response(),
-        },
+        a if a.starts_with("neural:") => crate::zap_extensions::handle_neural_rpc(a, &payload),
 
         "storage:get" => {
             let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("");

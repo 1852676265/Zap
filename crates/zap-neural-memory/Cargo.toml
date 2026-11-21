@@ -1,0 +1,27 @@
+[package]
+name = "zap-neural-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zap-auth = { path = "../zap-auth" }
+zap-capabilities = { path = "../zap-capabilities", features = ["codeintel"] }
+zap-coding = { path = "../zap-coding" }
+zap-config = { path = "../zap-config" }
+zap-kernel = { path = "../zap-kernel" }
+
+async-trait = "0.1"
+chrono = "0.4"
+futures = "0.3"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+zap-kernel = { path = "../zap-kernel", features = ["test-support"] }

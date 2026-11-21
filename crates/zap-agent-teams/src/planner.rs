@@ -15,8 +15,8 @@ use zap_kernel::message::{ImageContent, Message};
 use zap_kernel::provider::{ChatOptions, ReasoningEffort, ToolChoice};
 use zap_kernel::stream::StreamEvent;
 
-use crate::neural_memory::NeuralAgent;
-use crate::ProjectInfo;
+use crate::host::{HostProjectInfo, TeamHost};
+use zap_neural_memory::NeuralAgent;
 
 use super::store::{
     append_event_conn, create_run_with_tasks_conn, load_config_conn, load_custom_projects_conn,
@@ -75,6 +75,7 @@ pub(crate) fn build_user_message(text: &str, images: &[TeamImage]) -> Message {
 
 /// 立即创建 `pipeline` 模式的初始任务单（`stage = "planning"`, `status = "running"`），随后由后台异步跑阶段 1+2。
 pub async fn create_pending_pipeline_run(
+    host: &dyn TeamHost,
     user_goal: &str,
     lead_model_override: Option<&str>,
     source_triage_id: Option<&str>,
@@ -102,7 +103,7 @@ pub async fn create_pending_pipeline_run(
     .await
     .map_err(|e| format!("加载任务配置失败: {e}"))??;
 
-    let config = crate::api_config::load_config()?;
+    let config = crate::host::load_config()?;
     let default_model = config.effective_model_selection().unwrap_or_default();
     let lead_model = lead_model_override
         .map(str::trim)
@@ -144,7 +145,7 @@ pub async fn create_pending_pipeline_run(
             project_hash: if p.working_dir.trim().is_empty() {
                 String::new()
             } else {
-                crate::hash_path(Path::new(p.working_dir.trim()))
+                host.hash_path(Path::new(p.working_dir.trim()))
             },
             agent_id: p.agent_id.clone(),
             agent_label: String::new(),
@@ -217,12 +218,14 @@ pub async fn create_pending_pipeline_run(
 
 /// 为指定 `pipeline` 任务生成《执行计划》、判断是否需要数据库设计并拆解出各项目子任务。
 pub async fn build_pipeline_plan_for_run(
+    host: &std::sync::Arc<dyn TeamHost>,
     run: &TeamRun,
     current_working_dir: &Path,
     feedback: Option<&str>,
 ) -> Result<(String, bool, String, Vec<TeamTask>), String> {
+    let host_clone = std::sync::Arc::clone(host);
     let (presets, custom_projects, agents, projects, global_cfg) =
-        tokio::task::spawn_blocking(|| {
+        tokio::task::spawn_blocking(move || {
             let (presets, custom_projects, global_cfg) = with_team_store(|s| {
                 Ok((
                     load_role_presets_conn(&s.conn)?,
@@ -230,14 +233,14 @@ pub async fn build_pipeline_plan_for_run(
                     load_config_conn(&s.conn),
                 ))
             })?;
-            let agents = crate::neural_memory::list_neural_agents().unwrap_or_default();
-            let projects = crate::list_projects().unwrap_or_default();
+            let agents = zap_neural_memory::list_neural_agents().unwrap_or_default();
+            let projects = host_clone.list_projects();
             Ok::<_, String>((presets, custom_projects, agents, projects, global_cfg))
         })
         .await
         .map_err(|e| format!("加载项目上下文失败: {e}"))??;
 
-    let config = crate::api_config::load_config()?;
+    let config = crate::host::load_config()?;
     let goal_for_llm = match feedback.map(str::trim).filter(|s| !s.is_empty()) {
         Some(fb) => format!(
             "{}\n\n【用户补充修改意见】：\n{}\n\n【上一版执行计划】：\n{}",
@@ -299,6 +302,7 @@ pub async fn build_pipeline_plan_for_run(
     }
 
     let tasks = materialize_planned_tasks(
+        host.as_ref(),
         &run.id,
         &run.user_goal,
         "pipeline",
@@ -346,7 +350,7 @@ pub async fn generate_unified_interface_spec(
         task_summary
     );
 
-    let Ok(config) = crate::api_config::load_config() else {
+    let Ok(config) = crate::host::load_config() else {
         return fallback;
     };
     let prov_opt = (!run.lead_model.trim().is_empty()).then_some(run.lead_model.trim());
@@ -360,7 +364,7 @@ pub async fn generate_unified_interface_spec(
     );
     rt.mcp = false;
     rt.max_tokens = Some(8192);
-    let coding_cfg = crate::kernel_runtime::coding_config_from_runtime(&rt);
+    let coding_cfg = rt.agent_config();
     let options = ChatOptions {
         max_tokens: Some(8192),
         temperature: None,
@@ -368,7 +372,7 @@ pub async fn generate_unified_interface_spec(
         reasoning_effort: Some(ReasoningEffort::Medium),
         ..coding_cfg.chat_options.clone()
     };
-    let factory = crate::runtime_host::coding_provider_factory();
+    let factory = crate::host::coding_provider_factory();
     let sid = format!("team-contract-spec-{}", uuid::Uuid::new_v4());
     let Ok(Ok(provider)) =
         tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&sid))).await
@@ -459,6 +463,7 @@ fn goal_implies_db(goal: &str) -> bool {
 
 /// 根据用户输入的需求（或线上报错），用于 `triage` 模式同步拆解任务草稿并预填项目目录与记忆智能体。
 pub async fn plan_team_run(
+    host: &std::sync::Arc<dyn TeamHost>,
     user_goal: &str,
     mode: &str,
     lead_model_override: Option<&str>,
@@ -484,8 +489,9 @@ pub async fn plan_team_run(
         "pipeline"
     };
 
+    let host_clone = std::sync::Arc::clone(host);
     let (global_cfg, presets, custom_projects, agents, projects) =
-        tokio::task::spawn_blocking(|| {
+        tokio::task::spawn_blocking(move || {
             let (cfg, presets, custom_projects) = with_team_store(|s| {
                 Ok((
                     load_config_conn(&s.conn),
@@ -493,14 +499,14 @@ pub async fn plan_team_run(
                     load_custom_projects_conn(&s.conn)?,
                 ))
             })?;
-            let agents = crate::neural_memory::list_neural_agents().unwrap_or_default();
-            let projects = crate::list_projects().unwrap_or_default();
+            let agents = zap_neural_memory::list_neural_agents().unwrap_or_default();
+            let projects = host_clone.list_projects();
             Ok::<_, String>((cfg, presets, custom_projects, agents, projects))
         })
         .await
         .map_err(|e| format!("加载规划上下文失败: {e}"))??;
 
-    let config = crate::api_config::load_config()?;
+    let config = crate::host::load_config()?;
     let default_model = config.effective_model_selection().unwrap_or_default();
     let lead_model = lead_model_override
         .map(str::trim)
@@ -542,6 +548,7 @@ pub async fn plan_team_run(
     };
 
     let tasks = materialize_planned_tasks(
+        host.as_ref(),
         &run_id,
         &goal_text,
         norm_mode,
@@ -625,6 +632,7 @@ pub async fn plan_team_run(
 
 #[allow(clippy::too_many_arguments)]
 fn materialize_planned_tasks(
+    host: &dyn TeamHost,
     run_id: &str,
     goal: &str,
     norm_mode: &str,
@@ -634,7 +642,7 @@ fn materialize_planned_tasks(
     custom_projects: &[TeamProjectPreset],
     presets: &[RoleBindingPreset],
     agents: &[NeuralAgent],
-    projects: &[ProjectInfo],
+    projects: &[HostProjectInfo],
     inherited_bindings: Option<&HashMap<String, (String, String, String)>>,
 ) -> Vec<TeamTask> {
     let now = now_ts();
@@ -750,7 +758,7 @@ fn materialize_planned_tasks(
         let proj_hash = if wd.trim().is_empty() {
             String::new()
         } else {
-            crate::hash_path(Path::new(&wd))
+            host.hash_path(Path::new(&wd))
         };
 
         let title = if item.title.trim().is_empty() {
@@ -814,7 +822,10 @@ fn materialize_planned_tasks(
 }
 
 /// 将已完成的「三方跨库联合排障会诊任务」一键转化为「跨项目修复任务」，保留原参考图并进入四阶段设计。
-pub async fn convert_triage_to_pipeline(triage_run_id: &str) -> Result<TeamRunDetail, String> {
+pub async fn convert_triage_to_pipeline(
+    host: &dyn TeamHost,
+    triage_run_id: &str,
+) -> Result<TeamRunDetail, String> {
     let tid = triage_run_id.trim().to_string();
     let triage_detail = tokio::task::spawn_blocking(move || {
         with_team_store(|store| load_run_detail_conn(&store.conn, &tid, 0))
@@ -834,6 +845,7 @@ pub async fn convert_triage_to_pipeline(triage_run_id: &str) -> Result<TeamRunDe
     };
 
     create_pending_pipeline_run(
+        host,
         &combined_goal,
         Some(&triage_detail.run.lead_model),
         Some(&triage_detail.run.id),
@@ -852,7 +864,7 @@ fn resolve_role_binding(
     presets: &HashMap<String, RoleBindingPreset>,
     inherited: Option<&HashMap<String, (String, String, String)>>,
     agents: &[NeuralAgent],
-    projects: &[ProjectInfo],
+    projects: &[HostProjectInfo],
 ) -> (String, String, String) {
     if let Some(map) = inherited {
         if let Some((wd, aid, mdl)) = map.get(domain) {
@@ -916,7 +928,11 @@ fn guess_agent_for_domain(domain: &str, agents: &[NeuralAgent]) -> Option<String
     agents.first().map(|a| a.id.clone())
 }
 
-fn guess_project_for_domain(domain: &str, goal: &str, projects: &[ProjectInfo]) -> Option<String> {
+fn guess_project_for_domain(
+    domain: &str,
+    goal: &str,
+    projects: &[HostProjectInfo],
+) -> Option<String> {
     let goal_low = goal.to_ascii_lowercase();
     // 若用户原话点名了某个已知仓库名且与领域沾边，优先命中
     let patterns: &[&str] = match domain {
@@ -961,7 +977,7 @@ async fn call_planner_llm(
     goal: &str,
     mode: &str,
     custom_projects: &[TeamProjectPreset],
-    projects: &[ProjectInfo],
+    projects: &[HostProjectInfo],
     images: &[TeamImage],
     run_overrides: &BTreeMap<String, String>,
     global_templates: &BTreeMap<String, String>,
@@ -977,7 +993,7 @@ async fn call_planner_llm(
     );
     rt.mcp = false;
     rt.max_tokens = Some(8192);
-    let coding_cfg = crate::kernel_runtime::coding_config_from_runtime(&rt);
+    let coding_cfg = rt.agent_config();
     let options = ChatOptions {
         max_tokens: Some(8192),
         temperature: None,
@@ -986,7 +1002,7 @@ async fn call_planner_llm(
         ..coding_cfg.chat_options.clone()
     };
 
-    let factory = crate::runtime_host::coding_provider_factory();
+    let factory = crate::host::coding_provider_factory();
     let sid = format!("team-planner-{}", uuid::Uuid::new_v4());
     let provider = tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&sid)))
         .await

@@ -712,7 +712,7 @@ async fn synthesize_peer_answer(
         code_evidence
     );
 
-    let Ok(config) = crate::api_config::load_config() else {
+    let Ok(config) = crate::host::load_config() else {
         return truncate_chars_safe(&fallback, 2200);
     };
     let wd = peer_dir.unwrap_or_else(|| Path::new("."));
@@ -721,7 +721,7 @@ async fn synthesize_peer_answer(
         zap_coding::CodingRuntimeConfig::from_config(&config, wd, prov_opt, None, false, false);
     rt.mcp = false;
     rt.max_tokens = Some(4096);
-    let coding_cfg = crate::kernel_runtime::coding_config_from_runtime(&rt);
+    let coding_cfg = rt.agent_config();
     let options = ChatOptions {
         max_tokens: Some(4096),
         temperature: None,
@@ -730,7 +730,7 @@ async fn synthesize_peer_answer(
         ..coding_cfg.chat_options.clone()
     };
 
-    let factory = crate::runtime_host::coding_provider_factory();
+    let factory = crate::host::coding_provider_factory();
     let ephemeral_sid = format!("team-peer-ask-{}", uuid::Uuid::new_v4());
     let Ok(Ok(provider)) =
         tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&ephemeral_sid))).await

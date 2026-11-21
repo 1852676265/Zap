@@ -19,12 +19,14 @@ default = []
 # Config system used directly by the daemon.
 zap-config = { path = "../zap-config" }
 zap-auth = { path = "../zap-auth" }
-zap-capabilities = { path = "../zap-capabilities", features = ["plugin", "mcp", "notify", "codeintel"] }
+zap-capabilities = { path = "../zap-capabilities", features = ["plugin", "mcp", "notify"] }
 # Unified native runtime used by daemon live/chat/session paths.
 zap-kernel = { path = "../zap-kernel" }
 zap-coding = { path = "../zap-coding" }
 zap-telemetry = { path = "../zap-telemetry" }
 zap-updater = { path = "../zap-updater" }
+zap-neural-memory = { path = "../zap-neural-memory" }
+zap-agent-teams = { path = "../zap-agent-teams" }
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 
 # HTTP
@@ -37,7 +39,6 @@ futures = "0.3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = "0.4"
 
 # WebUI static embedding
