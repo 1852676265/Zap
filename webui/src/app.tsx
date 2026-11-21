@@ -175,6 +175,21 @@ export function App() {
       window.removeEventListener('zap:open_server_switcher', handler);
     };
   }, []);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ viewId?: string }>).detail;
+      if (detail?.viewId) {
+        setActiveWorkbenchView(detail.viewId);
+      } else {
+        setActiveWorkbenchView('chat');
+      }
+    };
+    window.addEventListener('zap:switch-workbench-view', handler);
+    return () => {
+      window.removeEventListener('zap:switch-workbench-view', handler);
+    };
+  }, []);
   const [cwd, setCwd] = useState(() => rememberedPreviewRef.current?.working_dir ?? '');
   // Physical session-bucket hash of the current project. The sidebar scopes its
   // list by this (see Sidebar `projectHash`), not by the `cwd` string, so a
@@ -1273,6 +1288,7 @@ export function App() {
   }
 
   function handleNewSession(targetDir?: string) {
+    setActiveWorkbenchView('chat');
     setSidebarOpen(false);
     setActiveMainTabId('chat');
     // Top-level 「新建对话」 stays in the current/serve workspace.
@@ -1310,6 +1326,7 @@ export function App() {
   }
 
   function handleSelectSession(session: SessionMetaWithProject) {
+    setActiveWorkbenchView('chat');
     navSeqRef.current++;
     applySessionSelection(session);
   }
@@ -1601,6 +1618,23 @@ export function App() {
                 </div>
               )}
             </div>
+          ) : activeWorkbenchView !== 'chat' &&
+            zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView) ? (
+            /* 桌面端插件工作台标题：当前切到外部扩展工作台时，顶栏直接联动展示插件名称 */
+            <button
+              type="button"
+              class="session-title-btn active"
+              title={
+                zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView)?.title ||
+                '扩展工作台'
+              }
+              onClick={() => {}}
+            >
+              <span class="session-title-text">
+                {zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView)?.title ||
+                  '扩展工作台'}
+              </span>
+            </button>
           ) : activeSession?.name && (activeSession.message_count ?? 0) > 0 ? (
             /* 桌面端会话标题：只有当该会话真实拥有消息时才展示其标题 */
             <button
@@ -2059,8 +2093,12 @@ export function App() {
             } catch {}
           }}
         >
-          {activeWorkbenchView !== 'chat' ? (
-            <div class="workbench-plugin-view-container" style="flex: 1; display: flex; flex-direction: column; height: 100%; overflow: hidden;">
+          {activeWorkbenchView !== 'chat' &&
+          zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView) ? (
+            <div
+              class="workbench-plugin-container"
+              style="flex: 1; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-primary, transparent);"
+            >
               {(() => {
                 const currentView = zapPluginKernel
                   .getSlotEntries('workbench.view')
@@ -2070,7 +2108,10 @@ export function App() {
                 return (
                   <iframe
                     src={currentView.src}
-                    style="width: 100%; height: 100%; border: none; background: transparent;"
+                    title={currentView.title}
+                    class="workbench-plugin-iframe"
+                    style="width: 100%; height: 100%; border: none; flex: 1; background: transparent;"
+                    allow="clipboard-read; clipboard-write;"
                   />
                 );
               })()}

@@ -438,7 +438,7 @@ export function SystemSettingsDialog({ onClose, initialTab, focusSection }: Syst
                 </h4>
                 <div class="system-settings-card-box about-box">
                   <div class="about-hero-row">
-                    <strong class="about-app-title">JeikCode</strong>
+                    <strong class="about-app-title">Zap</strong>
                     {appVersion && (
                       <span class="about-version-badge">v{appVersion}</span>
                     )}

@@ -466,6 +466,15 @@ function GitSyncGlyph() {
   );
 }
 
+/** Plugin / puzzle piece glyph for Plugin Center. */
+function PluginIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707c-.617 0-1.234-.236-1.704-.706l-1.568-1.568c-.23-.23-.556-.338-.877-.29-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02Z" />
+    </svg>
+  );
+}
+
 /** Official GitHub Octocat mark glyph. */
 function GithubLogo() {
   return (
@@ -2591,7 +2600,7 @@ export function Sidebar({
             return (
               <button
                 key={item.id}
-                class={'sidebar-rail-btn' + (isActive ? ' active' : '')}
+                class={'rail-btn' + (isActive ? ' active' : '')}
                 onClick={() => {
                   if (item.viewId && onSwitchWorkbenchView) {
                     onSwitchWorkbenchView(item.viewId);
@@ -2601,7 +2610,7 @@ export function Sidebar({
                 title={item.label}
                 aria-label={item.label}
               >
-                {item.icon ? (typeof item.icon === 'function' ? item.icon() : item.icon) : <span>✦</span>}
+                {item.icon ? (typeof item.icon === 'function' ? item.icon() : item.icon) : <PluginIcon />}
               </button>
             );
           })}
@@ -2610,10 +2619,10 @@ export function Sidebar({
           {githubLogo !== false && (
             <a
               class="sidebar-rail-btn sidebar-rail-github-btn"
-              href="https://github.com/jeikl/JeikCode"
+              href="https://github.com/1852676265/JeikCode"
               target="_blank"
               rel="noopener noreferrer"
-              title="GitHub: JeikCode"
+              title="GitHub: Zap"
               aria-label="GitHub Repository"
             >
               <GithubLogo />
@@ -2655,7 +2664,7 @@ export function Sidebar({
       />
       <div class="sidebar-brand-row">
         <span class="sidebar-brand">
-<span class="sidebar-brand-name">JeikCode</span>
+          <span class="sidebar-brand-name">Zap</span>
           <span class="sidebar-brand-version">{formatAppVersionLabel(appVersion) || 'v?'}</span>
         </span>
         <span class="sidebar-brand-btns">
@@ -2734,9 +2743,12 @@ export function Sidebar({
                     title={item.label}
                   >
                     <span class="sidebar-action-icon">
-                      {item.icon ? (typeof item.icon === 'function' ? item.icon() : item.icon) : <span>✦</span>}
+                      {item.icon ? (typeof item.icon === 'function' ? item.icon() : item.icon) : <PluginIcon />}
                     </span>
                     <span class="sidebar-action-label">{item.label}</span>
+                    {item.badge !== undefined && item.badge !== '' && (
+                      <span class="sidebar-action-badge">{item.badge}</span>
+                    )}
                   </button>
                 );
               })}
@@ -3144,10 +3156,10 @@ export function Sidebar({
         {githubLogo !== false && (
           <a
             class="sidebar-bottom-github-btn"
-            href="https://github.com/jeikl/JeikCode"
+            href="https://github.com/1852676265/JeikCode"
             target="_blank"
             rel="noopener noreferrer"
-            title="GitHub: JeikCode"
+            title="GitHub: Zap"
             aria-label="GitHub Repository"
           >
             <GithubLogo />
