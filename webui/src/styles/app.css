@@ -2330,7 +2330,9 @@ body {
     "messages nav"
     "warning  nav"
     "input    nav";
-  column-gap: 12px;
+  column-gap: 16px;
+  padding: 0 16px 16px 0;
+  box-sizing: border-box;
   align-items: stretch;
 }
 .chat-stage .chat-main-column,
@@ -2371,6 +2373,8 @@ body {
 .chat-stage.has-right-panel .input-container {
   grid-area: input;
   width: 100%;
+  padding-right: 0;
+  box-sizing: border-box;
 }
 .chat-stage.has-turn-nav .timeline-inner,
 .chat-stage.has-turn-nav .input-wrap,
@@ -3462,9 +3466,9 @@ body {
 .right-panel-resizer {
   position: absolute;
   top: 0;
-  left: -14px;
+  left: -16px;
   bottom: 0;
-  width: 14px;
+  width: 16px;
   cursor: col-resize;
   z-index: 25;
   user-select: none;

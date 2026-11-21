@@ -2616,18 +2616,6 @@ export function Sidebar({
           })}
         </nav>
         <div class="sidebar-rail-bottom">
-          {githubLogo !== false && (
-            <a
-              class="sidebar-rail-btn sidebar-rail-github-btn"
-              href="https://github.com/1852676265/JeikCode"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="GitHub: Zap"
-              aria-label="GitHub Repository"
-            >
-              <GithubLogo />
-            </a>
-          )}
           <button
             class="sidebar-rail-btn"
             onMouseEnter={() => {
@@ -3153,18 +3141,6 @@ export function Sidebar({
   )}
 
       <div class="sidebar-bottom">
-        {githubLogo !== false && (
-          <a
-            class="sidebar-bottom-github-btn"
-            href="https://github.com/1852676265/JeikCode"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="GitHub: Zap"
-            aria-label="GitHub Repository"
-          >
-            <GithubLogo />
-          </a>
-        )}
         <span class="sidebar-bottom-spacer" />
         <button
           class="sidebar-icon-btn"
