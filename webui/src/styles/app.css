@@ -65,12 +65,22 @@ body {
   min-height: 0;
   overflow: hidden;
   position: relative;
-  background: var(--zap-glass-panel-bg, rgba(255, 255, 255, 0.48));
-  backdrop-filter: blur(var(--zap-glass-blur, 28px));
-  -webkit-backdrop-filter: blur(var(--zap-glass-blur, 28px));
+  isolation: isolate;
   border: 1px solid var(--zap-glass-border, rgba(255, 255, 255, 0.85));
   border-radius: 26px;
   box-shadow: var(--zap-glass-shadow);
+}
+/* 将毛玻璃背景与模糊层抽离为静态底层伪元素，彻底隔离滚动区 .messages-container，避免滚轮滚动触发全屏 backdrop-filter 重采样 */
+.main-column::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  background: var(--zap-glass-panel-bg, rgba(255, 255, 255, 0.48));
+  backdrop-filter: blur(var(--zap-glass-blur, 28px));
+  -webkit-backdrop-filter: blur(var(--zap-glass-blur, 28px));
 }
 
 /* 当左侧边栏折叠收起时，主列内容区与输入框自适应微调宽度，保持优美居中留白与阅读舒适度 */
@@ -2236,7 +2246,7 @@ body {
   min-width: 0;
   background-color: var(--app-primary-background);
   position: relative;
-  contain: layout style;
+  contain: layout style paint;
   transform: translateZ(0);
   will-change: scroll-position;
   -webkit-overflow-scrolling: touch;
@@ -4138,6 +4148,7 @@ body {
   flex-direction: column;
   align-items: flex-start;
   color: var(--app-primary-foreground);
+  contain: layout style;
 }
 
 .timeline-message:first-child { padding-top: 0; }
@@ -4152,6 +4163,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  contain: layout style;
 }
 
 .user-message-bubble {
@@ -5696,8 +5708,8 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--zap-glass-card-bg, rgba(255, 255, 255, 0.88));
-  backdrop-filter: blur(var(--zap-glass-blur, 28px));
-  -webkit-backdrop-filter: blur(var(--zap-glass-blur, 28px));
+  backdrop-filter: blur(min(var(--zap-glass-blur, 14px), 12px));
+  -webkit-backdrop-filter: blur(min(var(--zap-glass-blur, 14px), 12px));
   border: 1px solid var(--zap-glass-border, rgba(255, 255, 255, 0.85));
   border-radius: 18px;
   box-shadow: var(--zap-glass-shadow-floating, 0 14px 40px rgba(31, 38, 135, 0.09), 0 2px 6px rgba(0, 0, 0, 0.03));
@@ -17790,11 +17802,9 @@ body {
 .session-title-btn,
 .top-nav-btn {
   border-radius: var(--zap-pill-radius, 9999px);
-  background: var(--zap-glass-card-bg);
+  background: var(--zap-scroll-card-bg, var(--zap-glass-card-bg));
   border: 1px solid var(--zap-glass-border);
-  box-shadow: var(--zap-glass-shadow);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--zap-scroll-card-shadow, var(--zap-glass-shadow));
 }
 
 .session-title-btn:hover,
@@ -17821,14 +17831,12 @@ body {
   min-width: 32px;
   padding: 0;
   border-radius: var(--zap-pill-radius, 8px);
-  background: var(--zap-glass-card-bg, rgba(255, 255, 255, 0.08));
+  background: var(--zap-scroll-card-bg, var(--zap-glass-card-bg, rgba(255, 255, 255, 0.08)));
   border: 1px solid var(--zap-glass-border, rgba(255, 255, 255, 0.16));
-  box-shadow: var(--zap-glass-shadow, 0 2px 8px rgba(0, 0, 0, 0.08));
+  box-shadow: var(--zap-scroll-card-shadow, 0 2px 8px rgba(0, 0, 0, 0.08));
   color: var(--app-primary-foreground, #ccc);
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
 }
 
 .right-panel-toggle-btn:hover {
@@ -17876,11 +17884,9 @@ body {
 
 .landing-project-btn,
 .landing-chip {
-  background: var(--zap-glass-card-bg);
+  background: var(--zap-scroll-card-bg, var(--zap-glass-card-bg));
   border: 1px solid var(--zap-glass-border);
-  box-shadow: var(--zap-glass-shadow);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--zap-scroll-card-shadow, var(--zap-glass-shadow));
 }
 
 .landing-project-btn:hover,
@@ -17888,27 +17894,27 @@ body {
   background: var(--zap-glass-card-hover-bg);
 }
 
-/* 用户提问卡片：采用高透滚动表面令牌，避免外层毛玻璃容器内嵌套二次高斯模糊造成滚动掉帧 */
+/* 用户提问卡片：采用高透滚动表面与轻量阴影，避免外层毛玻璃容器内嵌套重阴影或二次高斯模糊造成滚动掉帧 */
 .user-message-bubble {
   background: var(--zap-scroll-user-card-bg, var(--zap-glass-card-hover-bg));
   border: 1px solid var(--zap-glass-border);
   border-radius: 18px;
-  box-shadow: var(--zap-glass-shadow);
+  box-shadow: var(--zap-scroll-card-shadow, var(--zap-glass-shadow));
   color: var(--app-primary-foreground);
 }
 
-/* 助手回复卡片：采用高透滚动表面令牌，消除逐气泡 28px 高斯模糊重采样开销 */
+/* 助手回复卡片：采用高透滚动表面与轻量阴影，消除逐气泡重绘开销 */
 .timeline-message {
   background: var(--zap-scroll-card-bg, var(--zap-glass-card-bg));
   border: 1px solid var(--zap-glass-border);
   border-radius: var(--zap-chat-card-radius, 22px);
-  box-shadow: var(--zap-glass-shadow);
+  box-shadow: var(--zap-scroll-card-shadow, var(--zap-glass-shadow));
   padding: 20px 24px;
   margin-bottom: 14px;
   color: var(--app-primary-foreground);
 }
 
-/* 底部悬浮毛玻璃输入框（完整保留多行输入与底部工具栏控件，移除底栏硬背景、顶部分割线与阴影） */
+/* 底部悬浮输入框：复用 .main-column 静态毛玻璃底层，避免滚动区下方叠放二次 backdrop-filter 模糊重采样 */
 .input-container {
   background: transparent !important;
   border-top: none !important;
@@ -17918,8 +17924,6 @@ body {
 .input-box {
   border-radius: 22px;
   background: var(--zap-composer-surface-bg, var(--zap-glass-card-bg));
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--zap-glass-border);
   box-shadow: var(--zap-glass-shadow-floating);
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;

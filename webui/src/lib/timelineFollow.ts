@@ -56,6 +56,12 @@ export function createTimelineFollow(
     // release follow when streaming has already increased scrollHeight.
     const ownWrite = writtenTop !== null && Math.abs(top - writtenTop) < 0.5;
     if (!ownWrite && top !== lastTop) {
+      // 已处于暂停跟底且继续向上滚动时，无需每帧读取 scrollHeight / clientHeight
+      if (upwardIntentSuspended && top < lastTop) {
+        writtenTop = null;
+        lastTop = top;
+        return;
+      }
       // Moving away is reading intent even inside the bottom 80px. Only a
       // subsequent downward movement into that zone may resume following.
       if (top < lastTop && element.scrollHeight - top - element.clientHeight > 0) {

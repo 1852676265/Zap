@@ -179,6 +179,23 @@ test('resolveActiveTurnId pins the last turn when visible near the bottom of sho
   );
 });
 
+test('resolveActiveTurnId uses binary search on large monotonic lists without scanning all items', () => {
+  const items = Array.from({ length: 120 }, (_, i) => ({ id: `t-${i}` }));
+  let lookups = 0;
+  const topOf = (id: string) => {
+    lookups++;
+    const idx = Number(id.slice(2));
+    return idx * 500;
+  };
+  const active = resolveActiveTurnId(items, topOf, {
+    scrollTop: 50 * 500,
+    clientHeight: 600,
+    scrollHeight: 120 * 500,
+  });
+  assert.equal(active, 't-50');
+  assert.ok(lookups <= 12, `expected logarithmic lookups, got ${lookups}`);
+});
+
 test('buildTurnNavItems extracts prompt and response preview for turn navigation rail', () => {
   const items = buildTurnNavItems([
     { role: 'user', text: '你好' },

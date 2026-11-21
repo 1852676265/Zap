@@ -4491,8 +4491,15 @@ export function Chat({
     () => filterTurnNavItems(turnNavItems, turnNavQuery),
     [turnNavItems, turnNavQuery],
   );
-  const [activeTurnId, setActiveTurnIdState] = useState<string | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
+  const activeTurnListenersRef = useRef<Set<(id: string | null) => void>>(new Set());
+  const getActiveTurnId = useCallback(() => activeTurnIdRef.current, []);
+  const subscribeActiveTurnId = useCallback((listener: (id: string | null) => void) => {
+    activeTurnListenersRef.current.add(listener);
+    return () => {
+      activeTurnListenersRef.current.delete(listener);
+    };
+  }, []);
   const turnNavItemsRef = useRef(turnNavItems);
   turnNavItemsRef.current = turnNavItems;
   const turnNavByIndex = useMemo(
@@ -5091,8 +5098,9 @@ export function Chat({
     });
   };
   function setActiveTurnId(id: string | null) {
+    if (activeTurnIdRef.current === id) return;
     activeTurnIdRef.current = id;
-    setActiveTurnIdState(id);
+    activeTurnListenersRef.current.forEach((listener) => listener(id));
   }
   const turnNavScrollRafRef = useRef<number | null>(null);
   function syncTurnNavFromScrollNow() {
@@ -5114,15 +5122,21 @@ export function Chat({
       if (key) navMap.set(key, node);
       if (node.id && !navMap.has(node.id)) navMap.set(node.id, node);
     }
+
+    // 跳过未加载的历史轮次与不在 DOM 内的节点，杜绝每次滚动帧对未挂载轮次触发全量 .user-message-wrapper textContent 回退扫描
+    const probeItems = items.filter((it) => !it.unloaded && (navMap.size === 0 || navMap.has(it.id)));
+    const targetItems = probeItems.length > 0 ? probeItems : items.filter((it) => !it.unloaded);
+    if (targetItems.length === 0) return;
+
     let fallbackBubbles: Array<{ el: HTMLElement; text: string }> | null = null;
 
     const next = resolveActiveTurnId(
-      items,
+      targetItems,
       (id) => {
         let el: HTMLElement | null | undefined = navMap.get(id);
-        if (!el) el = root.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
-        if (!el) {
-          const item = items.find((it) => it.id === id);
+        if (!el && navMap.size === 0) el = root.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
+        if (!el && navMap.size === 0) {
+          const item = targetItems.find((it) => it.id === id);
           if (item && item.text) {
             const clean = item.text.slice(0, 15).toLowerCase();
             if (!fallbackBubbles) {
@@ -10830,7 +10844,8 @@ export function Chat({
       {/* Turn Navigator (DeepSeek-Harness style middle-right rail) */}
       <TurnNavigator
         items={turnNavItems}
-        activeId={activeTurnId}
+        getActiveId={getActiveTurnId}
+        subscribeActiveId={subscribeActiveTurnId}
         busyId={busyTurnId}
         onNavigate={onTurnNavigateStable}
       />

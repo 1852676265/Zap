@@ -6,7 +6,9 @@ import { usePluginActions, zapHostSDK } from '../custom/plugin-kernel';
 
 export interface TurnNavigatorProps {
   readonly items: readonly TurnNavItem[];
-  readonly activeId: string | null;
+  readonly activeId?: string | null;
+  readonly getActiveId?: () => string | null;
+  readonly subscribeActiveId?: (listener: (id: string | null) => void) => () => void;
   readonly busyId?: string | null;
   readonly onNavigate: (item: TurnNavItem) => void;
 }
@@ -19,6 +21,8 @@ const RAIL_INSET_PX = 6;
 export const TurnNavigator = memo(function TurnNavigator({
   items,
   activeId,
+  getActiveId,
+  subscribeActiveId,
   busyId,
   onNavigate,
 }: TurnNavigatorProps) {
@@ -28,13 +32,23 @@ export const TurnNavigator = memo(function TurnNavigator({
   const pointerInsideRef = useRef(false);
   const previewId = useId();
 
+  const [subscribedActiveId, setSubscribedActiveId] = useState<string | null>(
+    () => (getActiveId ? getActiveId() : (activeId ?? null)),
+  );
+  useEffect(() => {
+    if (!subscribeActiveId) return;
+    if (getActiveId) setSubscribedActiveId(getActiveId());
+    return subscribeActiveId(setSubscribedActiveId);
+  }, [subscribeActiveId, getActiveId]);
+  const resolvedActiveId = subscribeActiveId ? subscribedActiveId : (activeId ?? null);
+
   const [scrollTop, setScrollTop] = useState(0);
   const [viewHeight, setViewHeight] = useState(0);
 
   const activeIndex = useMemo(() => {
-    if (!activeId) return -1;
-    return items.findIndex((it) => it.id === activeId);
-  }, [items, activeId]);
+    if (!resolvedActiveId) return -1;
+    return items.findIndex((it) => it.id === resolvedActiveId);
+  }, [items, resolvedActiveId]);
 
   const handleScroll = useCallback(() => {
     if (!scrollerRef.current) return;
@@ -66,7 +80,7 @@ export const TurnNavigator = memo(function TurnNavigator({
     const current = scroller.scrollTop;
     if (center < current + 20 || center > current + height - 20) {
       const target = Math.max(0, center - height / 2);
-      scroller.scrollTo({ top: target, behavior: 'smooth' });
+      scroller.scrollTo({ top: target, behavior: 'auto' });
     }
   }, [activeIndex]);
 
@@ -119,7 +133,7 @@ export const TurnNavigator = memo(function TurnNavigator({
             style={{ height: `${totalHeight}px` }}
           >
             {items.map((item, index) => {
-              const active = item.id === activeId || index === activeIndex;
+              const active = item.id === resolvedActiveId || index === activeIndex;
               const busy = item.id === busyId;
               const isPreview = index === previewIndex;
 

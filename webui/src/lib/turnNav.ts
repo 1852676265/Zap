@@ -405,6 +405,46 @@ export function resolveActiveTurnId(
     return items[items.length - 1].id;
   }
   const marker = scrollTop + markerOffsetPx;
+
+  // 对较长单调轮次列表使用二分查找，将每次滚动帧的坐标测量从 O(N) 降至 O(log N)；
+  // 若中间遇到未挂载/缺失节点（top 无效）则回退线性扫描以兼容稀疏列表。
+  if (items.length > 16) {
+    let lo = 0;
+    let hi = items.length - 1;
+    let best = -1;
+    let sawMissing = false;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const top = contentTopById(items[mid]!.id);
+      if (top == null || !Number.isFinite(top)) {
+        sawMissing = true;
+        break;
+      }
+      if (top <= marker) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (!sawMissing) {
+      let active = best >= 0 ? items[best]!.id : items[0]!.id;
+      if (best + 1 === items.length - 1) {
+        const last = items[items.length - 1]!;
+        const lastTop = contentTopById(last.id);
+        if (
+          lastTop != null &&
+          Number.isFinite(lastTop) &&
+          lastTop < scrollTop + clientHeight - 40 &&
+          scrollHeight - (scrollTop + clientHeight) < Math.max(bottomSlack * 2, 160)
+        ) {
+          active = last.id;
+        }
+      }
+      return active;
+    }
+  }
+
   let active = items[0].id;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
