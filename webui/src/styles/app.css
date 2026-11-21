@@ -2320,25 +2320,21 @@ body {
   position: relative;
 }
 
-/* Outline present / Right inspector: grid places messages+input on the left and inspector on the right */
+/* Outline present / Right inspector: stage fills main column smoothly (right card portals into .app) */
+.chat-stage,
 .chat-stage.has-turn-nav,
 .chat-stage.has-right-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--right-panel-width, 320px);
-  grid-template-rows: minmax(0, 1fr) auto auto;
-  grid-template-areas:
-    "messages nav"
-    "warning  nav"
-    "input    nav";
-  column-gap: 16px;
-  padding: 0 16px 16px 0;
-  box-sizing: border-box;
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
 }
 .chat-stage .chat-main-column,
 .chat-stage.has-turn-nav .chat-main-column,
 .chat-stage.has-right-panel .chat-main-column {
-  grid-area: messages;
   min-height: 0;
   max-height: 100%;
   height: 100%;
@@ -2355,38 +2351,32 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
 }
-.chat-stage.has-turn-nav .turn-nav,
-.chat-stage.has-right-panel .right-inspector-panel {
-  grid-area: nav;
+.chat-stage .turn-nav,
+.right-inspector-panel {
   min-height: 0;
   max-height: 100%;
   align-self: stretch;
 }
-.chat-stage.has-turn-nav .persistence-warning,
-.chat-stage.has-right-panel .persistence-warning {
-  grid-area: warning;
+.chat-stage .persistence-warning {
   width: 100%;
   max-width: none;
   margin: 0 0 8px;
 }
-.chat-stage.has-turn-nav .input-container,
-.chat-stage.has-right-panel .input-container {
-  grid-area: input;
+.chat-stage .input-container {
   width: 100%;
-  padding-right: 0;
-  box-sizing: border-box;
 }
+.chat-stage .timeline-inner,
+.chat-stage .input-wrap,
 .chat-stage.has-turn-nav .timeline-inner,
 .chat-stage.has-turn-nav .input-wrap,
 .chat-stage.has-right-panel .timeline-inner,
 .chat-stage.has-right-panel .input-wrap {
-  max-width: min(920px, 100%);
+  max-width: min(920px, 94%);
   margin: 0 auto;
   width: 100%;
 }
-.chat-stage.has-turn-nav .msg-search-float,
-.chat-stage.has-right-panel .msg-search-float {
-  right: calc(var(--right-panel-width, 320px) + 18px);
+.chat-stage .msg-search-float {
+  right: 18px;
 }
 
 .turn-nav {
@@ -3450,8 +3440,9 @@ body {
   max-height: 100%;
   overflow: hidden;
   z-index: 10;
-  width: 100%;
-  min-width: 0;
+  width: var(--right-panel-width, 360px);
+  min-width: 280px;
+  max-width: 1200px;
   flex-shrink: 0;
   box-sizing: border-box;
   background: var(--zap-glass-bg, rgba(255, 255, 255, 0.56));
@@ -12367,7 +12358,7 @@ body {
     display: flex;
     flex-direction: column;
   }
-  .chat-stage.has-right-panel .right-inspector-backdrop {
+  .right-inspector-backdrop {
     display: block !important;
     position: fixed !important;
     inset: 0 !important;
@@ -12379,8 +12370,9 @@ body {
   }
   .turn-nav { display: none; }
   .right-inspector-panel .turn-nav { display: flex !important; height: 100% !important; width: 100% !important; }
-  .right-inspector-panel.collapsed { display: none; }
-  .chat-stage.has-right-panel .right-inspector-panel:not(.collapsed) {
+  .right-inspector-panel.is-collapsed-hidden,
+  .right-inspector-panel.collapsed { display: none !important; }
+  .right-inspector-panel:not(.is-collapsed-hidden):not(.collapsed) {
     display: flex !important;
     position: fixed !important;
     left: 0 !important;
@@ -20267,7 +20259,7 @@ body {
   .chat-stage.has-rail .landing-composer { padding-right: 56px; }
 }
 @media (min-width: 769px) and (max-width: 1200px) {
-  .chat-stage.has-right-panel { --right-panel-width: 300px !important; }
+  .right-inspector-panel { --right-panel-width: 300px !important; width: 300px !important; min-width: 260px; }
 }
 
 /* Tool rows on narrow screens: two lines, every parameter visible. */

@@ -486,6 +486,8 @@ interface ChatProps {
   setDiffTabs?: (tabs: any[] | ((prev: any[]) => any[])) => void;
   activeMainTabId?: string;
   setActiveMainTabId?: (id: string) => void;
+  /** 右侧面板折叠状态与宽度变更回调，供外层顶栏开关与左侧栏自适应联动 */
+  onRightPanelLayoutChange?: (layout: { collapsed: boolean; width: number }) => void;
   /** 顶部导航栏模型选择器挂载槽 */
   topModelSlot?: HTMLElement | null;
   /** 打开模型配置（和模型选择框绑在一起）。 */
@@ -538,6 +540,7 @@ export function Chat({
   setDiffTabs: externalSetDiffTabs,
   activeMainTabId: externalActiveMainTabId,
   setActiveMainTabId: externalSetActiveMainTabId,
+  onRightPanelLayoutChange,
   topModelSlot,
   onOpenModelConfig,
   onOpenModeSettings,
@@ -6642,6 +6645,21 @@ export function Chat({
     } catch {}
   };
 
+  // 监听顶栏右上角按钮或全局切换右侧检视面板事件
+  useEffect(() => {
+    const handleToggleRightPanel = () => {
+      setRightPanelCollapsedState((prev) => {
+        const next = !prev;
+        try {
+          localStorage.setItem('jeikcode:right-panel-collapsed', String(next));
+        } catch {}
+        return next;
+      });
+    };
+    window.addEventListener('jeikcode:toggle_right_panel', handleToggleRightPanel);
+    return () => window.removeEventListener('jeikcode:toggle_right_panel', handleToggleRightPanel);
+  }, []);
+
   // 桌面缩到手机宽度时，面板从双列退化为底部弹层：必须先收起，
   // 否则弹层会直接盖住整个对话。手机用户主动点开面板不受影响。
   useEffect(() => {
@@ -6679,6 +6697,13 @@ export function Chat({
     } catch {}
     return 360;
   });
+
+  useEffect(() => {
+    onRightPanelLayoutChange?.({
+      collapsed: rightPanelCollapsed,
+      width: rightPanelWidth,
+    });
+  }, [rightPanelCollapsed, rightPanelWidth, onRightPanelLayoutChange]);
 
   // 浮动 Git / 提问入口：自由拖拽，但水平方向锚定到最近的视口边缘。
   // 页面缩放改的是布局视口宽度，保存绝对 left 会在缩放后留下巨大空隙；
@@ -6919,19 +6944,20 @@ export function Chat({
   }, [loading]);
 
   const stageRef = useRef<HTMLDivElement>(null);
+  const rightPanelRef = useRef<HTMLElement>(null);
   const isResizingRef = useRef(false);
 
-  // 拖动期间只改舞台的 CSS 变量，不动 state：Chat 是巨型组件，若每个 pointermove
+  // 拖动期间只改面板宽度 CSS，不动 state：Chat 是巨型组件，若每个 pointermove
   // 都 setState，会把整条时间线重渲染几十次并反复强制布局。松手才提交一次。
   const handleResizerPointerDown = (e: PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
-    const stage = stageRef.current;
-    if (!stage) return;
+    const targetEl = rightPanelRef.current || stageRef.current;
+    if (!targetEl) return;
     const handle = e.currentTarget as HTMLElement | null;
     let lastWidth = Math.max(
-      200,
-      Math.min(1200, Math.round(stage.getBoundingClientRect().right - e.clientX)),
+      280,
+      Math.min(1200, Math.round(targetEl.getBoundingClientRect().right - e.clientX)),
     );
     isResizingRef.current = true;
     handle?.classList.add('resizing');
@@ -6939,9 +6965,13 @@ export function Chat({
     document.body.style.userSelect = 'none';
 
     const apply = (clientX: number) => {
-      const rect = stage.getBoundingClientRect();
-      lastWidth = Math.max(200, Math.min(1200, Math.round(rect.right - clientX)));
-      stage.style.setProperty('--right-panel-width', `${lastWidth}px`);
+      const rect = targetEl.getBoundingClientRect();
+      lastWidth = Math.max(280, Math.min(1200, Math.round(rect.right - clientX)));
+      if (rightPanelRef.current) {
+        rightPanelRef.current.style.setProperty('--right-panel-width', `${lastWidth}px`);
+        rightPanelRef.current.style.width = `${lastWidth}px`;
+      }
+      stageRef.current?.style.setProperty('--right-panel-width', `${lastWidth}px`);
     };
 
     const onMove = (moveEvent: PointerEvent) => {
@@ -14305,6 +14335,8 @@ export function Chat({
             }}
             collapsed={rightPanelCollapsed}
             onCollapse={() => setRightPanelCollapsed(true)}
+            panelWidth={rightPanelWidth}
+            panelRef={rightPanelRef}
             counts={{
               questions: turnNavItems.length,
               git: gitChangedCount,
@@ -14806,6 +14838,8 @@ export function Chat({
         }}
         collapsed={rightPanelCollapsed}
         onCollapse={() => setRightPanelCollapsed(true)}
+        panelWidth={rightPanelWidth}
+        panelRef={rightPanelRef}
         counts={{
           questions: turnNavItems.length,
           git: gitChangedCount,

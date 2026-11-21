@@ -357,7 +357,60 @@ export function App() {
   const [showCwd, setShowCwd] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 记录右侧面板初始是否处于展开状态（!collapsed）
+  const initialRightPanelOpen = (() => {
+    try {
+      const saved = localStorage.getItem('jeikcode:right-panel-collapsed');
+      if (saved === 'false') return true;
+      if (saved === 'true') return false;
+      return typeof window !== 'undefined' ? window.innerWidth >= 1280 : false;
+    } catch {
+      return false;
+    }
+  })();
+  // 若初始右侧面板处于展开状态，为了让中间主区域保持充足宽度，自动缩小左侧栏
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialRightPanelOpen);
+  // 记录左侧栏当前是否是由右侧面板展开而自动缩小的，便于后续右侧面板收起时自动恢复展开
+  const autoCollapsedByRightPanelRef = useRef<boolean>(initialRightPanelOpen);
+  const [rightPanelLayout, setRightPanelLayout] = useState<{ collapsed: boolean; width: number }>(() => {
+    try {
+      const saved = localStorage.getItem('jeikcode:right-panel-collapsed');
+      const collapsed = saved === 'false' ? false : saved === 'true' ? true : (typeof window !== 'undefined' ? window.innerWidth < 1280 : true);
+      const savedWidth = localStorage.getItem('jeikcode:right-panel-width');
+      const width = savedWidth ? parseInt(savedWidth, 10) : 360;
+      return { collapsed, width: Number.isFinite(width) ? width : 360 };
+    } catch {
+      return { collapsed: true, width: 360 };
+    }
+  });
+  const prevRightPanelCollapsedRef = useRef<boolean>(!initialRightPanelOpen);
+
+  const handleToggleSidebarCollapse = useCallback(() => {
+    autoCollapsedByRightPanelRef.current = false;
+    setSidebarCollapsed((c) => !c);
+  }, []);
+
+  const handleRightPanelLayoutChange = useCallback((layout: { collapsed: boolean; width: number }) => {
+    setRightPanelLayout(layout);
+    const wasCollapsed = prevRightPanelCollapsedRef.current;
+    const isNowCollapsed = layout.collapsed;
+    prevRightPanelCollapsedRef.current = isNowCollapsed;
+
+    if (wasCollapsed && !isNowCollapsed) {
+      setSidebarCollapsed((currentCollapsed) => {
+        if (!currentCollapsed) {
+          autoCollapsedByRightPanelRef.current = true;
+          return true;
+        }
+        return currentCollapsed;
+      });
+    } else if (!wasCollapsed && isNowCollapsed) {
+      if (autoCollapsedByRightPanelRef.current) {
+        autoCollapsedByRightPanelRef.current = false;
+        setSidebarCollapsed(false);
+      }
+    }
+  }, []);
   const [sessionListVersion, setSessionListVersion] = useState(0);
   const [liveRunningIds, setLiveRunningIds] = useState<Set<string>>(() => new Set());
   /** First global sync is already covered by bootstrap; later syncs are reconnects. */
@@ -1451,7 +1504,7 @@ export function App() {
         open={sidebarOpen}
         onCloseDrawer={() => setSidebarOpen(false)}
         collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+        onToggleCollapse={handleToggleSidebarCollapse}
         onOpenSettings={(section) => setSettingsSection(section)}
         reloadKey={sessionListVersion}
         optimisticSessions={optimisticSessions}
@@ -2070,6 +2123,25 @@ export function App() {
               )}
             </div>
           </div>
+
+          {/* 右上角展开/收起右侧面板按钮 */}
+          <div class="header-right-actions">
+            <button
+              type="button"
+              class={'top-nav-btn right-panel-toggle-btn' + (!rightPanelLayout.collapsed ? ' active' : '')}
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent('jeikcode:toggle_right_panel'));
+              }}
+              title={rightPanelLayout.collapsed ? (t('panel.expand') || '展开面板') : (t('panel.collapse') || '收起面板')}
+              aria-label={rightPanelLayout.collapsed ? (t('panel.expand') || '展开面板') : (t('panel.collapse') || '收起面板')}
+              aria-pressed={!rightPanelLayout.collapsed}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="2" width="12" height="12" rx="2" />
+                <path d="M10.5 2v12" />
+              </svg>
+            </button>
+          </div>
         </header>
 
         <div
@@ -2163,6 +2235,7 @@ export function App() {
             setDiffTabs={setDiffTabs}
             activeMainTabId={activeMainTabId}
             setActiveMainTabId={setActiveMainTabId}
+            onRightPanelLayoutChange={handleRightPanelLayoutChange}
             topModelSlot={topModelSlot}
             onOpenModelConfig={() => setSettingsSection('model')}
             onOpenModeSettings={() => setSettingsSection('agent_mode')}

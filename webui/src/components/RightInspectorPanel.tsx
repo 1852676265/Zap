@@ -5,8 +5,9 @@
 // had already drifted (tab order and turn-nav tooltips differed). Tab metadata
 // lives in one table below, so adding a tab is a single edit.
 
-import { lazy, Suspense } from 'preact/compat';
+import { createPortal, lazy, Suspense } from 'preact/compat';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import type { RefObject } from 'preact';
 import { useT } from '../settings';
 import type { TurnNavItem } from '../lib/turnNav';
 import type { GitCommitFile, GitCommitItem, GitStatusItem } from '../api';
@@ -174,6 +175,8 @@ export interface RightInspectorProps {
   onSelectTab: (tab: RightPanelTab) => void;
   collapsed: boolean;
   onCollapse: () => void;
+  panelWidth: number;
+  panelRef?: RefObject<HTMLElement>;
   counts: Partial<Record<RightPanelTab, number>>;
   /** Panel resize handle (pointerdown on the left edge). */
   onResizeStart: (e: PointerEvent) => void;
@@ -218,6 +221,8 @@ export function RightInspector({
   onSelectTab,
   collapsed,
   onCollapse,
+  panelWidth,
+  panelRef,
   counts,
   onResizeStart,
   turnNav,
@@ -287,15 +292,23 @@ export function RightInspector({
     style,
   });
 
-  return (
+  const portalTarget =
+    typeof document !== 'undefined' ? (document.getElementById('app-root') || document.querySelector('.app')) : null;
+
+  const panelContent = (
     <>
       {!collapsed && (
         <div class="right-inspector-backdrop" onClick={onCollapse} aria-hidden="true" />
       )}
 
       <aside
-        class="right-inspector-panel"
-        style={{ display: collapsed ? 'none' : 'flex' }}
+        ref={panelRef as any}
+        class={'right-inspector-panel' + (collapsed ? ' is-collapsed-hidden' : '')}
+        style={{
+          display: collapsed ? 'none' : 'flex',
+          '--right-panel-width': `${panelWidth}px`,
+          width: `${panelWidth}px`,
+        } as any}
         aria-label={title}
       >
         {/* Draggable resizer on the left edge */}
@@ -457,6 +470,13 @@ export function RightInspector({
           </div>
         </div>
       </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* 独立悬浮毛玻璃卡片平级挂载至 .app 容器，与左侧栏及中间对话面板保持一致的 16px 间距 */}
+      {portalTarget ? createPortal(panelContent, portalTarget) : panelContent}
 
       {/* Collapsed floating rail */}
       {collapsed && (
