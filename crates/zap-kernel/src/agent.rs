@@ -3188,6 +3188,21 @@ impl RunningAgent {
                 )
                 .await;
             }
+            // If a prior stream drop persisted a partial assistant message without
+            // tool calls, the outgoing wire history ends with `Role::Assistant`.
+            // Modern Anthropic/Gemini/OpenAI gateways reject trailing assistant prefill
+            // (HTTP 400) or treat it as an already-finished reply (returning empty 200).
+            // Append a transient synthetic user continuation prompt on the wire only
+            // (without mutating `convo`) so resume always lands on a valid `user` turn.
+            if messages
+                .last()
+                .is_some_and(|m| m.role == crate::message::Role::Assistant)
+            {
+                messages.push(Message::synthetic_user(
+                    "Your previous response was interrupted mid-stream. Continue directly from where you stopped without repeating text you already output."
+                        .to_string(),
+                ));
+            }
             // READ-ONLY wire observation of the FINAL outgoing request (post
             // pre_request projection, pre chat_stream): telemetry/datalog/cache-RCA
             // sees the exact bytes about to hit the provider. It gets `&` — it

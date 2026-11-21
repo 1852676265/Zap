@@ -241,6 +241,7 @@ impl LlmProvider for AnthropicProvider {
                         Err(_elapsed) => {
                             yield StreamEvent::Error(ProviderError {
                                 retryable: false,
+                                resumable: true,
                                 message: "stream idle timeout".to_string(),
                                 ..Default::default()
                             });
@@ -944,6 +945,8 @@ struct AnthropicSseDecoder {
     truncated: bool,
     done: bool,
     response_id_seen: bool,
+    saw_content: bool,
+    saw_stop_reason: bool,
 }
 
 impl AnthropicSseDecoder {
@@ -958,6 +961,8 @@ impl AnthropicSseDecoder {
             truncated: false,
             done: false,
             response_id_seen: false,
+            saw_content: false,
+            saw_stop_reason: false,
         }
     }
 
@@ -1028,6 +1033,11 @@ impl AnthropicSseDecoder {
             return out;
         }
         self.flush_open_blocks(&mut out);
+        // Premature EOF after emitting content without any `message_delta.stop_reason`
+        // or `message_stop`: mark truncated so the kernel resumes instead of ending silently.
+        if !self.saw_stop_reason && self.saw_content {
+            self.truncated = true;
+        }
         if self.input_tokens > 0 || self.output_tokens > 0 || self.cached_total() > 0 {
             out.push(StreamEvent::Usage(self.usage()));
         }
@@ -1091,6 +1101,7 @@ impl AnthropicSseDecoder {
                 }
             }
             "content_block_start" => {
+                self.saw_content = true;
                 let index = usize_at(&v, "index");
                 let cb = v.get("content_block");
                 let kind = cb
@@ -1267,7 +1278,9 @@ impl AnthropicSseDecoder {
                     .get("delta")
                     .and_then(|d| d.get("stop_reason"))
                     .and_then(|s| s.as_str())
+                    .filter(|s| !s.is_empty())
                 {
+                    self.saw_stop_reason = true;
                     if sr == "max_tokens" {
                         self.truncated = true;
                     }
@@ -1304,12 +1317,18 @@ impl AnthropicSseDecoder {
                 let detail = err
                     .map(parse_error_obj)
                     .unwrap_or_else(|| "unknown error".to_string());
+                let code = err.and_then(error_type);
+                let is_rate_limit = code.as_deref() == Some("rate_limit_error");
+                let is_resumable = matches!(
+                    code.as_deref(),
+                    Some("overloaded_error" | "api_error" | "timeout_error")
+                );
                 out.push(StreamEvent::Error(ProviderError {
                     retryable: false,
-                    resumable: false,
+                    resumable: is_resumable,
                     message: format!("provider error: {detail}"),
-                    http_status: None,
-                    code: err.and_then(error_type),
+                    http_status: is_rate_limit.then_some(429),
+                    code,
                     retry_after_secs: None, // mid-stream error: no response headers
                 }));
                 self.done = true;
@@ -2631,5 +2650,61 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::Done { truncated: true })),
             "incomplete unclosed tool_use at EOF must mark truncated=true: {ev2:?}"
         );
+    }
+
+    #[test]
+    fn sse_premature_eof_after_text_without_stop_reason_marks_truncated() {
+        let mut d = AnthropicSseDecoder::new();
+        let mut ev = d.feed(
+            line(
+                "content_block_start",
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            )
+            .as_bytes(),
+        );
+        ev.extend(
+            d.feed(
+                line(
+                    "content_block_delta",
+                    json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half sentence"}}),
+                )
+                .as_bytes(),
+            ),
+        );
+        ev.extend(d.finish());
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, StreamEvent::Done { truncated: true })),
+            "premature EOF after text without stop_reason must mark truncated=true: {ev:?}"
+        );
+    }
+
+    #[test]
+    fn sse_transient_error_events_set_resumable_or_rate_limit() {
+        let mut d = AnthropicSseDecoder::new();
+        let ev1 = d.feed(
+            line(
+                "error",
+                json!({"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}),
+            )
+            .as_bytes(),
+        );
+        assert!(matches!(
+            ev1.first(),
+            Some(StreamEvent::Error(e)) if e.resumable && e.http_status.is_none()
+        ));
+
+        let mut d2 = AnthropicSseDecoder::new();
+        let ev2 = d2.feed(
+            line(
+                "error",
+                json!({"type":"error","error":{"type":"rate_limit_error","message":"Rate limit"}}),
+            )
+            .as_bytes(),
+        );
+        assert!(matches!(
+            ev2.first(),
+            Some(StreamEvent::Error(e)) if e.http_status == Some(429)
+        ));
     }
 }

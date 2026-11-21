@@ -177,6 +177,7 @@ impl LlmProvider for GeminiProvider {
                         Err(_elapsed) => {
                             yield StreamEvent::Error(ProviderError {
                                 retryable: false,
+                                resumable: true,
                                 message: "stream idle timeout".to_string(),
                                 ..Default::default()
                             });
@@ -779,6 +780,7 @@ struct GeminiSseDecoder {
     buf: Vec<u8>,
     truncated: bool,
     done: bool,
+    saw_content: bool,
     emitted_id: bool,
     emitted_model: bool,
     last_usage: Option<TokenUsage>,
@@ -910,6 +912,7 @@ impl GeminiSseDecoder {
             .filter(|s| !s.is_empty());
         if let Some(text) = part.get("text").and_then(Value::as_str) {
             if !text.is_empty() {
+                self.saw_content = true;
                 if thought {
                     out.push(StreamEvent::Reasoning(text.to_string()));
                 } else {
@@ -918,6 +921,7 @@ impl GeminiSseDecoder {
             }
         }
         if let Some(fc) = part.get("functionCall") {
+            self.saw_content = true;
             let index = self.tool_index;
             self.tool_index += 1;
             let name = fc.get("name").and_then(Value::as_str).unwrap_or("unknown");

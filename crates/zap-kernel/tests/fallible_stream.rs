@@ -142,7 +142,7 @@ async fn mid_stream_transport_drop_resumes_and_completes() {
     let recorder = Arc::new(RecorderHook::new());
     let log = recorder.log.clone();
 
-    let handle = spawn_agent(provider, reg, recorder);
+    let handle = spawn_agent(provider.clone(), reg, recorder);
     handle.commands.send(send("go")).unwrap();
 
     let mut events = handle.events;
@@ -183,6 +183,13 @@ async fn mid_stream_transport_drop_resumes_and_completes() {
             .unwrap()
             .contains(&"on_model_response".to_string()),
         "the success path must run on the resumed stream"
+    );
+    let calls = provider.received.lock().unwrap();
+    assert_eq!(calls.len(), 2, "initial drop + resumed attempt");
+    assert_eq!(
+        calls[1].last().map(|(role, _)| role.as_str()),
+        Some("User"),
+        "wire resume must end with a synthetic user continuation prompt instead of dangling assistant prefill"
     );
 }
 

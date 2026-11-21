@@ -199,6 +199,7 @@ impl LlmProvider for ResponsesProvider {
                     Err(_) => {
                         yield StreamEvent::Error(ProviderError {
                             retryable: true,
+                            resumable: true,
                             message: format!("stream idle timeout ({}s)", idle_timeout.as_secs()),
                             ..Default::default()
                         });
@@ -213,6 +214,7 @@ impl LlmProvider for ResponsesProvider {
                     Ok(Some(Err(e))) => {
                         yield StreamEvent::Error(ProviderError {
                             retryable: true,
+                            resumable: true,
                             message: format!("stream read failed: {}", retry::err_chain(&e)),
                             ..Default::default()
                         });
@@ -624,6 +626,7 @@ struct ResponsesSseDecoder {
     /// (session title) often skip `response.output_text.delta` and only land the
     /// full assistant message on `output_item.done` / `response.completed`.
     emitted_output_text: bool,
+    saw_content: bool,
 }
 
 impl ResponsesSseDecoder {
@@ -646,10 +649,10 @@ impl ResponsesSseDecoder {
             return Vec::new();
         }
         self.emitted_done = true;
-        self.flush_calls()
-            .into_iter()
-            .chain(std::iter::once(StreamEvent::Done { truncated: false }))
-            .collect()
+        let (mut evs, dropped_incomplete_call) = self.flush_calls();
+        let truncated = dropped_incomplete_call || self.saw_content || self.emitted_output_text;
+        evs.push(StreamEvent::Done { truncated });
+        evs
     }
 
     fn parse_event(&mut self, raw: &[u8]) -> Option<Vec<StreamEvent>> {
@@ -666,8 +669,10 @@ impl ResponsesSseDecoder {
         if data.is_empty() || data == "[DONE]" {
             if data == "[DONE]" {
                 self.emitted_done = true;
-                let mut evs = self.flush_calls();
-                evs.push(StreamEvent::Done { truncated: false });
+                let (mut evs, dropped_incomplete_call) = self.flush_calls();
+                let truncated =
+                    dropped_incomplete_call || self.saw_content || self.emitted_output_text;
+                evs.push(StreamEvent::Done { truncated });
                 return Some(evs);
             }
             return None;
@@ -703,6 +708,7 @@ impl ResponsesSseDecoder {
                 .filter(|s| !s.is_empty())
                 .map(|s| {
                     self.emitted_output_text = true;
+                    self.saw_content = true;
                     vec![StreamEvent::TextDelta(s.to_string())]
                 }),
             "response.output_text.done" => {
@@ -721,8 +727,12 @@ impl ResponsesSseDecoder {
                 .get("delta")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
-                .map(|s| vec![StreamEvent::Reasoning(s.to_string())]),
+                .map(|s| {
+                    self.saw_content = true;
+                    vec![StreamEvent::Reasoning(s.to_string())]
+                }),
             "response.function_call_arguments.delta" => {
+                self.saw_content = true;
                 let index = v.get("output_index").and_then(Value::as_u64).unwrap_or(0) as u32;
                 let delta = v.get("delta").and_then(Value::as_str).unwrap_or("");
                 let entry = self
@@ -836,7 +846,7 @@ impl ResponsesSseDecoder {
                 }
             }
             "response.completed" | "response.done" => {
-                let mut evs = self.flush_calls();
+                let (mut evs, dropped_incomplete_call) = self.flush_calls();
                 if !self.emitted_output_text {
                     if let Some(text) = completed_output_text(v) {
                         self.emitted_output_text = true;
@@ -847,11 +857,13 @@ impl ResponsesSseDecoder {
                     evs.push(StreamEvent::Usage(parse_usage(usage)));
                 }
                 self.emitted_done = true;
-                evs.push(StreamEvent::Done { truncated: false });
+                evs.push(StreamEvent::Done {
+                    truncated: dropped_incomplete_call,
+                });
                 Some(evs)
             }
             "response.incomplete" => {
-                let mut evs = self.flush_calls();
+                let (mut evs, _) = self.flush_calls();
                 if let Some(usage) = v.pointer("/response/usage").or_else(|| v.get("usage")) {
                     evs.push(StreamEvent::Usage(parse_usage(usage)));
                 }
@@ -876,19 +888,32 @@ impl ResponsesSseDecoder {
         }
     }
 
-    fn flush_calls(&mut self) -> Vec<StreamEvent> {
+    fn flush_calls(&mut self) -> (Vec<StreamEvent>, bool) {
         let keys: Vec<u32> = self.pending_calls.keys().copied().collect();
-        keys.into_iter()
-            .filter_map(|k| self.pending_calls.remove(&k))
-            .filter(|(id, name, _)| !id.is_empty() || !name.is_empty())
-            .map(|(id, name, arguments)| {
-                StreamEvent::ToolCall(ToolCall {
+        let mut evs = Vec::new();
+        let mut dropped_incomplete = false;
+        for k in keys {
+            if let Some((id, name, arguments)) = self.pending_calls.remove(&k) {
+                if id.is_empty() && name.is_empty() {
+                    continue;
+                }
+                let trimmed = arguments.trim();
+                if !trimmed.is_empty() && serde_json::from_str::<Value>(trimmed).is_err() {
+                    dropped_incomplete = true;
+                    continue;
+                }
+                evs.push(StreamEvent::ToolCall(ToolCall {
                     id,
                     name,
-                    arguments,
-                })
-            })
-            .collect()
+                    arguments: if trimmed.is_empty() {
+                        "{}".to_string()
+                    } else {
+                        arguments
+                    },
+                }));
+            }
+        }
+        (evs, dropped_incomplete)
     }
 }
 
@@ -1387,5 +1412,29 @@ mod tests {
         assert!(body["reasoning"].get("max_tokens").is_none());
         assert_eq!(body["max_output_tokens"].as_u64(), Some(8192));
         assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sse_premature_eof_and_corrupt_tool_call_mark_truncated() {
+        let mut dec = ResponsesSseDecoder::default();
+        let chunk = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"write\",\"arguments\":\"\"}}\n\n",
+            "event: response.function_call_arguments.delta\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"x\\\"\"}\n\n",
+        );
+        let mut evs = dec.feed(chunk.as_bytes());
+        evs.extend(dec.finish());
+        assert!(
+            !evs.iter().any(|e| matches!(e, StreamEvent::ToolCall(_))),
+            "cut-off Responses tool call JSON must not emit ToolCall: {evs:?}"
+        );
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e, StreamEvent::Done { truncated: true })),
+            "premature EOF after content must mark truncated=true: {evs:?}"
+        );
     }
 }

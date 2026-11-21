@@ -369,8 +369,8 @@ async fn thinking_then_transition_timeout_fails_without_thinking_only_retry() {
     assert!(
         error_msg
             .as_deref()
-            .is_some_and(|m| m.contains("transition_secs") && m.contains("30")),
-        "error must explain the 30s (12+18) transition silence and config knob; got {error_msg:?}"
+            .is_some_and(|m| m.contains("transition_secs") && m.contains("18")),
+        "error must explain the 18s non-stacked transition silence and config knob; got {error_msg:?}"
     );
     let log = log.lock().unwrap();
     assert!(
@@ -572,12 +572,12 @@ async fn thinking_silence_does_not_stack_streaming_and_transition_timeouts() {
     let started = tokio::time::Instant::now();
     handle.commands.send(send("go")).unwrap();
 
-    let mut text = String::new();
+    let mut reason_out = None;
     let mut completed = false;
     while let Some(ev) = handle.events.recv().await {
         match ev {
-            AgentEvent::TextDelta(t) => text.push_str(&t),
-            AgentEvent::TurnComplete { .. } => {
+            AgentEvent::TurnComplete { reason } => {
+                reason_out = Some(reason);
                 completed = true;
                 break;
             }
@@ -586,7 +586,7 @@ async fn thinking_silence_does_not_stack_streaming_and_transition_timeouts() {
     }
     let elapsed = started.elapsed();
     assert!(completed);
-    assert_eq!(text, "recovered");
+    assert_eq!(reason_out, Some(zap_kernel::event::StopReason::Timeout));
     // 若错误叠加了 streaming(100ms) + transition(100ms)，此处会 >= 200ms。
     assert!(
         elapsed < Duration::from_millis(150),

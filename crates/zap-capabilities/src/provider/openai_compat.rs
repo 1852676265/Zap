@@ -1412,6 +1412,11 @@ impl SseDecoder {
         }
         for (id, name, args) in std::mem::take(&mut self.tool_calls) {
             if !id.is_empty() || !name.is_empty() || !args.is_empty() {
+                let trimmed = args.trim();
+                if !trimmed.is_empty() && serde_json::from_str::<Value>(trimmed).is_err() {
+                    self.truncated = true;
+                    continue;
+                }
                 out.push(StreamEvent::ToolCall(ToolCall {
                     id,
                     name,
@@ -1580,17 +1585,24 @@ impl SseDecoder {
         // dropped and the model shows "0 工具". Treat "" as non-terminal.
         if let Some(fr) = choice.finish_reason.filter(|s| !s.is_empty()) {
             self.seen_finish = true;
+            if fr == "length" {
+                self.truncated = true;
+            }
             for (id, name, args) in std::mem::take(&mut self.tool_calls) {
                 if !id.is_empty() || !name.is_empty() || !args.is_empty() {
+                    let trimmed = args.trim();
+                    if self.truncated
+                        && !trimmed.is_empty()
+                        && serde_json::from_str::<Value>(trimmed).is_err()
+                    {
+                        continue;
+                    }
                     out.push(StreamEvent::ToolCall(ToolCall {
                         id,
                         name,
                         arguments: args,
                     }));
                 }
-            }
-            if fr == "length" {
-                self.truncated = true;
             }
         }
     }
@@ -4150,5 +4162,27 @@ mod tests {
         std::env::remove_var("SSL_CERT_FILE");
         // Root loading happens before the danger_accept path.
         assert!(build_http_client(std::time::Duration::from_secs(5), true, None, false).is_ok());
+    }
+
+    #[test]
+    fn sse_length_drops_incomplete_tool_call_and_marks_truncated() {
+        let mut d = SseDecoder::new();
+        let mut ev = d.feed(
+            line(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"write","arguments":"{\"path\":\"a.rs\",\"content\":\"half"}}]}}]}))
+                .as_bytes(),
+        );
+        ev.extend(
+            d.feed(line(json!({"choices":[{"delta":{},"finish_reason":"length"}]})).as_bytes()),
+        );
+        ev.extend(d.feed(b"data: [DONE]\n"));
+        assert!(
+            !ev.iter().any(|e| matches!(e, StreamEvent::ToolCall(_))),
+            "cut-off JSON tool call must not be emitted: {ev:?}"
+        );
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, StreamEvent::Done { truncated: true })),
+            "finish_reason=length must still emit Done {{ truncated: true }}: {ev:?}"
+        );
     }
 }
