@@ -14292,7 +14292,7 @@ export function Chat({
       <>
         <div
           ref={stageRef}
-          class={'chat-stage' + (isRightPanelVisible ? ' has-right-panel' : '') + (!isRightPanelVisible ? ' has-rail' : '')}
+          class={'chat-stage' + (isRightPanelVisible ? ' has-right-panel' : '')}
           onDragOver={handleMainStageDragOver as any}
           onDrop={handleMainStageDrop as any}
         >
@@ -14505,7 +14505,7 @@ export function Chat({
     <>
       <div
         ref={stageRef}
-        class={'chat-stage' + (isRightPanelVisible ? ' has-right-panel' : '') + (!isRightPanelVisible ? ' has-rail' : '') + (activeMainTabId !== 'chat' ? ' is-editor-mode' : '')}
+        class={'chat-stage' + (isRightPanelVisible ? ' has-right-panel' : '') + (activeMainTabId !== 'chat' ? ' is-editor-mode' : '')}
         onDragOver={handleMainStageDragOver as any}
         onDrop={handleMainStageDrop as any}
       >

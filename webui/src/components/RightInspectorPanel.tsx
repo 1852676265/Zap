@@ -478,8 +478,8 @@ export function RightInspector({
       {/* 独立悬浮毛玻璃卡片平级挂载至 .app 容器，与左侧栏及中间对话面板保持一致的 16px 间距 */}
       {portalTarget ? createPortal(panelContent, portalTarget) : panelContent}
 
-      {/* Collapsed floating rail */}
-      {collapsed && (
+      {/* Collapsed floating rail (hidden — toggled via header right-panel-toggle-btn) */}
+      {false && collapsed && (
         <div
           class="right-panel-collapsed-rail draggable-floating-widget"
           role="toolbar"

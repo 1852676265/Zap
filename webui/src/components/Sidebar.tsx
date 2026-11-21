@@ -2741,41 +2741,45 @@ export function Sidebar({
                 );
               })}
             </div>
-            <button
-              ref={skillsBtnRef}
-              class={'sidebar-action' + (skillsMenuOpen ? ' open' : '')}
-              onClick={(e) => toggleSkillsMenu(e as unknown as MouseEvent)}
-              aria-haspopup="menu"
-              aria-expanded={skillsMenuOpen}
-            >
-              <span class="sidebar-action-icon"><SkillIcon /></span>
-              <span class="sidebar-action-label">{t('sidebar.skills')}</span>
-              {skillCount > 0 && <span class="sidebar-action-badge">{skillCount}</span>}
-              <span class="sidebar-action-caret"><ChevronDownIcon /></span>
-            </button>
-            <button
-              ref={mcpBtnRef}
-              class={'sidebar-action' + (mcpMenuOpen ? ' open' : '')}
-              onClick={(e) => toggleMcpMenu(e as unknown as MouseEvent)}
-              aria-haspopup="menu"
-              aria-expanded={mcpMenuOpen}
-            >
-              <span class="sidebar-action-icon"><McpIcon /></span>
-              <span class="sidebar-action-label">{t('sidebar.mcp')}</span>
-              {mcpCount > 0 && <span class="sidebar-action-badge">{mcpCount}</span>}
-              <span class="sidebar-action-caret"><ChevronDownIcon /></span>
-            </button>
-            <button
-              type="button"
-              class={'sidebar-action' + (scheduleDialogOpen ? ' open' : '')}
-              onClick={() => setScheduleDialogOpen(true)}
-            >
-              <span class="sidebar-action-icon"><ClockIcon /></span>
-              <span class="sidebar-action-label">{t('schedules.menuTitle')}</span>
-              {activeScheduleCount > 0 && (
-                <span class="sidebar-action-badge">{activeScheduleCount}</span>
-              )}
-            </button>
+            {false && (
+              <>
+                <button
+                  ref={skillsBtnRef}
+                  class={'sidebar-action' + (skillsMenuOpen ? ' open' : '')}
+                  onClick={(e) => toggleSkillsMenu(e as unknown as MouseEvent)}
+                  aria-haspopup="menu"
+                  aria-expanded={skillsMenuOpen}
+                >
+                  <span class="sidebar-action-icon"><SkillIcon /></span>
+                  <span class="sidebar-action-label">{t('sidebar.skills')}</span>
+                  {skillCount > 0 && <span class="sidebar-action-badge">{skillCount}</span>}
+                  <span class="sidebar-action-caret"><ChevronDownIcon /></span>
+                </button>
+                <button
+                  ref={mcpBtnRef}
+                  class={'sidebar-action' + (mcpMenuOpen ? ' open' : '')}
+                  onClick={(e) => toggleMcpMenu(e as unknown as MouseEvent)}
+                  aria-haspopup="menu"
+                  aria-expanded={mcpMenuOpen}
+                >
+                  <span class="sidebar-action-icon"><McpIcon /></span>
+                  <span class="sidebar-action-label">{t('sidebar.mcp')}</span>
+                  {mcpCount > 0 && <span class="sidebar-action-badge">{mcpCount}</span>}
+                  <span class="sidebar-action-caret"><ChevronDownIcon /></span>
+                </button>
+                <button
+                  type="button"
+                  class={'sidebar-action' + (scheduleDialogOpen ? ' open' : '')}
+                  onClick={() => setScheduleDialogOpen(true)}
+                >
+                  <span class="sidebar-action-icon"><ClockIcon /></span>
+                  <span class="sidebar-action-label">{t('schedules.menuTitle')}</span>
+                  {activeScheduleCount > 0 && (
+                    <span class="sidebar-action-badge">{activeScheduleCount}</span>
+                  )}
+                </button>
+              </>
+            )}
           </div>
 
           <div class="session-group-header">
