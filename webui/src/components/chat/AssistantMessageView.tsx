@@ -4,13 +4,11 @@ import type { VNode } from 'preact';
 import { useT } from '../../settings';
 import { formatTurnElapsed } from '../../lib/turnTimer';
 import type { TodoItem } from '../../lib/todos';
-import type { ToolRow } from '../../lib/toolRows';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { showToast } from '../Toast';
 import { Markdown } from '../Markdown';
 import { ReasoningBlock } from './ReasoningBlock';
 import { SessionTodoPanel } from './SessionTodoPanel';
-import { ToolGroupView } from './ToolViews';
 import { NoticeCard } from './NoticeCard';
 import { ElapsedBadge } from './ElapsedBadge';
 import { LiveElapsedText } from './LiveElapsedText';
@@ -45,6 +43,18 @@ function ModelSwitchBadge({ model }: { model: string }) {
   );
 }
 
+function isIgnoredChatNotice(text?: string | null): boolean {
+  if (!text) return false;
+  const s = text.trim();
+  return (
+    s.includes('已折叠工具输出') ||
+    s.includes('Folded tool output') ||
+    s.includes('Đã thu gọn đầu ra công cụ') ||
+    (s.includes('已折叠') && s.includes('tok')) ||
+    (s.includes('Folded') && s.includes('tok'))
+  );
+}
+
 function assistantMessagePropsEqual(prev: any, next: any): boolean {
   return prev.msg === next.msg
     && prev.isLast === next.isLast
@@ -60,13 +70,13 @@ function assistantMessagePropsEqual(prev: any, next: any): boolean {
     && prev.search === next.search
     && prev.turnLastText === next.turnLastText
     && prev.turnAllText === next.turnAllText
+    && prev.turnReasoning === next.turnReasoning
     && prev.cwd === next.cwd;
 }
 
-/** Render an assistant message's ordered parts in chronological order: each
- *  text run becomes Markdown; runs of consecutive tool calls share one
- *  `.tool-list` container. This is what preserves the text→tool→text→tool
- *  interleaving (matching the TUI) instead of grouping all tools at the head. */
+/** Render an assistant message cleanly: aggregated reasoning capsule at the top of
+ *  the turn's final card, markdown prose in chronological order, and tool rows
+ *  hidden from the main chat timeline to avoid multi-card stacking. */
 export const AssistantMessageView = memo(function AssistantMessageView({
   msg,
   isLast,
@@ -75,6 +85,7 @@ export const AssistantMessageView = memo(function AssistantMessageView({
   isLastInTurn,
   turnLastText,
   turnAllText,
+  turnReasoning,
   searchRef,
   timeLabel,
   timeFull,
@@ -95,6 +106,7 @@ export const AssistantMessageView = memo(function AssistantMessageView({
   isLastInTurn: boolean;
   turnLastText: string;
   turnAllText: string;
+  turnReasoning?: string;
   searchRef?: (el: HTMLElement | null) => void;
   timeLabel?: string;
   timeFull?: string;
@@ -249,9 +261,57 @@ export const AssistantMessageView = memo(function AssistantMessageView({
     </div>
   ) : null;
 
-  const hasContent = msg.parts.some(
-    (p) => (p.kind === 'text' && p.text.trim().length > 0) || p.kind === 'tool' || p.kind === 'reasoning',
-  );
+  const effectiveReasoning = isLastInTurn ? (turnReasoning || '') : '';
+  const hasAnswerText = msg.parts.some((p) => p.kind === 'text' && p.text.trim().length > 0);
+  const hasPendingTool = msg.parts.some((p) => p.kind === 'tool' && p.tool.status === 'pending');
+  let lastMeaningfulKind: MsgPart['kind'] | null = null;
+  for (let idx = msg.parts.length - 1; idx >= 0; idx--) {
+    const p = msg.parts[idx]!;
+    if (p.kind === 'text' && p.text.trim().length > 0) {
+      lastMeaningfulKind = 'text';
+      break;
+    }
+    if (p.kind === 'reasoning' && p.text.trim().length > 0) {
+      lastMeaningfulKind = 'reasoning';
+      break;
+    }
+    if (p.kind === 'tool') {
+      lastMeaningfulKind = 'tool';
+      break;
+    }
+    if (p.kind === 'notice' && p.text.trim().length > 0 && !isIgnoredChatNotice(p.text)) {
+      lastMeaningfulKind = 'notice';
+      break;
+    }
+    if (p.kind === 'rate_limited' && p.text.trim().length > 0) {
+      lastMeaningfulKind = 'rate_limited';
+      break;
+    }
+  }
+  const thinkingLive =
+    streaming &&
+    !isCompacting &&
+    (!hasAnswerText || hasPendingTool || (lastMeaningfulKind !== null && lastMeaningfulKind !== 'text'));
+
+  const hasContent =
+    effectiveReasoning.trim().length > 0 ||
+    hasAnswerText ||
+    msg.parts.some(
+      (p) =>
+        (p.kind === 'reasoning' && p.text.trim().length > 0) ||
+        (p.kind === 'notice' && p.text.trim().length > 0 && !isIgnoredChatNotice(p.text)) ||
+        (p.kind === 'rate_limited' && p.text.trim().length > 0) ||
+        (p.kind === 'todo_list' && p.items && p.items.length > 0),
+    );
+
+  // 纯工具调用或无可见正文的消息在回合结束后不再渲染成堆叠卡片；
+  // 整轮思考已聚合到终条消息，中间无正文的轮次直接跳过。
+  if (!isLastInTurn && !streaming && !hasAnswerText) {
+    return null;
+  }
+  if (!hasContent && !streaming) {
+    return null;
+  }
 
   const showDoneTime = isLastInTurn && timeLabel && !streaming && !isError;
   const showDoneFallbackTime =
@@ -277,15 +337,20 @@ export const AssistantMessageView = memo(function AssistantMessageView({
         </div>
       ) : (
         <>
-          {/* Segments in chronological order: text→tool→text→tool,
-              matching the TUI. Consecutive tools share one tool-list. */}
-          {renderAssistantParts(msg.parts, search, cwd)}
-          {streaming && !hasContent && (
+          {renderAssistantParts(
+            msg.parts,
+            search,
+            cwd,
+            isLastInTurn ? turnReasoning : undefined,
+            thinkingLive,
+            hasPendingTool,
+          )}
+          {streaming && !hasContent && !thinkingLive && (
             <span class="codex-shimmer-status" aria-live="polite">
               {isCompacting ? t('chat.statusCompacting') : t('chat.statusWorking')}
             </span>
           )}
-          {streaming && hasContent && isCompacting && (
+          {streaming && (hasContent || thinkingLive) && isCompacting && (
             <span class="codex-shimmer-status" aria-live="polite" style={{ display: 'block', marginTop: '6px' }}>
               {t('chat.statusCompacting')}
             </span>
@@ -356,40 +421,58 @@ export const AssistantMessageView = memo(function AssistantMessageView({
   );
 }, assistantMessagePropsEqual);
 
-function renderAssistantParts(parts: MsgPart[], search: string, cwd?: string): VNode[] {
+function renderAssistantParts(
+  parts: MsgPart[],
+  search: string,
+  cwd?: string,
+  overrideReasoning?: string,
+  thinkingLive = false,
+  hasPendingTool = false,
+): VNode[] {
   const out: VNode[] = [];
   let trailingTodos: { kind: 'todo_list'; items: TodoItem[] } | null = null;
+
+  // 整轮所有思考聚合为一个单一思考胶囊，消除多轮卡片堆叠
+  let combinedReasoning = (overrideReasoning || '').trim();
+  if (!combinedReasoning) {
+    const list: string[] = [];
+    for (const part of parts) {
+      if (part.kind === 'reasoning' && part.text && part.text.trim()) {
+        list.push(part.text.trim());
+      }
+    }
+    combinedReasoning = list.join('\n\n---\n\n');
+  }
+
+  if (combinedReasoning || thinkingLive) {
+    out.push(
+      <ReasoningBlock
+        key="rs-combined"
+        text={combinedReasoning}
+        search={search}
+        live={thinkingLive}
+        hasPendingTool={hasPendingTool}
+      />,
+    );
+  }
+
   let i = 0;
   while (i < parts.length) {
     const p = parts[i];
+    if (p.kind === 'reasoning' || p.kind === 'tool') {
+      // reasoning 已在顶部聚合渲染，tool 在干净会话视图中隐藏
+      i++;
+      continue;
+    }
     if (p.kind === 'todo_list') {
       trailingTodos = p;
       i++;
       continue;
-    }
-    if (p.kind === 'tool') {
-      const groupKey = i;
-      const tools: ToolRow[] = [];
-      while (i < parts.length) {
-        const q = parts[i];
-        if (q.kind === 'todo_list') {
-          trailingTodos = q;
-          i++;
-          continue;
-        }
-        if (q.kind !== 'tool') break;
-        tools.push(q.tool);
-        i++;
-      }
-      if (tools.length > 0) {
-        out.push(
-          <ToolGroupView key={`tg-${groupKey}`} tools={tools} search={search} />
-        );
-      }
-    } else if (p.kind === 'reasoning') {
-      out.push(<ReasoningBlock key={`rs-${i}`} text={p.text} search={search} />);
-      i++;
     } else if (p.kind === 'notice') {
+      if (isIgnoredChatNotice(p.text)) {
+        i++;
+        continue;
+      }
       out.push(
         <NoticeCard
           key={`nt-${i}`}

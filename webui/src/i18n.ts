@@ -524,6 +524,10 @@ const zh = {
   'tool.cost': '耗时',
   'tool.metricsTip': '切换：上一段活动结束到本工具启动的延迟（{switch}）；耗时：本工具执行时间（{cost}）',
   'chat.thinking': '思考过程',
+  'chat.thinkingStage1': '正在理解问题并梳理思路',
+  'chat.thinkingStage2': '正在深入推理并拆解细节',
+  'chat.thinkingStage3': '正在校验逻辑并组织回答',
+  'chat.thinkingStageTool': '正在检索上下文与执行步骤',
   'chat.modelSwitch': '切换至',
   'subtask.summary': '子代理 · {done}/{total} 完成 · {running} 运行中 · {pending} 等待 · {failed} 失败',
 
@@ -1839,6 +1843,10 @@ export const en: Record<MsgKey, string> = {
   'tool.cost': 'cost',
   'tool.metricsTip': 'switch: delay from the previous activity to this tool start ({switch}); cost: tool execution time ({cost})',
   'chat.thinking': 'Thinking',
+  'chat.thinkingStage1': 'Understanding your request and planning approach',
+  'chat.thinkingStage2': 'Reasoning through details step by step',
+  'chat.thinkingStage3': 'Verifying logic and structuring response',
+  'chat.thinkingStageTool': 'Gathering context and running steps',
   'chat.modelSwitch': 'Switch to',
   'subtask.summary': 'Subtasks · {done}/{total} done · {running} running · {pending} pending · {failed} failed',
 

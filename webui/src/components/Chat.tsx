@@ -14422,15 +14422,17 @@ export function Chat({
     headSeq: oldestAuthenticServerSeq(messages),
   });
 
-  // 按轮次一次性缓存复制正文映射与最后助手位置索引（O(N) 一次扫描），避免流式分片或状态变化时重复全量拼接
-  const { turnLastTexts, turnAllTexts, lastInTurnSet } = useMemo(() => {
+  // 按轮次一次性缓存复制正文、思考聚合映射与最后助手位置索引（O(N) 一次扫描）
+  const { turnLastTexts, turnAllTexts, turnReasoningMap, lastInTurnSet } = useMemo(() => {
     const lastTexts = new Map<number, string>();
     const allTexts = new Map<number, string>();
+    const reasoningMap = new Map<number, string>();
     const lastInTurn = new Set<number>();
 
     let start = -1;
     let textParts: string[] = [];
     let fallbackParts: string[] = [];
+    let reasoningParts: string[] = [];
     let lastToolName: string | null = null;
     for (let i = 0; i < messages.length; i++) {
       if (messages[i].role === 'assistant') {
@@ -14438,6 +14440,8 @@ export function Chat({
         for (const p of messages[i].parts) {
           if (p.kind === 'text' && p.text.trim()) {
             textParts.push(p.text);
+          } else if (p.kind === 'reasoning' && p.text.trim()) {
+            reasoningParts.push(p.text.trim());
           } else if (p.kind === 'tool' && p.tool?.name) {
             lastToolName = p.tool.name;
           }
@@ -14457,13 +14461,16 @@ export function Chat({
             if (isAsymmetric) lastText = pre;
           }
           const allText = targetList.join('\n\n');
+          const allReasoning = reasoningParts.join('\n\n---\n\n');
           for (let j = start; j < i; j++) {
             lastTexts.set(j, lastText);
             allTexts.set(j, allText);
+            reasoningMap.set(j, allReasoning);
           }
           start = -1;
           textParts = [];
           fallbackParts = [];
+          reasoningParts = [];
           lastToolName = null;
         }
       }
@@ -14480,9 +14487,11 @@ export function Chat({
         if (isAsymmetric) lastText = pre;
       }
       const allText = targetList.join('\n\n');
+      const allReasoning = reasoningParts.join('\n\n---\n\n');
       for (let j = start; j < messages.length; j++) {
         lastTexts.set(j, lastText);
         allTexts.set(j, allText);
+        reasoningMap.set(j, allReasoning);
       }
     }
 
@@ -14498,7 +14507,7 @@ export function Chat({
       }
     }
 
-    return { turnLastTexts: lastTexts, turnAllTexts: allTexts, lastInTurnSet: lastInTurn };
+    return { turnLastTexts: lastTexts, turnAllTexts: allTexts, turnReasoningMap: reasoningMap, lastInTurnSet: lastInTurn };
   }, [messages]);
 
   return (
@@ -14716,6 +14725,7 @@ export function Chat({
                 isLastInTurn={isLastInTurn}
                 turnLastText={turnLastTexts.get(origIdx) ?? ''}
                 turnAllText={turnAllTexts.get(origIdx) ?? ''}
+                turnReasoning={turnReasoningMap.get(origIdx) ?? ''}
                 searchRef={setMatchRef}
                 timeLabel={isLastInTurn ? timeLabel : undefined}
                 timeFull={isLastInTurn ? timeFull : undefined}
