@@ -1549,6 +1549,8 @@ export function App() {
         completedIds={Array.from(justCompletedIds)}
         onOpenFile={handleOpenFile}
         activeFilePath={diffTabs.find((t) => t.id === activeMainTabId)?.filePath}
+        onOpenUpdate={!updateDead ? openUpdateDialogWithFreshCheck : undefined}
+        updateInfo={updateInfo}
         activeWorkbenchView={activeWorkbenchView}
         onSwitchWorkbenchView={setActiveWorkbenchView}
       />
@@ -2292,16 +2294,34 @@ export function App() {
         <LanguageDialog onClose={() => setSettingsSection(null)} />
       )}
       {settingsSection === 'model' && (
-        <SystemSettingsDialog initialTab="models" onClose={() => setSettingsSection(null)} />
+        <SystemSettingsDialog
+          initialTab="models"
+          onClose={() => setSettingsSection(null)}
+          onOpenUpdate={!updateDead ? () => {
+            setSettingsSection(null);
+            openUpdateDialogWithFreshCheck();
+          } : undefined}
+        />
       )}
       {settingsSection === 'system' && (
-        <SystemSettingsDialog initialTab="desktop" onClose={() => setSettingsSection(null)} />
+        <SystemSettingsDialog
+          initialTab="desktop"
+          onClose={() => setSettingsSection(null)}
+          onOpenUpdate={!updateDead ? () => {
+            setSettingsSection(null);
+            openUpdateDialogWithFreshCheck();
+          } : undefined}
+        />
       )}
       {settingsSection === 'agent_mode' && (
         <SystemSettingsDialog
           initialTab="desktop"
           focusSection="agent_mode"
           onClose={() => setSettingsSection(null)}
+          onOpenUpdate={!updateDead ? () => {
+            setSettingsSection(null);
+            openUpdateDialogWithFreshCheck();
+          } : undefined}
         />
       )}
       {headerDialog === 'rename' && activeSession && (

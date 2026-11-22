@@ -7,7 +7,7 @@ import { createPortal } from 'preact/compat';
 import { openDeepSeekSettingsCenter } from '../custom/custom-registry';
 import { zapPluginKernel, usePluginKernelVersion } from '../custom/plugin-kernel';
 import { useBackdropDismiss } from '../lib/backdropDismiss';
-import { listSessions, listProjectSessions, searchSessions, getCapabilities, toggleCapability, getConfig, getDesktopSettings, getMcpStatus, postMcpReload, postLiveMcpTrust, getSession, getBootstrap, invalidateBootstrapCache, getProjects, getSidebarProjects, hideSidebarProject, showSidebarProject, revealSidebarProject, resolveSession, getActiveChatSessions, getHealth, pickNativeDirectory, revealInFileExplorer, listSchedules, CapabilityItem, CapScope, McpStatusInfo, SessionMetaWithProject, ProjectInfo, SidebarProjects } from '../api';
+import { listSessions, listProjectSessions, searchSessions, getCapabilities, toggleCapability, getConfig, getDesktopSettings, getMcpStatus, postMcpReload, postLiveMcpTrust, getSession, getBootstrap, invalidateBootstrapCache, getProjects, getSidebarProjects, hideSidebarProject, showSidebarProject, revealSidebarProject, resolveSession, getActiveChatSessions, getHealth, pickNativeDirectory, revealInFileExplorer, listSchedules, CapabilityItem, CapScope, McpStatusInfo, SessionMetaWithProject, ProjectInfo, SidebarProjects, UpdateCheckResponse } from '../api';
 import { mergeSessionRow, onGlobalEvent, removeSessionRows } from '../lib/globalEvents';
 import { deleteSessionCache } from '../lib/sessionCache';
 import { bakedAppVersion, formatAppVersionLabel, normalizeAppVersion } from '../lib/appVersion';
@@ -36,6 +36,7 @@ import { FileExplorer } from './FileExplorer';
 import { getPageZoom } from '../lib/pageZoom';
 import { menuPointFromEvent } from '../lib/menuPosition';
 import { buildSessionAnalysisPrompt } from '../lib/sessionAnalysis';
+import { hasEffectiveUpdate } from '../lib/updateRouting';
 
 /** 会话右键菜单的估算尺寸（用于防漂移翻转/夹取），与 CSS 宽度保持一致。 */
 const SESSION_CONTEXT_MENU_WIDTH = 200;
@@ -98,6 +99,10 @@ interface SidebarProps {
   activeFilePath?: string | null;
   activeWorkbenchView?: string;
   onSwitchWorkbenchView?: (viewId: string) => void;
+  /** 检查更新/打开更新弹窗 */
+  onOpenUpdate?: () => void;
+  /** 更新状态信息 */
+  updateInfo?: UpdateCheckResponse | null;
 }
 
 type Translate = (key: MsgKey, params?: Record<string, string | number>) => string;
@@ -526,6 +531,8 @@ export function Sidebar({
   activeFilePath,
   activeWorkbenchView = 'chat',
   onSwitchWorkbenchView,
+  onOpenUpdate,
+  updateInfo,
 }: SidebarProps) {
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches,
@@ -2736,6 +2743,7 @@ export function Sidebar({
             aria-label={t('settings.systemSettings')}
           >
             <SettingsGlyph />
+            {hasEffectiveUpdate(updateInfo) && <span class="sidebar-update-dot" />}
           </button>
         </div>
       </aside>
@@ -2744,6 +2752,10 @@ export function Sidebar({
 
   const skillCount = (capabilities ?? []).filter((c) => c.kind === 'skill').length;
   const mcpCount = (capabilities ?? []).filter((c) => c.kind === 'mcp').length;
+  const effectiveUpdate = hasEffectiveUpdate(updateInfo);
+  const updateTargetVer = !updateInfo?.has_update && updateInfo?.desktop_host?.latest_shell_version
+    ? `v${updateInfo.desktop_host.latest_shell_version}`
+    : (updateInfo?.latest_version ?? '');
 
   return (
     <aside
@@ -2759,7 +2771,20 @@ export function Sidebar({
       <div class="sidebar-brand-row">
         <span class="sidebar-brand">
           <span class="sidebar-brand-name">Zap</span>
-          <span class="sidebar-brand-version">{formatAppVersionLabel(appVersion) || 'v?'}</span>
+          {onOpenUpdate ? (
+            <button
+              type="button"
+              class={`sidebar-brand-version sidebar-brand-version-clickable${effectiveUpdate ? ' has-update' : ''}`}
+              onClick={onOpenUpdate}
+              title={effectiveUpdate ? t('update.hasUpdate', { version: updateTargetVer }) : `${t('update.modalTitle')} (${formatAppVersionLabel(appVersion) || 'v?'})`}
+              aria-label={t('update.modalTitle')}
+            >
+              <span>{formatAppVersionLabel(appVersion) || 'v?'}</span>
+              {effectiveUpdate && <span class="sidebar-version-badge">NEW</span>}
+            </button>
+          ) : (
+            <span class="sidebar-brand-version">{formatAppVersionLabel(appVersion) || 'v?'}</span>
+          )}
         </span>
         <span class="sidebar-brand-btns">
           <button
@@ -3278,6 +3303,7 @@ export function Sidebar({
           aria-label={t('settings.systemSettings')}
         >
           <SettingsGlyph />
+          {effectiveUpdate && <span class="sidebar-update-dot" />}
         </button>
       </div>
       {renderSkillsMenu()}

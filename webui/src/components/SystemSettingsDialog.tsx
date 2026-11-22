@@ -18,6 +18,7 @@ interface SystemSettingsDialogProps {
   onClose: () => void;
   initialTab?: TabKey;
   focusSection?: 'agent_mode';
+  onOpenUpdate?: () => void;
 }
 
 type TabKey = 'models' | 'desktop' | 'about';
@@ -29,7 +30,7 @@ interface ModuleTab {
   icon: string;
 }
 
-export function SystemSettingsDialog({ onClose, initialTab, focusSection }: SystemSettingsDialogProps) {
+export function SystemSettingsDialog({ onClose, initialTab, focusSection, onOpenUpdate }: SystemSettingsDialogProps) {
   const { t, escUndoEnabled, setEscUndoEnabled } = useSettings();
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab || 'models');
   const [closeAction, setCloseAction] = useState<'ask' | 'tray' | 'quit'>('ask');
@@ -449,6 +450,17 @@ export function SystemSettingsDialog({ onClose, initialTab, focusSection }: Syst
                   <div class="about-features">
                     {t('settings.aboutFeatures')}
                   </div>
+                  {onOpenUpdate && (
+                    <div class="about-actions-row">
+                      <button
+                        type="button"
+                        class="btn btn-primary system-settings-save-btn"
+                        onClick={onOpenUpdate}
+                      >
+                        {t('update.btnCheck')}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

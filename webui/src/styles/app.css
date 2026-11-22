@@ -20756,6 +20756,31 @@ select option {
   background: currentColor;
   opacity: 0.28;
 }
+button.sidebar-brand-version-clickable {
+  border: 0;
+  margin: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+button.sidebar-brand-version-clickable:hover {
+  opacity: 1 !important;
+  color: var(--app-primary-foreground) !important;
+}
+button.sidebar-brand-version-clickable.has-update {
+  opacity: 1 !important;
+  color: #10b981 !important;
+  gap: 5px !important;
+}
+.sidebar-settings-btn,
+.sidebar-rail-btn {
+  position: relative;
+}
+.about-actions-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .about-version-badge {
   background: transparent !important;
   border: 0 !important;

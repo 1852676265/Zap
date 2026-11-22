@@ -98,11 +98,14 @@ check('WebUI critical entry points, context menus, and right panel resizer stay 
   const pluginKernel = read('webui/src/custom/plugin-kernel.ts');
 
   assert.match(appTsx, /settingsSection === 'system'[\s\S]*?initialTab="desktop"/);
+  assert.match(appTsx, /onOpenUpdate=\{!updateDead \? openUpdateDialogWithFreshCheck : undefined\}/);
   assert.match(sysDialog, /about-app-title">Zap<\/strong>/);
   assert.match(sidebar, /openContextMenu/);
   assert.match(sidebar, /openProjectMenu/);
   assert.match(sidebar, /handleAnalyzeSession/);
   assert.match(sidebar, /setScheduleDialogOpen\(true\)/);
+  assert.match(sidebar, /sidebar-brand-version-clickable/);
+  assert.match(sidebar, /onClick=\{onOpenUpdate\}/);
   assert.match(appCss, /\.right-inspector-panel\s*\{[^}]*overflow:\s*visible;/s);
   assert.doesNotMatch(appCss, /\.right-inspector-panel\s*\{\s*--right-panel-width:\s*300px\s*!important;/);
   assert.doesNotMatch(pluginRegistry + pluginKernel, /agent-teams|neural-memory|teams:|neural:/);

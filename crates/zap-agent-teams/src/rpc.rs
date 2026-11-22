@@ -1076,7 +1076,7 @@ fn list_subdirectories(target: &Path) -> Result<Value, String> {
     });
 
     // Windows 盘符快捷切换列表
-    let mut drives = Vec::new();
+    let mut drives: Vec<String> = Vec::new();
     #[cfg(windows)]
     {
         for letter in b'C'..=b'Z' {
