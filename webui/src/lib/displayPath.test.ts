@@ -5,6 +5,7 @@ import {
   displayPath,
   fsBreadcrumbs,
   isLoopbackHost,
+  isUserHomeDir,
   joinFsChild,
   getRelativePathToProject,
   parseFilePathAndLines,
@@ -193,4 +194,20 @@ test('parseFilePathAndLines robustly extracts file paths and single/range line n
     startLine: undefined,
     endLine: undefined,
   });
+});
+
+test('isUserHomeDir identifies home directories and global placeholders without flagging projects', () => {
+  assert.equal(isUserHomeDir(''), true);
+  assert.equal(isUserHomeDir(null), true);
+  assert.equal(isUserHomeDir('~'), true);
+  assert.equal(isUserHomeDir('__global__'), true);
+  assert.equal(isUserHomeDir('C:\\Users\\alice'), true);
+  assert.equal(isUserHomeDir('\\\\?\\C:\\Users\\alice\\'), true);
+  assert.equal(isUserHomeDir('/home/alice'), true);
+  assert.equal(isUserHomeDir('/Users/alice/'), true);
+
+  assert.equal(isUserHomeDir('D:\\Projects\\Zap'), false);
+  assert.equal(isUserHomeDir('C:\\Users\\alice\\Desktop\\proj'), false);
+  assert.equal(isUserHomeDir('/home/alice/code/zap'), false);
+  assert.equal(isUserHomeDir('/Users/alice/dev/zap'), false);
 });
