@@ -21,6 +21,22 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v2.0.1 (2026-11-22)
+
+- **[WebUI Software Update Entry] Restored clickable sidebar brand version and About-tab update button**:
+  - Restored click-to-update behavior on the top-left `Zap | vX.Y.Z` sidebar version label with a `NEW` badge when updates are available and green update indicators on the sidebar settings gear.
+  - Added a direct `Check for Updates` action button inside the System Settings `About` pane.
+- **[Cross-Platform & Updater Reliability] Fixed Linux build/test checks and TUI onboarding branding**:
+  - Updated `Zap` brand copy in the compact TUI onboarding wizard and fixed cross-platform Windows PATH parsing and updater unit tests so the full CI suite passes green.
+
+---
+
+- **[WebUI 软件更新入口] 恢复左上角版本号点击检查更新与关于页更新按钮**：
+  - 恢复侧边栏左上角 `Zap | vX.Y.Z` 版本号点击弹出软件更新窗口的功能，支持新版本 `NEW` 徽标与底部设置齿轮绿色提示点。
+  - 在系统设置「关于与版本」面板补充「检查更新」快捷按钮。
+- **[跨平台稳定性与测试对齐] 修复 Linux 编译与路径单测并统一 TUI 向导品牌**：
+  - 统一 TUI 紧凑模式启动向导中的 `Zap` 品牌文案，修复跨平台 Windows `Path` 解析与更新器单测以保障全量 CI 绿灯通过。
+
 ## v2.0.0 (2026-11-22)
 
 - **[Zap 2.0 Brand Convergence & Plugin Architecture] Full Zap identity, CLI, and microkernel plugin isolation**:
