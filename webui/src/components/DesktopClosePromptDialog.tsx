@@ -129,7 +129,7 @@ export function DesktopClosePromptDialog() {
           >
           </div>
           <h3 style={{ margin: '0 0 8px', fontSize: '17px', fontWeight: 600 }}>
-            {t('desktop.closePromptTitle') || '关闭 JeikCode'}
+            {t('desktop.closePromptTitle') || '关闭 Zap'}
           </h3>
           <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-muted, #9ca3af)', lineHeight: '1.6' }}>
             {t('desktop.closePromptDesc') || '是否最小化到系统托盘并保持后台运行？'}

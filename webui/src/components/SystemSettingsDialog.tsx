@@ -34,7 +34,7 @@ export function SystemSettingsDialog({ onClose, initialTab, focusSection }: Syst
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab || 'models');
   const [closeAction, setCloseAction] = useState<'ask' | 'tray' | 'quit'>('ask');
   const [agentModePolicy, setAgentModePolicy] = useState<'memory' | 'global'>('memory');
-  const [agentGlobalMode, setAgentGlobalMode] = useState<ApprovalMode>('build');
+  const [agentGlobalMode, setAgentGlobalMode] = useState<ApprovalMode>('bypass');
   const [runtimeModelSwitch, setRuntimeModelSwitch] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [toggleShortcut, setToggleShortcut] = useState('Ctrl+Alt+J');
@@ -121,7 +121,7 @@ export function SystemSettingsDialog({ onClose, initialTab, focusSection }: Syst
         new CustomEvent('jeikcode:mode_global_changed', {
           detail: {
             enabled: agentModePolicy === 'global',
-            mode: agentModePolicy === 'global' ? agentGlobalMode : 'build',
+            mode: agentModePolicy === 'global' ? agentGlobalMode : 'bypass',
           },
         }),
       );

@@ -1,4 +1,4 @@
-# JeikCode default config (new-install template).
+# Zap default config (new-install template).
 # Model / provider / account tables are empty here — fill them via /provider
 # or keep your own [models] / [provider_accounts] on upgrade merge.
 

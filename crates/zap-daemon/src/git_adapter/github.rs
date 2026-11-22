@@ -392,7 +392,7 @@ impl GitPlatformAdapter for GitHubAdapter {
                     .map(|u| u.ends_with("[bot]"))
                     .unwrap_or(false);
             let body = item["body"].as_str().unwrap_or("");
-            if (is_bot || body.contains("JeikCode")) && !body.is_empty() {
+            if (is_bot || body.contains("Zap") || body.contains("JeikCode")) && !body.is_empty() {
                 if let Some(id) = item["id"].as_u64() {
                     return Ok(Some(id));
                 }

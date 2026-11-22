@@ -535,7 +535,7 @@ export function TerminalPanel({ cwd, active, onTabsCountChange }: TerminalPanelP
             if (!receivedAnyData && (!record.ws || record.ws.readyState !== WebSocket.OPEN)) {
               const promptChar = tabShell.includes('powershell') ? 'PS ' : tabShell.includes('cmd') ? '' : '$ ';
               const cwdDisplay = (cwd || '.').replace(/\\/g, '/');
-              record.term.write(`\r\n\x1b[32m[JeikCode Terminal - ${tabShell}]\x1b[0m\r\n${promptChar}${cwdDisplay}> `);
+              record.term.write(`\r\n\x1b[32m[Zap Terminal - ${tabShell}]\x1b[0m\r\n${promptChar}${cwdDisplay}> `);
             }
           }, 800);
         };

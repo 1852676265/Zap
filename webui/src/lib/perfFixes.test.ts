@@ -47,15 +47,15 @@ test('terminalStorage defaults to 0 saved terminals and buffers commands until h
   markAllTerminalsClosed(false, '/repo/a');
   assert.equal(getSavedTerminalCount('/repo/a'), 0);
 
-  dispatchOrQueueTerminalCommand('jeikcode init --force');
+  dispatchOrQueueTerminalCommand('zap init --force');
   const received: string[] = [];
   const unregister = registerTerminalRunHandler((cmd) => {
     received.push(cmd);
   });
-  assert.deepEqual(received, ['jeikcode init --force']);
+  assert.deepEqual(received, ['zap init --force']);
   assert.deepEqual(drainPendingTerminalCommands(), []);
 
   dispatchOrQueueTerminalCommand('echo live');
-  assert.deepEqual(received, ['jeikcode init --force', 'echo live']);
+  assert.deepEqual(received, ['zap init --force', 'echo live']);
   unregister();
 });

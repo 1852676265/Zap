@@ -31,14 +31,15 @@ import {
 } from '../lib/navState';
 import { mcpAutoTrustSignature, mcpEnableNeedsTrust } from '../lib/mcpTrust';
 import { sessionMessagesToMarkdownLines } from '../lib/historyMessages';
-import { collapseHomePath as collapseHomePathShared, displayPath, isLoopbackHost, stripExtendedPathPrefix } from '../lib/displayPath';
+import { collapseHomePath as collapseHomePathShared, displayPath, isLoopbackHost, isUserHomeDir, stripExtendedPathPrefix } from '../lib/displayPath';
 import { FileExplorer } from './FileExplorer';
 import { getPageZoom } from '../lib/pageZoom';
 import { menuPointFromEvent } from '../lib/menuPosition';
+import { buildSessionAnalysisPrompt } from '../lib/sessionAnalysis';
 
 /** 会话右键菜单的估算尺寸（用于防漂移翻转/夹取），与 CSS 宽度保持一致。 */
 const SESSION_CONTEXT_MENU_WIDTH = 200;
-const SESSION_CONTEXT_MENU_HEIGHT = 150;
+const SESSION_CONTEXT_MENU_HEIGHT = 190;
 
 /** 会话菜单锚点：三点按钮用「右/上/下」贴边，右键用光标坐标。 */
 type SessionMenuPos =
@@ -51,7 +52,7 @@ interface SidebarProps {
    *  用它立即展开正确的项目分组，避免空闲会话的分组一直保持折叠。 */
   activeProjectHash?: string;
   onSelect: (session: SessionMetaWithProject) => void;
-  onNew: (targetDir?: string) => void;
+  onNew: (targetDir?: string, initialPrompt?: string) => void;
   /** Open a specific settings dialog (theme / language / model). */
   onOpenSettings: (section: SettingsSection) => void;
   /** Mobile drawer open state */
@@ -166,6 +167,16 @@ function FolderRailIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 8 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </svg>
+  );
+}
+
+/** Sparkles glyph for session analysis action. */
+function SparklesIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 1.3l1.15 3.1a2 2 0 0 0 1.2 1.2L13.4 6.8l-3.05 1.15a2 2 0 0 0-1.2 1.2L8 12.2 6.85 9.15a2 2 0 0 0-1.2-1.2L2.6 6.8l3.05-1.2a2 2 0 0 0 1.2-1.2z" />
+      <path d="M12.7 10.4l.5 1.35.5-1.35 1.35-.5-1.35-.5-.5-1.35-.5 1.35-1.35.5z" />
     </svg>
   );
 }
@@ -723,6 +734,11 @@ export function Sidebar({
   // target the primary row). Kept as full rows so older project-bucket sessions
   // are deletable even when they are outside the capped global /sessions list.
   const [menuTargets, setMenuTargets] = useState<SessionMetaWithProject[]>([]);
+  const [projectMenuTarget, setProjectMenuTarget] = useState<ProjectInfo | null>(null);
+  const [projectMenuPos, setProjectMenuPos] = useState<
+    { top?: number; bottom?: number; left?: number; right?: number } | null
+  >(null);
+  const projectMenuRef = useRef<HTMLDivElement | null>(null);
   // Session search: a centered modal dialog (same .modal-overlay/.modal-card
   // family as the rename/delete dialogs), closes on backdrop click / Escape.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1466,9 +1482,61 @@ export function Sidebar({
     };
   }, [menuFor]);
 
+  useEffect(() => {
+    if (!projectMenuTarget) return;
+    const close = () => setProjectMenuTarget(null);
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      if (projectMenuRef.current?.contains(el)) return;
+      if (el.closest?.('.project-group-action-btn')) return;
+      close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      close();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('jeikcode:zoom_change', close);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('jeikcode:zoom_change', close);
+    };
+  }, [projectMenuTarget]);
+
+  function openProjectMenu(e: MouseEvent, p: ProjectInfo) {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuFor(null);
+    const zoom = getPageZoom() || 1.0;
+    const MENU_EST_HEIGHT = 220;
+    const MENU_EST_WIDTH = 220;
+    if (e.type === 'contextmenu') {
+      const point = menuPointFromEvent(e.clientX, e.clientY, MENU_EST_WIDTH, MENU_EST_HEIGHT);
+      setProjectMenuPos({ top: point.top, left: point.left });
+    } else {
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const right = (window.innerWidth - rect.right) / zoom;
+      const spaceBelow = (window.innerHeight - rect.bottom) / zoom;
+      if (spaceBelow < MENU_EST_HEIGHT + 8) {
+        setProjectMenuPos({ bottom: (window.innerHeight - rect.top + 4) / zoom, right });
+      } else {
+        setProjectMenuPos({ top: (rect.bottom + 4) / zoom, right });
+      }
+    }
+    setProjectMenuTarget(p);
+  }
+
   function openItemMenu(e: MouseEvent, session: SessionMetaWithProject) {
     e.preventDefault();
     e.stopPropagation();
+    setProjectMenuTarget(null);
     if (menuFor === session.id) {
       setMenuFor(null);
       return;
@@ -1476,9 +1544,9 @@ export function Sidebar({
     const zoom = getPageZoom() || 1.0;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const right = (window.innerWidth - rect.right) / zoom;
-    // 3 rows (rename + export + delete); estimate generously so we flip up a touch
+    // 4 rows (analyze + rename + export + delete); estimate generously so we flip up a touch
     // early rather than let the last item clip off the bottom edge.
-    const MENU_EST_HEIGHT = 144;
+    const MENU_EST_HEIGHT = 185;
     const spaceBelow = (window.innerHeight - rect.bottom) / zoom;
     setMenuTargets([session]);
     if (spaceBelow < MENU_EST_HEIGHT + 8) {
@@ -1499,6 +1567,7 @@ export function Sidebar({
   function openContextMenu(e: MouseEvent, session: SessionMetaWithProject) {
     e.preventDefault();
     e.stopPropagation();
+    setProjectMenuTarget(null);
     const point = menuPointFromEvent(
       e.clientX,
       e.clientY,
@@ -1518,6 +1587,35 @@ export function Sidebar({
     setMenuTargets(targets);
     setMenuPos({ kind: 'point', top: point.top, left: point.left });
     setMenuFor(session.id);
+  }
+
+  async function handleAnalyzeSession(targetSession: SessionMetaWithProject) {
+    try {
+      showToast(t('sidebar.analyzingSession'), 'info');
+      const pHash = targetSession.project_hash || projectHash || '';
+      const detail = await getSession(pHash, targetSession.id, { offset: 0, limit: 1000 });
+      const prompt = buildSessionAnalysisPrompt(detail);
+      exitSelectMode();
+      onNew(targetSession.working_dir, prompt);
+    } catch {
+      showToast(t('sidebar.analyzeSessionFailed'), 'error');
+    }
+  }
+
+  async function handleAnalyzeSessionForProject(p: ProjectInfo) {
+    try {
+      const pSessions =
+        projectSessionsMap[p.hash] ||
+        sessions.filter((s) => s.project_hash === p.hash || s.working_dir === p.working_dir);
+      if (!pSessions || pSessions.length === 0) {
+        showToast(t('sidebar.noSessionsToAnalyze'), 'warning');
+        return;
+      }
+      const target = pSessions.find((s) => s.id === activeSessionId) || pSessions[0];
+      await handleAnalyzeSession(target);
+    } catch {
+      showToast(t('sidebar.analyzeSessionFailed'), 'error');
+    }
   }
 
   /** 按 id 解析完整会话行：全局列表只有最近 50 条，项目桶负责补全历史。 */
@@ -2326,15 +2424,23 @@ export function Sidebar({
   // 避免出现两条相同会话（刷新才消失）。
   const merged = mergeOptimisticSessions(allOptimistic, sessions);
 
-  const allProjects = projects.slice();
+  const allProjects = projects.filter((p) => !isUserHomeDir(p.working_dir));
   for (const pinned of pinnedProjects) {
-    if (!allProjects.some((p) => p.hash === pinned.hash)) allProjects.push(pinned);
+    if (!isUserHomeDir(pinned.working_dir) && !allProjects.some((p) => p.hash === pinned.hash)) {
+      allProjects.push(pinned);
+    }
   }
-  if (projectHash && !allProjects.some((p) => p.hash === projectHash) && !hiddenProjectHashes.has(projectHash)) {
+  if (
+    projectHash &&
+    cwd &&
+    !isUserHomeDir(cwd) &&
+    !allProjects.some((p) => p.hash === projectHash) &&
+    !hiddenProjectHashes.has(projectHash)
+  ) {
     allProjects.unshift({
       hash: projectHash,
-      name: shortDir(cwd || ''),
-      working_dir: cwd || '',
+      name: shortDir(cwd),
+      working_dir: cwd,
       session_count: 0,
       created_at: Date.now(),
       last_updated: Date.now(),
@@ -2767,19 +2873,19 @@ export function Sidebar({
                   {mcpCount > 0 && <span class="sidebar-action-badge">{mcpCount}</span>}
                   <span class="sidebar-action-caret"><ChevronDownIcon /></span>
                 </button>
-                <button
-                  type="button"
-                  class={'sidebar-action' + (scheduleDialogOpen ? ' open' : '')}
-                  onClick={() => setScheduleDialogOpen(true)}
-                >
-                  <span class="sidebar-action-icon"><ClockIcon /></span>
-                  <span class="sidebar-action-label">{t('schedules.menuTitle')}</span>
-                  {activeScheduleCount > 0 && (
-                    <span class="sidebar-action-badge">{activeScheduleCount}</span>
-                  )}
-                </button>
               </>
             )}
+            <button
+              type="button"
+              class={'sidebar-action' + (scheduleDialogOpen ? ' open' : '')}
+              onClick={() => setScheduleDialogOpen(true)}
+            >
+              <span class="sidebar-action-icon"><ClockIcon /></span>
+              <span class="sidebar-action-label">{t('schedules.menuTitle')}</span>
+              {activeScheduleCount > 0 && (
+                <span class="sidebar-action-badge">{activeScheduleCount}</span>
+              )}
+            </button>
           </div>
 
           <div class="session-group-header">
@@ -2979,6 +3085,7 @@ export function Sidebar({
                   <div
                     class={'project-group-header' + (p.hash === projectHash ? ' active-project' : '')}
                     onClick={() => toggleProjectExpand(p.hash)}
+                    onContextMenu={(e) => openProjectMenu(e as unknown as MouseEvent, p)}
                   >
                     <span class="project-group-icon"><FolderIcon /></span>
                     <span class="project-group-name" title={p.working_dir}>
@@ -3264,6 +3371,16 @@ export function Sidebar({
           <button
             class="item-menu-row"
             onClick={() => {
+              void handleAnalyzeSession(menuPrimary);
+              setMenuFor(null);
+            }}
+          >
+            <SparklesIcon />
+            <span>{t('sidebar.analyzeSession')}</span>
+          </button>
+          <button
+            class="item-menu-row"
+            onClick={() => {
               setRenameTarget(menuPrimary);
               setMenuFor(null);
             }}
@@ -3278,6 +3395,7 @@ export function Sidebar({
             <DownloadIcon />
             <span>{t('sidebar.exportMarkdown')}</span>
           </button>
+          <div class="settings-menu-divider" />
           <button
             class="item-menu-row danger"
             onClick={() => {
@@ -3293,6 +3411,82 @@ export function Sidebar({
                 ? t('sidebar.deleteSelectedCount', { n: menuTargets.length })
                 : t('sidebar.delete')}
             </span>
+          </button>
+        </div>,
+        document.body,
+      )}
+
+      {/* Project actions context menu (右键点击项目分组时弹出完整项目菜单) */}
+      {projectMenuTarget && projectMenuPos && createPortal(
+        <div
+          class="item-menu session-context-menu"
+          ref={projectMenuRef}
+          style={{
+            top: projectMenuPos.top != null ? `${projectMenuPos.top}px` : undefined,
+            bottom: projectMenuPos.bottom != null ? `${projectMenuPos.bottom}px` : undefined,
+            left: projectMenuPos.left != null ? `${projectMenuPos.left}px` : undefined,
+            right: projectMenuPos.right != null ? `${projectMenuPos.right}px` : undefined,
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button
+            class="item-menu-row"
+            onClick={() => {
+              exitSelectMode();
+              onNew(projectMenuTarget.working_dir);
+              setProjectMenuTarget(null);
+            }}
+          >
+            <PlusIcon />
+            <span>{t('sidebar.newChat')}</span>
+          </button>
+
+          <button
+            class="item-menu-row"
+            onClick={() => {
+              void handleAnalyzeSessionForProject(projectMenuTarget);
+              setProjectMenuTarget(null);
+            }}
+          >
+            <SparklesIcon />
+            <span>{t('sidebar.analyzeSession')}</span>
+          </button>
+
+          {projectMenuTarget.working_dir && (
+            <button
+              class="item-menu-row"
+              onClick={() => {
+                void revealInFileExplorer(projectMenuTarget.working_dir).catch(() => {});
+                setProjectMenuTarget(null);
+              }}
+            >
+              <FolderOpenIcon />
+              <span>{t('sidebar.revealInExplorer')}</span>
+            </button>
+          )}
+
+          <button
+            class="item-menu-row"
+            onClick={() => {
+              setGitWebhookProject(projectMenuTarget);
+              setProjectMenuTarget(null);
+            }}
+          >
+            <GithubLogo />
+            <span>{t('gitWebhook.btnTitle')}</span>
+          </button>
+
+          <div class="settings-menu-divider" />
+
+          <button
+            class="item-menu-row danger"
+            onClick={() => {
+              setRemoveProjectTarget(projectMenuTarget);
+              setProjectMenuTarget(null);
+            }}
+          >
+            <TrashIcon />
+            <span>{t('sidebar.removeProjectFromList')}</span>
           </button>
         </div>,
         document.body,

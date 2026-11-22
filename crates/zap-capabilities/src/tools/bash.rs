@@ -507,7 +507,9 @@ impl Tool for BashTool {
         let started_short = idle.is_some();
         let child_pid_val = child_pid.unwrap_or(0);
         let session_id = runtime.session_id().unwrap_or_else(|| {
-            std::env::var("JEIKCODE_SESSION_ID").unwrap_or_else(|_| "default".to_string())
+            std::env::var("ZAP_SESSION_ID")
+                .or_else(|_| std::env::var("JEIKCODE_SESSION_ID"))
+                .unwrap_or_else(|_| "default".to_string())
         });
         let second_levell_secs = agent_second_level_secs(bash_cfg.second_levell_secs);
         let live = Arc::new(LiveBash {
@@ -1460,6 +1462,8 @@ fn apply_askpass_env(cmd: &mut tokio::process::Command, env: &crate::askpass::se
     cmd.env("SUDO_ASKPASS", &env.askpass_script)
         .env("SSH_ASKPASS", &env.askpass_script)
         .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("ZAP_ASKPASS_SOCK", &env.sock_path)
+        .env("ZAP_ASKPASS_TOKEN", &env.token)
         .env("JEIKCODE_ASKPASS_SOCK", &env.sock_path)
         .env("JEIKCODE_ASKPASS_TOKEN", &env.token);
 }

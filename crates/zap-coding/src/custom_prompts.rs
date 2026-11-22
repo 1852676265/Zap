@@ -301,7 +301,7 @@ pub fn render_identity_and_precedence(model: &str) -> (String, Option<String>) {
         render_identity_and_precedence_from(&cfg, model)
     } else {
         (
-            "You are the JeikCode AI coding Agent provided by Jeik, running on your underlying model. You help users with software engineering tasks within the current project.".to_string(),
+            "You are the Zap AI coding Agent, running on your underlying model. You help users with software engineering tasks within the current project.".to_string(),
             None,
         )
     }
@@ -313,12 +313,12 @@ pub(crate) fn render_identity_and_precedence_from(
 ) -> (String, Option<String>) {
     let identity = if let Some(id) = &cfg.identity {
         if let Some(template) = &id.template {
-            let agent_name = id.agent_name.as_deref().unwrap_or("JeikCode");
-            let provider = id.provider.as_deref().unwrap_or("Jeik");
+            let agent_name = id.agent_name.as_deref().unwrap_or("Zap");
+            let provider = id.provider.as_deref().unwrap_or("Zap");
             let desc = id
                 .description
                 .as_deref()
-                .unwrap_or("an AI coding agent provided by Jeik, running on your underlying model");
+                .unwrap_or("an AI coding agent provided by Zap, running on your underlying model");
             let role = id.role_summary.as_deref().unwrap_or(
                 "You help users with software engineering tasks within the current project.",
             );
@@ -330,10 +330,10 @@ pub(crate) fn render_identity_and_precedence_from(
                 .replace("{role_summary}", role)
                 .replace("{model}", model)
         } else {
-            "You are the JeikCode AI coding Agent provided by Jeik, running on your underlying model. You help users with software engineering tasks within the current project.".to_string()
+            "You are the Zap AI coding Agent, running on your underlying model. You help users with software engineering tasks within the current project.".to_string()
         }
     } else {
-        "You are the JeikCode AI coding Agent provided by Jeik, running on your underlying model. You help users with software engineering tasks within the current project.".to_string()
+        "You are the Zap AI coding Agent, running on your underlying model. You help users with software engineering tasks within the current project.".to_string()
     };
 
     let precedence = cfg.precedence.as_ref().and_then(|p| p.rule.clone());
@@ -923,7 +923,7 @@ doing_tasks:
                 .expect("init.yaml");
         assert_eq!(
             init.identity.as_ref().unwrap().agent_name.as_deref(),
-            Some("JeikCode")
+            Some("Zap")
         );
         let init_template = init
             .identity
@@ -932,7 +932,7 @@ doing_tasks:
             .template
             .as_deref()
             .expect("identity template");
-        assert!(init_template.contains("provided by Jeik"));
+        assert!(init_template.contains("running on your underlying model"));
         assert!(init_template.contains("<project_instructions>"));
         let init_precedence = init
             .precedence

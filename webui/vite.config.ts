@@ -18,7 +18,7 @@ function stripVersionPrefix(raw: string): string {
  * Rust job 里临时 sed），所以打 Tag 时必须走 env，否则侧栏会烘上一次手改的旧号。
  */
 function getAppVersion(): string {
-  const fromEnv = process.env.JEIKCODE_VERSION || process.env.GITHUB_REF_NAME;
+  const fromEnv = process.env.ZAP_VERSION || process.env.JEIKCODE_VERSION || process.env.GITHUB_REF_NAME;
   if (fromEnv && fromEnv.trim()) {
     return stripVersionPrefix(fromEnv);
   }

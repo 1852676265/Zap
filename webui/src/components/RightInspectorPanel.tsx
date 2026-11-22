@@ -307,7 +307,6 @@ export function RightInspector({
         style={{
           display: collapsed ? 'none' : 'flex',
           '--right-panel-width': `${panelWidth}px`,
-          width: `${panelWidth}px`,
         } as any}
         aria-label={title}
       >

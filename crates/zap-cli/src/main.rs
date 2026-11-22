@@ -188,7 +188,7 @@ fn format_serve_banner(
 
     let mut out = String::new();
     use std::fmt::Write as _;
-    let _ = writeln!(out, "JeikCode serve");
+    let _ = writeln!(out, "Zap serve");
     // canonicalize() on Windows yields `\\?\E:\...` — strip for human banner.
     let project_raw = workdir.display().to_string();
     let project_display = project_raw
@@ -340,6 +340,7 @@ async fn attach_to_server(url: &str, token_arg: Option<&str>, no_open: bool) -> 
     let token = token_arg
         .map(|s| s.to_string())
         .or_else(|| token_from_url(url))
+        .or_else(|| std::env::var("ZAP_SERVER_TOKEN").ok())
         .or_else(|| std::env::var("JEIKCODE_SERVER_TOKEN").ok())
         .filter(|s| !s.is_empty());
 
@@ -364,13 +365,14 @@ async fn attach_to_server(url: &str, token_arg: Option<&str>, no_open: bool) -> 
     // HTTP 200 alone is not enough: reverse proxies sometimes return 200 HTML
     // error pages. Reject clear non-JSON/HTML garbage; soft-warn on odd text.
     let looks_like_html = body_l.contains("<!doctype") || body_l.contains("<html");
-    let looks_like_jeikcode_health = body_l.contains("jeikcode")
+    let looks_like_jeikcode_health = body_l.contains("zap")
+        || body_l.contains("jeikcode")
         || body_l.contains("\"ok\"")
         || body.trim() == "ok"
         || body.trim() == "OK";
     if looks_like_html && !looks_like_jeikcode_health {
         return Err(format!(
-            "server health check returned HTML, not JeikCode /health (from {health_url}): {}",
+            "server health check returned HTML, not Zap /health (from {health_url}): {}",
             truncate_log_line(&body, 120)
         ));
     }
@@ -386,7 +388,7 @@ async fn attach_to_server(url: &str, token_arg: Option<&str>, no_open: bool) -> 
         None => format!("{base}/"),
     };
 
-    eprintln!("Connected to JeikCode server at {base}");
+    eprintln!("Connected to Zap server at {base}");
     eprintln!("  UI: {client_url}");
     if token.is_none() {
         eprintln!("  (no token; if the server requires auth, pass --token or a full ?token= URL)");
@@ -645,7 +647,9 @@ fn close_thinking_chunk(out: &mut String, open: &mut bool) {
 /// scan.
 fn is_dev_mode() -> bool {
     std::env::args().skip(1).any(|a| a == "--dev")
+        || std::env::var_os("ZAP_NO_UPDATE").is_some()
         || std::env::var_os("JEIKCODE_NO_UPDATE").is_some()
+        || std::env::var_os("ZAP_DEV").is_some()
         || std::env::var_os("JEIKCODE_DEV").is_some()
 }
 
@@ -998,14 +1002,14 @@ fn invoked_cli_name() -> &'static str {
                 p.file_stem()
                     .map(|s| s.to_string_lossy().to_ascii_lowercase())
             })
-            .filter(|s| s == "jeikcode")
-            .unwrap_or_else(|| "jeikcode".into())
+            .filter(|s| s == "zap" || s == "jeikcode")
+            .unwrap_or_else(|| "zap".into())
     })
     .as_str()
 }
 
 #[derive(Parser)]
-#[command(name = "jeikcode", version = VERSION, about = "AI coding assistant in your terminal", disable_help_subcommand = true)]
+#[command(name = "zap", version = VERSION, about = "AI coding assistant in your terminal", disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -1460,7 +1464,7 @@ fn completion_command() -> clap::Command {
         .cloned()
         .collect::<Vec<_>>();
 
-    clap::Command::new("jeikcode")
+    clap::Command::new("zap")
         .version(VERSION)
         .about("AI coding assistant in your terminal")
         .args(source.get_arguments().cloned())
@@ -1470,7 +1474,7 @@ fn completion_command() -> clap::Command {
 
 fn print_shell_completion(shell: Shell, out: &mut dyn Write) {
     let mut command = completion_command();
-    clap_complete::generate(shell, &mut command, "jeikcode", out);
+    clap_complete::generate(shell, &mut command, "zap", out);
 }
 
 /// Subcommands for hooks management
@@ -1758,10 +1762,10 @@ fn main() {
     // 16 MB stack removes that platform asymmetry. (See the Windows
     // post-scan onboarding crash investigation.)
     let child = std::thread::Builder::new()
-        .name("jeikcode-main".into())
+        .name("zap-main".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(real_main)
-        .expect("failed to spawn jeikcode main thread");
+        .expect("failed to spawn zap main thread");
     // Under `panic = "abort"` a panic in the child already aborts the whole
     // process, so `join` only returns an error on an abnormal thread exit;
     // mirror Rust's conventional panic exit code in that case.
@@ -1808,7 +1812,7 @@ struct DesktopWebuiLaunch {
 /// Desktop sets `JEIKCODE_DESKTOP=1` and a fixed argv. Skip clap, telemetry,
 /// and the pending-upgrade scan so the listen address can be printed immediately.
 fn desktop_webui_fast_launch() -> Option<DesktopWebuiLaunch> {
-    if std::env::var_os("JEIKCODE_DESKTOP").is_none() {
+    if std::env::var_os("ZAP_DESKTOP").is_none() && std::env::var_os("JEIKCODE_DESKTOP").is_none() {
         return None;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1982,7 +1986,8 @@ async fn async_main() {
             );
         }
     }
-    let skip_pending = std::env::var("JEIKCODE_SKIP_PENDING_UPGRADE").is_ok()
+    let skip_pending = std::env::var("ZAP_SKIP_PENDING_UPGRADE").is_ok()
+        || std::env::var("JEIKCODE_SKIP_PENDING_UPGRADE").is_ok()
         || std::env::args().any(|a| a == "__sync_config" || a == "upgrade" || a == "update");
     if !is_backup && !dev_mode && auto_update_cfg && !source_build && !skip_pending {
         let stage_start = std::time::Instant::now();
@@ -2020,7 +2025,7 @@ async fn async_main() {
             }
         }
         tracing::info!(
-            target: "jeikcode::startup",
+            target: "zap::startup",
             stage = "pending_upgrade",
             elapsed_ms = stage_start.elapsed().as_millis() as u64,
             total_ms = process_start.elapsed().as_millis() as u64,
@@ -2032,7 +2037,7 @@ async fn async_main() {
     std::panic::set_hook(Box::new(|info| {
         write_crash_log(info);
         restore_terminal_if_tui();
-        eprintln!("\nJeikCode crashed: {}", info);
+        eprintln!("\nZap crashed: {}", info);
         if let Some(location) = info.location() {
             eprintln!(
                 "  at {}:{}:{}",
@@ -2051,7 +2056,7 @@ async fn async_main() {
         Ok(code) => std::process::exit(code),
         Err(e) => {
             restore_terminal_if_tui();
-            eprintln!("\nJeikCode error: {:#}", e);
+            eprintln!("\nZap error: {:#}", e);
             std::process::exit(1);
         }
     }
@@ -2106,8 +2111,12 @@ async fn run(inherited_token: Option<String>) -> Result<i32> {
         #[cfg(unix)]
         {
             use std::path::Path;
-            let sock = std::env::var("JEIKCODE_ASKPASS_SOCK").ok();
-            let token = std::env::var("JEIKCODE_ASKPASS_TOKEN").ok();
+            let sock = std::env::var("ZAP_ASKPASS_SOCK")
+                .or_else(|_| std::env::var("JEIKCODE_ASKPASS_SOCK"))
+                .ok();
+            let token = std::env::var("ZAP_ASKPASS_TOKEN")
+                .or_else(|_| std::env::var("JEIKCODE_ASKPASS_TOKEN"))
+                .ok();
             match (sock, token) {
                 (Some(s), Some(t)) => match zap::askpass::run_askpass(prompt, Path::new(&s), &t) {
                     Some(pw) => {
@@ -2207,7 +2216,7 @@ async fn run(inherited_token: Option<String>) -> Result<i32> {
                             return Ok(1);
                         }
                     };
-                eprintln!("Starting JeikCode daemon on {host}:{port}...");
+                eprintln!("Starting Zap daemon on {host}:{port}...");
                 eprintln!("Press Ctrl+C to stop.");
                 // Run the bundled server IN-PROCESS (same `run_server` the webui uses),
                 // instead of re-exec'ing into a separate `zap-daemon` binary that
@@ -2215,7 +2224,8 @@ async fn run(inherited_token: Option<String>) -> Result<i32> {
                 // network-reachable binds arrive here only with an explicit token.
                 let idle = idle_timeout
                     .or_else(|| {
-                        std::env::var("JEIKCODE_DAEMON_IDLE_TIMEOUT")
+                        std::env::var("ZAP_DAEMON_IDLE_TIMEOUT")
+                            .or_else(|_| std::env::var("JEIKCODE_DAEMON_IDLE_TIMEOUT"))
                             .ok()
                             .and_then(|s| s.parse().ok())
                     })
@@ -2514,7 +2524,9 @@ async fn run(inherited_token: Option<String>) -> Result<i32> {
     // it into place once. No-op when a config already exists, so it's safe for the
     // launcher to always pass. Any failure is non-fatal → normal onboarding.
     let seed_source = cli.seed_config.clone().or_else(|| {
-        std::env::var_os("JEIKCODE_SEED_CONFIG")
+        std::env::var_os("ZAP_SEED_CONFIG")
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var_os("JEIKCODE_SEED_CONFIG"))
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
     });
@@ -2801,7 +2813,7 @@ async fn run(inherited_token: Option<String>) -> Result<i32> {
             dangerously_skip_permissions: cli.dangerously_skip_permissions,
         });
 
-        // Incremental refresh only when `.jeikcode/codegraph` already exists and
+        // Incremental refresh only when `.zap/codegraph` already exists and
         // is non-empty. Missing graphs are never auto-created (no walk of `~` / `/`).
         zap_capabilities::codeintel::prewarm_code_index(&working_dir);
 
@@ -3076,12 +3088,12 @@ fn redirect_stderr_to_log_file() {
 /// there points at root's home, where the user would never find the log.
 #[cfg(test)]
 fn jeikcode_log_path(config_dir: std::path::PathBuf) -> std::path::PathBuf {
-    zap_daemon::logging::process_log_path(&config_dir, "jeikcode.log")
+    zap_daemon::logging::process_log_path(&config_dir, "zap.log")
 }
 
-/// Install a global tracing subscriber that writes to `<config_dir>/logs/jeikcode.log`.
+/// Install a global tracing subscriber that writes to `<config_dir>/logs/zap.log`.
 fn init_file_logging() {
-    zap_daemon::logging::init_process_file_logging("jeikcode.log", "jeikcode");
+    zap_daemon::logging::init_process_file_logging("zap.log", "zap");
 }
 
 /// Apply launch-time provider/model overrides to the process-owned config.
@@ -5025,7 +5037,7 @@ async fn run_upgrade_cli(
                     version,
                     backup.display()
                 );
-                println!("  Run `jeikcode` to start the new version.");
+                println!("  Run `zap` to start the new version.");
 
                 // 由替换后的新版本二进制拉起差异扫描。跳过 pending 套用，避免
                 // 后台自动更新把刚装上的文件再盖回旧包。
@@ -5034,6 +5046,7 @@ async fn run_upgrade_cli(
                 let mut sync_cmd = std::process::Command::new(&exe);
                 sync_cmd
                     .arg("__sync_config")
+                    .env("ZAP_SKIP_PENDING_UPGRADE", "1")
                     .env("JEIKCODE_SKIP_PENDING_UPGRADE", "1");
                 if yes {
                     sync_cmd.arg("--auto");
@@ -5472,12 +5485,12 @@ mod tests {
 
     #[test]
     fn log_path_is_logs_subdir_of_config_dir() {
-        // The log lives at `<config_dir>/logs/jeikcode.log`; JEIKCODE_HOME/sudo
+        // The log lives at `<config_dir>/logs/zap.log`; ZAP_HOME/JEIKCODE_HOME/sudo
         // resolution is `Config::config_dir()`'s job (covered by its own tests), so
         // this pins only the join rule.
         assert_eq!(
-            jeikcode_log_path(PathBuf::from("/Users/x/.jeikcode")),
-            PathBuf::from("/Users/x/.jeikcode/logs/jeikcode.log")
+            jeikcode_log_path(PathBuf::from("/Users/x/.zap")),
+            PathBuf::from("/Users/x/.zap/logs/zap.log")
         );
     }
 

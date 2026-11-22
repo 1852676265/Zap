@@ -325,9 +325,9 @@ pub fn binary_filename(version: &str, target: &str) -> String {
         format!("v{}", version)
     };
     if target.starts_with("windows") {
-        format!("jeikcode-{}-{}.exe", tag, target)
+        format!("zap-{}-{}.exe", tag, target)
     } else {
-        format!("jeikcode-{}-{}", tag, target)
+        format!("zap-{}-{}", tag, target)
     }
 }
 
@@ -606,7 +606,7 @@ pub fn ensure_writable(exe: &Path) -> Result<()> {
         }
         Err(e) => Err(anyhow!(
             "{} is not writable by the current user ({}).\n\
-             Re-run with elevated privileges:  sudo jeikcode upgrade\n\
+             Re-run with elevated privileges:  sudo zap upgrade\n\
              Or reinstall into a user-writable location (e.g. ~/.local/bin).",
             dir.display(),
             e
@@ -2165,6 +2165,7 @@ pub fn restart_process_with_config(
         no_token,
     );
 
+    std::env::set_var("ZAP_SKIP_PENDING_UPGRADE", "1");
     std::env::set_var("JEIKCODE_SKIP_PENDING_UPGRADE", "1");
     std::env::set_var(RESTARTED_ENV, "1");
     if let Some(h) = host.map(str::trim).filter(|h| !h.is_empty()) {
@@ -2229,6 +2230,7 @@ pub fn restart_process_with_config(
         .env(RESTART_WAIT_PID_ENV, std::process::id().to_string())
         .env(RESTART_EXACT_PORT_ENV, "1")
         .env(RESTARTED_ENV, "1")
+        .env("ZAP_SKIP_PENDING_UPGRADE", "1")
         .env("JEIKCODE_SKIP_PENDING_UPGRADE", "1");
     if old_port > 0 {
         cmd.env(RESTART_WAIT_PORT_ENV, old_port.to_string());
@@ -2751,7 +2753,7 @@ pub async fn run_upgrade_with_manifest(
         UpgradeFailure::new(
             UpgradeFailureKind::UnsupportedPlatform,
             anyhow!(
-                "this platform has no published jeikcode release ({}/{})",
+                "this platform has no published zap release ({}/{})",
                 std::env::consts::OS,
                 std::env::consts::ARCH
             ),
@@ -3067,7 +3069,7 @@ pub async fn prepare_deferred_upgrade(
     }
     let target = detect_target().ok_or_else(|| {
         anyhow!(
-            "this platform has no published jeikcode release ({}/{})",
+            "this platform has no published zap release ({}/{})",
             std::env::consts::OS,
             std::env::consts::ARCH
         )
@@ -3375,11 +3377,11 @@ mod tests {
     fn binary_filename_adds_exe_on_windows_targets() {
         assert_eq!(
             binary_filename("v4.19.0", "windows-x64"),
-            "jeikcode-v4.19.0-windows-x64.exe"
+            "zap-v4.19.0-windows-x64.exe"
         );
         assert_eq!(
             binary_filename("v4.19.0", "windows-arm64"),
-            "jeikcode-v4.19.0-windows-arm64.exe"
+            "zap-v4.19.0-windows-arm64.exe"
         );
     }
 
@@ -3387,11 +3389,11 @@ mod tests {
     fn binary_filename_plain_on_unix_targets() {
         assert_eq!(
             binary_filename("v4.19.0", "darwin-arm64"),
-            "jeikcode-v4.19.0-darwin-arm64"
+            "zap-v4.19.0-darwin-arm64"
         );
         assert_eq!(
             binary_filename("v4.19.0", "linux-x64"),
-            "jeikcode-v4.19.0-linux-x64"
+            "zap-v4.19.0-linux-x64"
         );
     }
 
@@ -3399,11 +3401,11 @@ mod tests {
     fn binary_url_shape() {
         assert_eq!(
             binary_url("6.0.0", "windows-x64"),
-            "https://github.com/jeikl/JeikCode/releases/download/v6.0.0/jeikcode-v6.0.0-windows-x64.exe"
+            "https://github.com/1852676265/Zap/releases/download/v6.0.0/zap-v6.0.0-windows-x64.exe"
         );
         assert_eq!(
             binary_url("v7.0.0", "windows-x64"),
-            "https://github.com/jeikl/JeikCode/releases/download/v7.0.0/jeikcode-v7.0.0-windows-x64.exe"
+            "https://github.com/1852676265/Zap/releases/download/v7.0.0/zap-v7.0.0-windows-x64.exe"
         );
     }
 
@@ -3665,7 +3667,7 @@ mod tests {
         );
         assert_eq!(
             next_page_url(&headers).as_deref(),
-            Some("https://api.github.com/repos/1852676265/JeikCode/releases?per_page=100&page=2")
+            Some("https://api.github.com/repos/1852676265/Zap/releases?per_page=100&page=2")
         );
     }
 
@@ -3728,9 +3730,9 @@ mod tests {
         let ok = tmp.path().join("zap");
         assert!(ensure_writable(&ok).is_ok());
 
-        let bogus = Path::new("/nonexistent-dir-xyzzy-9999/jeikcode");
+        let bogus = Path::new("/nonexistent-dir-xyzzy-9999/zap");
         let err = ensure_writable(bogus).unwrap_err().to_string();
-        assert!(err.contains("sudo jeikcode upgrade"), "got: {}", err);
+        assert!(err.contains("sudo zap upgrade"), "got: {}", err);
     }
 
     #[test]
@@ -3970,17 +3972,13 @@ mod tests {
     #[test]
     fn staged_binary_path_matches_release_artifact_name() {
         let p = staged_binary_path("v4.19.1", "darwin-arm64");
-        assert!(p.ends_with("jeikcode-v4.19.1-darwin-arm64"), "got: {:?}", p);
+        assert!(p.ends_with("zap-v4.19.1-darwin-arm64"), "got: {:?}", p);
     }
 
     #[test]
     fn staged_binary_path_adds_exe_for_windows() {
         let p = staged_binary_path("v4.19.1", "windows-x64");
-        assert!(
-            p.ends_with("jeikcode-v4.19.1-windows-x64.exe"),
-            "got: {:?}",
-            p
-        );
+        assert!(p.ends_with("zap-v4.19.1-windows-x64.exe"), "got: {:?}", p);
     }
 
     // ── download_and_verify integration tests (issue #380) ──────────

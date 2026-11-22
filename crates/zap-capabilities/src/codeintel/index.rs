@@ -1945,11 +1945,11 @@ pub fn init_workspace_index(
 
     let idx = CodeIndex::new();
     let _log_guard = super::index_log::ToolCallGuard::enter(
-        "jeikcode_init",
+        "zap_init",
         serde_json::json!({ "force": force, "root": path_for_display(&root) }),
     );
     // Explicit init must parse every dirty file. The query-time 128 cap is
-    // what turned `jeikcode init --force` into a 127-file stub index.
+    // what turned `zap init --force` into a 127-file stub index.
     let _g = idx.reconcile_workspace(&root, None, on_progress, ReparseBudget::Unlimited);
 
     let mut guard = idx.inner.lock().map_err(|e| e.to_string())?;
@@ -2521,7 +2521,7 @@ fn take_reparse_budget<'a>(
     };
     on_progress(&format!(
         "Code graph: {dirty_found} dirty files; reparsing {MAX_REPARSE_PER_QUERY} this query \
-         ({detail}; run `jeikcode init` to finish)."
+         ({detail}; run `zap init` to finish)."
     ));
     selected
 }
@@ -3792,7 +3792,7 @@ impl CodeIndex {
             if !matches!(budget, ReparseBudget::Unlimited) {
                 on_progress(
                     "Code graph: no index — skipped auto-build. Use read; \
-                     leave `jeikcode init` to the user.",
+                     leave `zap init` to the user.",
                 );
                 let mut guard = match self.inner.lock() {
                     Ok(g) => g,
@@ -3955,7 +3955,7 @@ impl CodeIndex {
                 } else {
                     on_progress(&format!(
                         "Code graph: partial first build — parsed {reparsed} of {walked_len} files \
-                         (run `jeikcode init` to finish)."
+                         (run `zap init` to finish)."
                     ));
                 }
             } else if reparsed > 0 || removed > 0 {

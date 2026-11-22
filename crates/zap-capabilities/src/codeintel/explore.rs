@@ -592,8 +592,14 @@ impl CodeExploreTool {
         };
         // Rollout kill switches. Both participate in the cache key so toggling
         // one mid-session cannot serve a body computed with the other mode.
-        let intent_enabled = std::env::var("JEIKCODE_EXPLORE_INTENT").as_deref() != Ok("0");
-        let candidates_enabled = std::env::var("JEIKCODE_EXPLORE_CANDIDATES").as_deref() != Ok("0");
+        let intent_enabled = std::env::var("ZAP_EXPLORE_INTENT")
+            .or_else(|_| std::env::var("JEIKCODE_EXPLORE_INTENT"))
+            .as_deref()
+            != Ok("0");
+        let candidates_enabled = std::env::var("ZAP_EXPLORE_CANDIDATES")
+            .or_else(|_| std::env::var("JEIKCODE_EXPLORE_CANDIDATES"))
+            .as_deref()
+            != Ok("0");
 
         // Hot-reload thesaurus: rebuild only when a file changed. `reload_from_dirs`
         // starts from embedded defaults, so repeated queries cannot append duplicate
@@ -657,8 +663,14 @@ impl CodeExploreTool {
             .as_deref()
             .map(|s| s.display().to_string())
             .unwrap_or_default();
-        let bm25_enabled = std::env::var("JEIKCODE_EXPLORE_BM25").as_deref() != Ok("0");
-        let concept_enabled = std::env::var("JEIKCODE_EXPLORE_CONCEPT").as_deref() == Ok("1");
+        let bm25_enabled = std::env::var("ZAP_EXPLORE_BM25")
+            .or_else(|_| std::env::var("JEIKCODE_EXPLORE_BM25"))
+            .as_deref()
+            != Ok("0");
+        let concept_enabled = std::env::var("ZAP_EXPLORE_CONCEPT")
+            .or_else(|_| std::env::var("JEIKCODE_EXPLORE_CONCEPT"))
+            .as_deref()
+            == Ok("1");
         let graph_revision = self.index.graph_revision(&root).unwrap_or(0);
         let ignore_revision = crate::ignore_policy::IgnorePolicy::load(&root).fingerprint();
         let cache_key = QueryCacheKey {
@@ -730,7 +742,10 @@ impl CodeExploreTool {
         // is the kill switch; when the candidate index is active it is scoped to
         // the same bounded candidate set as the scorer.
         let bm25_scores: HashMap<SymbolId, f64> = {
-            let enabled = std::env::var("JEIKCODE_EXPLORE_BM25").as_deref() != Ok("0");
+            let enabled = std::env::var("ZAP_EXPLORE_BM25")
+                .or_else(|_| std::env::var("JEIKCODE_EXPLORE_BM25"))
+                .as_deref()
+                != Ok("0");
             if enabled {
                 // 复用 CodeIndex 缓存的 IDF 统计: 首次从 stats.v1.json 加载/
                 // 构建后落盘, 之后每次查询(含所有共享该索引的会话)零重算。
@@ -757,7 +772,10 @@ impl CodeExploreTool {
         // project the query (with thesaurus expansions) onto concept axes so a
         // Chinese query can cosine-match English code without any model.
         let query_concept_vec: Vec<f32> = {
-            let enabled = std::env::var("JEIKCODE_EXPLORE_CONCEPT").as_deref() == Ok("1");
+            let enabled = std::env::var("ZAP_EXPLORE_CONCEPT")
+                .or_else(|_| std::env::var("JEIKCODE_EXPLORE_CONCEPT"))
+                .as_deref()
+                == Ok("1");
             if enabled {
                 super::retrieval::concept_projection(search_text, &query_tokens.expanded_terms)
             } else {

@@ -38,7 +38,7 @@ pub const UPDATE_MANIFEST_URL_ENV: &str = "ZAP_UPDATE_MANIFEST_URL";
 pub const UPDATE_DOWNLOAD_BASE_ENV: &str = "ZAP_UPDATE_DOWNLOAD_BASE";
 pub const DESKTOP_DOWNLOAD_URL_ENV: &str = "ZAP_DESKTOP_DOWNLOAD_URL";
 pub const UPDATE_REPO_ENV: &str = "ZAP_UPDATE_REPO";
-pub const DEFAULT_UPDATE_REPO: &str = "1852676265/JeikCode";
+pub const DEFAULT_UPDATE_REPO: &str = "1852676265/Zap";
 pub const RELAY_URL_ENV: &str = "ZAP_APP_RELAY";
 
 /// Marketplace git URLs, comma-separated. Replaces the default list; an
@@ -74,12 +74,11 @@ const HOSTED_CODINGPLAN_LLM_BASE_URL: &str = "";
 /// `main`, so publishing does not add a commit downstream must pull.
 #[allow(dead_code)]
 const HOSTED_UPDATE_MANIFEST_URL: &str =
-    "https://github.com/1852676265/JeikCode/releases/latest/download/latest.json";
+    "https://github.com/1852676265/Zap/releases/latest/download/latest.json";
 #[allow(dead_code)]
-const HOSTED_UPDATE_DOWNLOAD_BASE: &str =
-    "https://github.com/1852676265/JeikCode/releases/download";
+const HOSTED_UPDATE_DOWNLOAD_BASE: &str = "https://github.com/1852676265/Zap/releases/download";
 #[allow(dead_code)]
-const HOSTED_DESKTOP_DOWNLOAD_URL: &str = "https://github.com/1852676265/JeikCode/releases";
+const HOSTED_DESKTOP_DOWNLOAD_URL: &str = "https://github.com/1852676265/Zap/releases";
 const HOSTED_RELAY_URL: &str = "";
 const HOSTED_MARKETPLACES: &[&str] = &[];
 const HOSTED_AUTO_INSTALL: &[&str] = &[];
@@ -474,7 +473,9 @@ pub fn get_current_update_source() -> UpdateSourceInfo {
             manifest_url: env_manifest.unwrap_or_else(|| update_manifest_url().to_string()),
             download_base: env_base.unwrap_or_else(|| update_download_base().to_string()),
             is_custom: true,
-            source_origin: "Environment variables (JEIKCODE_UPDATE_MANIFEST_URL / JEIKCODE_UPDATE_DOWNLOAD_BASE)".to_string(),
+            source_origin:
+                "Environment variables (ZAP_UPDATE_MANIFEST_URL / ZAP_UPDATE_DOWNLOAD_BASE)"
+                    .to_string(),
         };
     }
 

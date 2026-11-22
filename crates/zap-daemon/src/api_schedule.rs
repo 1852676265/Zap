@@ -1365,7 +1365,7 @@ pub async fn ai_schedule_dialog_api(
     let local_now = Local::now();
     let weekday_num = local_now.weekday().number_from_monday();
     let sys_prompt = format!(
-        "You are the dedicated Scheduled Task Assistant in JeikCode.\n\
+        "You are the dedicated Scheduled Task Assistant in Zap.\n\
         Your sole responsibility is helping the user configure and create automated scheduled tasks using the `set_schedule` tool.\n\n\
         Current local time: {} (weekday={}, where 1=Mon..7=Sun).\n\
         Default target workspace: {}\n\

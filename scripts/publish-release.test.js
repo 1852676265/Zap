@@ -59,12 +59,9 @@ test('changelog section skips release sync commits and renders English section, 
 
 test('release notes desktop links do not 404 (uses dot instead of space) and install table is purely English', () => {
   const notes = renderReleaseNotes('v7.1.49', '## v7.1.49 (2026-10-04)\n\nSome changes');
-  // 桌面端安装包文件名必须是 JeikCode.Desktop_ 而非 JeikCode%20Desktop_
-  assert.match(notes, /JeikCode\.Desktop_7\.1\.49_x64-setup\.exe/);
-  assert.match(notes, /JeikCode\.Desktop_7\.1\.49_aarch64\.dmg/);
-  assert.match(notes, /JeikCode\.Desktop_7\.1\.49_x64\.dmg/);
-  assert.match(notes, /JeikCode\.Desktop_7\.1\.49_amd64\.deb/);
-  assert.match(notes, /JeikCode\.Desktop_7\.1\.49_amd64\.AppImage/);
+  assert.match(notes, /https:\/\/github\.com\/1852676265\/Zap\/releases\/download\/v7\.1\.49\/Zap_7\.1\.49_x64-setup\.exe/);
+  assert.match(notes, /https:\/\/github\.com\/1852676265\/Zap\/releases\/download\/v7\.1\.49\/Zap\.ipa/);
+  assert.match(notes, /https:\/\/raw\.githubusercontent\.com\/1852676265\/Zap\/main\/scripts\/install\.ps1/);
   assert.doesNotMatch(notes, /JeikCode%20Desktop_/);
 
   // 安装路由部分严格保持全英文，杜绝中英斜杠混合格式
@@ -91,21 +88,18 @@ test('cargo lock only bumps workspace package versions', () => {
   assert.match(bumped, /name = "serde"\nversion = "1\.0\.0"/);
 });
 
-test('publish writes one manifest and refuses a partial set', () => {
+test('publish writes one manifest and refuses missing target binaries', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jeik-publish-'));
   const dist = path.join(root, 'dist');
   fs.mkdirSync(dist);
   fs.mkdirSync(path.join(root, 'scripts'));
   fs.mkdirSync(path.join(root, 'crates', 'demo'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'crates', 'demo', 'Cargo.toml'), 'name = "jeikcode-demo"\n');
+  fs.writeFileSync(path.join(root, 'crates', 'demo', 'Cargo.toml'), 'name = "zap-demo"\n');
   fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace.package]\nversion = "7.1.7"\n');
   fs.writeFileSync(path.join(root, 'latest.json'), '{"version":"v7.1.7"}\n');
   const tag = 'v7.1.30';
-  for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64']) {
-    fs.writeFileSync(path.join(dist, assetName(tag, target)), target);
-  }
-  assert.throws(() => collectBinaries(dist, tag), /windows-arm64/);
-  fs.writeFileSync(path.join(dist, assetName(tag, 'windows-arm64')), 'arm');
+  assert.throws(() => collectBinaries(dist, tag), /windows-x64/);
+  fs.writeFileSync(path.join(dist, assetName(tag, 'windows-x64')), 'win-x64');
   publish({
     root,
     distDir: dist,
@@ -115,11 +109,11 @@ test('publish writes one manifest and refuses a partial set', () => {
   });
   const manifest = JSON.parse(fs.readFileSync(path.join(dist, 'latest.json'), 'utf8'));
   assert.equal(manifest.version, tag);
-  assert.equal(Object.keys(manifest.binaries).length, 6);
-  assert.equal(manifest.binaries['linux-arm64'].size, Buffer.byteLength('linux-arm64'));
+  assert.equal(Object.keys(manifest.binaries).length, 1);
+  assert.equal(manifest.binaries['windows-x64'].size, Buffer.byteLength('win-x64'));
   assert.match(fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8'), /version = "7\.1\.7"/);
   assert.equal(fs.readFileSync(path.join(root, 'latest.json'), 'utf8'), '{"version":"v7.1.7"}\n');
-  assert.match(fs.readFileSync(path.join(root, 'release_notes.md'), 'utf8'), /arm64/);
+  assert.match(fs.readFileSync(path.join(root, 'release_notes.md'), 'utf8'), /v7\.1\.30/);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -163,7 +157,7 @@ test('buildReleaseSection preserves English block, separator, and Chinese block 
   // 验证生成的 Release Notes 整体格式：纯英文安装路由 -> 英文段落 -> 分割线 -> 中文段落
   const fullNotes = renderReleaseNotes(tag, section1);
   assert.match(fullNotes, /^## 🚀 Downloads & Installation\n/);
-  assert.match(fullNotes, /JeikCode\.Desktop_7\.1\.50_x64-setup\.exe/);
+  assert.match(fullNotes, /Zap_7\.1\.50_x64-setup\.exe/);
   assert.match(fullNotes, /Upstream HTTP\/2/);
   assert.match(fullNotes, /---\n\n- \*\*\[上游 HTTP\/2 协议\]/);
 

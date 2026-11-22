@@ -21,7 +21,7 @@ import { ConfirmModalHost } from './components/ConfirmDialog';
 import { ServerSwitcherModal } from './components/ServerSwitcherModal';
 import { PluginCenterHostApp } from './custom/custom-registry';
 import { zapPluginKernel, usePluginKernelVersion } from './custom/plugin-kernel';
-import { parseFilePathAndLines } from './lib/displayPath';
+import { isUserHomeDir, parseFilePathAndLines } from './lib/displayPath';
 import { dropEditorTabSnapshot, mainEditorStateKey } from './lib/editorTabState';
 import { languageOptions } from './i18n';
 
@@ -199,6 +199,7 @@ export function App() {
     () => rememberedPreviewRef.current?.project_hash ?? '',
   );
   const [pending, setPending] = useState<any | null>(null);
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [liveReview, setLiveReview] = useState<LiveReviewState | null>(null);
   // 跨实例增量流（每实例一条）：侧栏/通知 dock 各自订阅自己需要的增量，
   // 全程按 id 就地 upsert/remove，无周期性轮询、无整表重拉。
@@ -377,10 +378,10 @@ export function App() {
       const saved = localStorage.getItem('jeikcode:right-panel-collapsed');
       const collapsed = saved === 'false' ? false : saved === 'true' ? true : (typeof window !== 'undefined' ? window.innerWidth < 1280 : true);
       const savedWidth = localStorage.getItem('jeikcode:right-panel-width');
-      const width = savedWidth ? parseInt(savedWidth, 10) : 360;
-      return { collapsed, width: Number.isFinite(width) ? width : 360 };
+      const width = savedWidth ? parseInt(savedWidth, 10) : 480;
+      return { collapsed, width: Number.isFinite(width) ? width : 480 };
     } catch {
-      return { collapsed: true, width: 360 };
+      return { collapsed: true, width: 480 };
     }
   });
   const prevRightPanelCollapsedRef = useRef<boolean>(!initialRightPanelOpen);
@@ -1013,8 +1014,11 @@ export function App() {
       .catch(() => getProject())
       .then((p) => {
         if (cancelled || !p) return;
-        if (p.working_dir) setCwd((c) => c || p.working_dir);
-        if (p.project_hash) setProjectHash((h) => h || p.project_hash!);
+        // 只有当服务端返回的不是操作系统用户主目录时，才作为工程项目 seed
+        if (p.working_dir && !isUserHomeDir(p.working_dir)) {
+          setCwd((c) => c || p.working_dir);
+          if (p.project_hash) setProjectHash((h) => h || p.project_hash!);
+        }
       })
       .catch(() => {
         // Ignore; cwd stays empty
@@ -1259,7 +1263,11 @@ export function App() {
           updated_at: found.updated_at,
         };
         rememberSession(rememberedSessionRef.current);
-        if (found.working_dir) setCwd(found.working_dir);
+        if (found.working_dir && found.working_dir !== '__global__' && !isUserHomeDir(found.working_dir)) {
+          setCwd(found.working_dir);
+        } else {
+          setCwd('');
+        }
         if (found.project_hash) setProjectHash(found.project_hash);
         // URL 直达也是“已查看”：让其它实例的完成徽标一起熄灭。
         markSessionSeen(found.id);
@@ -1313,7 +1321,11 @@ export function App() {
       .then((found) => {
         if (cancelled || !found) return;
         setActiveSession(found);
-        if (found.working_dir) setCwd(found.working_dir);
+        if (found.working_dir && found.working_dir !== '__global__' && !isUserHomeDir(found.working_dir)) {
+          setCwd(found.working_dir);
+        } else {
+          setCwd('');
+        }
         if (found.project_hash) setProjectHash(found.project_hash);
         setSessionListVersion((v) => v + 1);
       })
@@ -1335,17 +1347,27 @@ export function App() {
     forgetRememberedSession();
     setSessionId(null);
     setActiveSession(null);
-    if (targetCwd && targetCwd !== '~') {
+    if (!targetCwd || targetCwd === '__global__' || isUserHomeDir(targetCwd)) {
+      setCwd('');
+      setProjectHash('');
+    } else if (targetCwd !== '~') {
+      if (targetCwd !== cwd) setProjectHash('');
       setCwd(targetCwd);
     }
   }
 
-  function handleNewSession(targetDir?: string) {
+  function handleNewSession(targetDir?: string, initialPrompt?: string) {
     setActiveWorkbenchView('chat');
     setSidebarOpen(false);
     setActiveMainTabId('chat');
-    // Top-level 「新建对话」 stays in the current/serve workspace.
-    openNewSession(targetDir || cwd || undefined);
+    if (initialPrompt) {
+      setPendingPrompt(initialPrompt);
+    }
+    // 采用类似 DeepSeek 的解耦设计：
+    // 若显式传入 targetDir（如在项目卡片、落地页项目选择器中点选目录），则绑定指定工程；
+    // 若未传入 targetDir（即用户点击顶栏或侧栏全局「+ 新建对话」）：
+    // 默认创建纯净独立的全局新对话（空工作区），绝不强行绑定操作系统主目录或非明确工程。
+    openNewSession(targetDir !== undefined ? targetDir : '');
   }
 
   /** 完成对勾是一次性提示：进入该会话即熄灭，绝不再重复出现。 */
@@ -1370,10 +1392,12 @@ export function App() {
     setSessionId(session.id);
     setActiveSession(session);
     setActiveMainTabId('chat');
-    if (session.working_dir) {
+    if (session.working_dir && session.working_dir !== '__global__' && !isUserHomeDir(session.working_dir)) {
       setCwd(session.working_dir);
+    } else {
+      setCwd('');
     }
-    if (session.project_hash) setProjectHash(session.project_hash);
+    setProjectHash(session.project_hash || '');
     setSidebarOpen(false);
     markSessionSeen(session.id);
   }
@@ -1420,10 +1444,15 @@ export function App() {
   // 当从外部（TUI `/cd` 等）收到工作目录变更通知时：
   // 更新 cwd 并拉取最新的项目信息以更新 projectHash。
   function handleCwdChanged(newCwd: string) {
-    setCwd(newCwd);
+    if (!newCwd || newCwd === '__global__' || isUserHomeDir(newCwd)) {
+      setCwd('');
+      setProjectHash('');
+    } else {
+      setCwd(newCwd);
+    }
     getProject()
       .then((p) => {
-        if (p.project_hash) {
+        if (p.project_hash && !isUserHomeDir(p.working_dir)) {
           setProjectHash(p.project_hash);
         }
         setSessionListVersion((v) => v + 1);
@@ -2217,6 +2246,8 @@ export function App() {
             onCwdChanged={handleCwdChanged}
             onLanding={setIsLanding}
             skillInsert={skillInsert}
+            pendingPrompt={pendingPrompt}
+            onConsumedPendingPrompt={() => setPendingPrompt(null)}
             onSessionRenamed={(name) => {
               setActiveSession((prev) => (prev ? { ...prev, name } : prev));
               setOptimisticSessions((prev) => {
@@ -2264,7 +2295,7 @@ export function App() {
         <SystemSettingsDialog initialTab="models" onClose={() => setSettingsSection(null)} />
       )}
       {settingsSection === 'system' && (
-        <SystemSettingsDialog initialTab="models" onClose={() => setSettingsSection(null)} />
+        <SystemSettingsDialog initialTab="desktop" onClose={() => setSettingsSection(null)} />
       )}
       {settingsSection === 'agent_mode' && (
         <SystemSettingsDialog

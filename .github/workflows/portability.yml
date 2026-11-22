@@ -37,7 +37,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Isolate runtime home
-        run: echo "JEIKCODE_HOME=$RUNNER_TEMP/beta-portability-home" >> "$GITHUB_ENV"
+        run: echo "ZAP_HOME=$RUNNER_TEMP/beta-portability-home" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
@@ -47,16 +47,16 @@ jobs:
       - name: Required UTF-8 hook diagnostic
         run: |
           set -o pipefail
-          cargo test -p jeikcode-capabilities --features cc-hooks --locked --lib cc_hooks::tests::diagnostic_hook_preserves_utf8_json_stdin_stdout_stderr_and_exit -- --exact --test-threads=1 2>&1 | tee "$RUNNER_TEMP/utf8-hook.log"
+          cargo test -p zap-capabilities --features cc-hooks --locked --lib cc_hooks::tests::diagnostic_hook_preserves_utf8_json_stdin_stdout_stderr_and_exit -- --exact --test-threads=1 2>&1 | tee "$RUNNER_TEMP/utf8-hook.log"
           grep -F 'test result: ok. 1 passed; 0 failed;' "$RUNNER_TEMP/utf8-hook.log"
       - name: Native library regression (one Cargo invocation)
         run: |
           set -o pipefail
-          cargo test --locked --lib -p jeikcode-capabilities -p jeikcode-coding -p jeikcode-telemetry 2>&1 | tee "$RUNNER_TEMP/native-test.log"
+          cargo test --locked --lib -p zap-capabilities -p zap-coding -p zap-telemetry 2>&1 | tee "$RUNNER_TEMP/native-test.log"
       - name: TUI library contracts
         run: |
           set -o pipefail
-          cargo test --locked -p jeikcode-tuix --lib -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tui-test.log"
+          cargo test --locked -p zap-tuix --lib -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/tui-test.log"
       - name: Record native result
         if: always()
         env:
@@ -89,7 +89,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Isolate runtime home
-        run: echo "JEIKCODE_HOME=$RUNNER_TEMP/beta-portability-home" >> "$GITHUB_ENV"
+        run: echo "ZAP_HOME=$RUNNER_TEMP/beta-portability-home" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
@@ -101,7 +101,7 @@ jobs:
           FEATURES: ${{ matrix.features }}
         run: |
           set -o pipefail
-          cargo test --locked -p jeikcode-capabilities --lib --no-default-features --features "$FEATURES" 2>&1 | tee "$RUNNER_TEMP/subset-test.log"
+          cargo test --locked -p zap-capabilities --lib --no-default-features --features "$FEATURES" 2>&1 | tee "$RUNNER_TEMP/subset-test.log"
       - name: Record subset result
         if: always()
         env:

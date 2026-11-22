@@ -182,7 +182,7 @@ pub fn is_newer_version(latest: &str, current: &str) -> bool {
 
 /// 探测当前是否在桌面端环境
 pub fn is_desktop_environment() -> bool {
-    std::env::var("JEIKCODE_DESKTOP").is_ok()
+    std::env::var_os("ZAP_DESKTOP").is_some() || std::env::var_os("JEIKCODE_DESKTOP").is_some()
 }
 
 /// `GET /repos/{repo}/releases/latest`，仓库取自更新源配置，不写死任何上游地址。
@@ -215,7 +215,7 @@ struct GitHubReleaseAsset {
 
 fn create_update_client() -> Option<reqwest::Client> {
     reqwest::Client::builder()
-        .user_agent(concat!("jeikcode/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("zap/", env!("CARGO_PKG_VERSION")))
         .default_headers({
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert(
@@ -283,13 +283,15 @@ fn find_desktop_installer_url_in_assets(assets: &[GitHubReleaseAsset]) -> Option
 
 fn find_cli_asset_url(assets: &[GitHubReleaseAsset], tag: &str) -> Option<String> {
     if let Some(target) = zap_updater::detect_target() {
-        let expected_name = format!("jeikcode-{tag}-{target}");
-        let expected_exe = format!("{expected_name}.exe");
-        if let Some(a) = assets
-            .iter()
-            .find(|a| a.name == expected_name || a.name == expected_exe)
-        {
-            return Some(a.browser_download_url.clone());
+        for prefix in ["zap", "jeikcode"] {
+            let expected_name = format!("{prefix}-{tag}-{target}");
+            let expected_exe = format!("{expected_name}.exe");
+            if let Some(a) = assets
+                .iter()
+                .find(|a| a.name == expected_name || a.name == expected_exe)
+            {
+                return Some(a.browser_download_url.clone());
+            }
         }
     }
     None
@@ -345,7 +347,7 @@ async fn resolve_desktop_installer_url(version: &str) -> Option<String> {
         zap_config::endpoints::update_repo()
     );
     let client = reqwest::Client::builder()
-        .user_agent(concat!("jeikcode/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("zap/", env!("CARGO_PKG_VERSION")))
         .build()
         .ok()?;
 

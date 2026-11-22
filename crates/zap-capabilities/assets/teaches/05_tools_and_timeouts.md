@@ -91,7 +91,7 @@ no_fold_tools = [               # 白名单工具列表：输出直接原样返�
 
 - 终端类工具的生效阈值 = `min(max_bytes, terminal_max_bytes)`；调低任意一项都会对终端收紧。
 - 豁免工具（`no_fold_tools` 名单 + 工具自带 `never_truncate_result()`）完全跳过压缩。
-- 两个阈值均支持 env 覆盖：`JEIKCODE_TOOL_OUTPUT_THRESHOLD_BYTES` / `JEIKCODE_TOOL_OUTPUT_TERMINAL_THRESHOLD_BYTES`（env 优先于 config.toml）。
+- 两个阈值均支持 env 覆盖：`ZAP_TOOL_OUTPUT_THRESHOLD_BYTES` / `ZAP_TOOL_OUTPUT_TERMINAL_THRESHOLD_BYTES`（env 优先于 config.toml）。
 
 ---
 
@@ -99,7 +99,7 @@ no_fold_tools = [               # 白名单工具列表：输出直接原样返�
 
 ```toml
 [tools.todo]
-enabled = true                  # 是否开启任务清单机制（支持环境变量 JEIKCODE_TODO 覆盖）
+enabled = true                  # 是否开启任务清单机制（支持环境变量 ZAP_TODO 覆盖）
 eager = "auto"                  # 积极度："auto" (按需识别) | "preferred" (高频提醒) | "always" (首轮强制创建)
 ```
 
@@ -120,7 +120,7 @@ compact_threshold = 0.9         # 自动压缩触发水位比例（0.1–1.0；>
 # compact_max_tokens = 350000   # 可选固定自动压缩 Token 上限（取与比例换算值中更严格的一方）
 ```
 
-环境变量覆盖：`JEIKCODE_CONNECT_TIMEOUT_SECS`、`JEIKCODE_OPEN_TIMEOUT_SECS`、`JEIKCODE_TTFT_SECS`（或 `JEIKCODE_FIRST_TOKEN_TIMEOUT_SECS`）、`JEIKCODE_TRANSITION_SECS`、`JEIKCODE_STREAMING_SECS`（或 `JEIKCODE_STREAM_TIMEOUT_SECS`）。内容钟为 `0` 表示关闭该档。SSE ping / `ResponseId` / `Usage` 不重置内容滑动窗口。
+环境变量覆盖：`ZAP_CONNECT_TIMEOUT_SECS`、`ZAP_OPEN_TIMEOUT_SECS`、`ZAP_TTFT_SECS`（或 `ZAP_FIRST_TOKEN_TIMEOUT_SECS`）、`ZAP_TRANSITION_SECS`、`ZAP_STREAMING_SECS`（或 `ZAP_STREAM_TIMEOUT_SECS`）。内容钟为 `0` 表示关闭该档。SSE ping / `ResponseId` / `Usage` 不重置内容滑动窗口。
 
 ### 自动重试（统一阶梯）
 
@@ -182,4 +182,4 @@ ai_session_naming = true        # 异步通过 AI 自动生成会话标题
 - **热生效触发方式**：
   1. **Agent 端**：调用内置工具 `zap_config(action="reload")`，当前回合结束后在下一轮对话立即生效。
   2. **用户端**：在 WebUI 或 TUI 终端中输入 `/reload` 命令即刻重新加载。
-- 两种方式均**无需重启 JeikCode 进程**。
+- 两种方式均**无需重启 Zap 进程**。

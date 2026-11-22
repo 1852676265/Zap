@@ -187,6 +187,7 @@ function bumpAllFiles(newVersion) {
   // 11. Cargo.lock (Workspace packages)
   const workspaceCrates = [
     'zap',
+    'zap-agent-teams',
     'zap-auth',
     'zap-capabilities',
     'zap-clix',
@@ -194,6 +195,7 @@ function bumpAllFiles(newVersion) {
     'zap-config',
     'zap-daemon',
     'zap-kernel',
+    'zap-neural-memory',
     'zap-review',
     'zap-telemetry',
     'zap-tuix',
@@ -228,7 +230,7 @@ function main() {
   const nextVersion = computeNextVersion(current, targetType);
   const nextTag = `v${nextVersion}`;
 
-  console.log(`\n📦 JeikCode Version Bump`);
+  console.log(`\n📦 Zap Version Bump`);
   console.log(`   Current version: ${current}`);
   console.log(`   Target version:  ${nextVersion}`);
   console.log(`   Target Git tag:  ${nextTag}\n`);

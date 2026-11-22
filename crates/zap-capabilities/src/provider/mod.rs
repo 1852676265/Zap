@@ -101,7 +101,12 @@ static WIRE_DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// through here. Ported from core's v1 `JEIKCODE_WIRE_DUMP` (same env + `wire-dump/` dir),
 /// but `config_dir()` honors `$JEIKCODE_HOME` (v1 used `$HOME`).
 pub(crate) fn wire_dump_request(model: &str, body: &Value) {
-    if std::env::var("JEIKCODE_WIRE_DUMP").ok().as_deref() != Some("1") {
+    let dump_enabled = std::env::var("ZAP_WIRE_DUMP")
+        .or_else(|_| std::env::var("JEIKCODE_WIRE_DUMP"))
+        .ok()
+        .as_deref()
+        == Some("1");
+    if !dump_enabled {
         return;
     }
     wire_dump_to(&crate::paths::config_dir().join("wire-dump"), model, body);

@@ -10,33 +10,33 @@
 3. **Priority**: For identical server names, project-level configuration overrides global-level configuration.
 
 ### 1.2 CLI Quick Management for MCP Tools
-Use the `jeikcode mcp` commands to manage tools automatically without manual JSON editing:
+Use the `zap mcp` commands to manage tools automatically without manual JSON editing:
 
 ```bash
 # Add to current project .mcp.json (stdio process mode)
-jeikcode mcp add playwright npx @playwright/mcp@latest
+zap mcp add playwright npx @playwright/mcp@latest
 
 # Add HTTP / SSE remote MCP server (supports headers and trust flag)
-jeikcode mcp add-http remote-api https://mcp.example.com/sse -H "Authorization: Bearer secret-token" --trust
+zap mcp add-http remote-api https://mcp.example.com/sse -H "Authorization: Bearer secret-token" --trust
 
 # Add to global ~/.zap/mcp.json
-jeikcode mcp add playwright npx -y @playwright/mcp@latest --global
+zap mcp add playwright npx -y @playwright/mcp@latest --global
 
 # List configured MCP servers
-jeikcode mcp list
-jeikcode mcp ls --json
+zap mcp list
+zap mcp ls --json
 
 # Remove an MCP server (safely removes and cleans keys)
-jeikcode mcp remove playwright
-jeikcode mcp rm remote-api --global
+zap mcp remove playwright
+zap mcp rm remote-api --global
 
 # Specify workspace target directory
-jeikcode mcp add playwright npx @playwright/mcp@latest -C /path/to/repo
+zap mcp add playwright npx @playwright/mcp@latest -C /path/to/repo
 
 # GitHub Official OAuth MCP
-jeikcode mcp add-github-oauth github --global
-jeikcode mcp login github
-jeikcode mcp logout github
+zap mcp add-github-oauth github --global
+zap mcp login github
+zap mcp logout github
 ```
 
 ### 1.3 `mcp.json` Standard Schema
@@ -76,7 +76,7 @@ jeikcode mcp logout github
 - **`scope` Lifecycle Mode (`"global"` vs `"project"` vs `"session"`)**:
   - `"global"`: Application-wide shared singleton. Reused across all projects and sessions, with lifecycle spanning the entire application. Best for stateless cloud or public APIs (Brave web search, translation) for maximum resource efficiency.
   - `"project"` (default): Project-shared singleton. All sessions under the same project share one background child process, with lifecycle tied to the project. Best for stateless or workspace tools (filesystem, git, code analysis).
-  - `"session"`: Isolated per session. Each session spawns an independent child process, injecting `JEIKCODE_SESSION_ID=<current_session_id>` into the child environment. Best for browsers (Playwright), stateful debuggers, or tools requiring dedicated sandboxes.
+  - `"session"`: Isolated per session. Each session spawns an independent child process, injecting `ZAP_SESSION_ID=<current_session_id>` into the child environment. Best for browsers (Playwright), stateful debuggers, or tools requiring dedicated sandboxes.
   - **Process Idle Reclamation**: Under `scope: "session"`, when switching away from a session and no tool calls occur for longer than `[mcp.session] idle_ttl_secs` (default 600s / 10 minutes), the system automatically reaps the process to free memory; set `idle_ttl_secs = 0` in `config.toml` to disable idle reclamation.
 - **`maxConcurrentCalls` Concurrency Cap (Per-Server Concurrency Control)**:
   - **Default Value**: `8` (Unset defaults to 8, allowing up to 8 concurrent requests simultaneously; optimal for stateless read-heavy services like filesystem or web search);
@@ -101,7 +101,7 @@ The daemon provides programmatic endpoints for MCP management with automatic liv
 
 ### 1.6 Reload & Effective Semantics
 
-Modifying MCP configuration **never requires restarting JeikCode**:
+Modifying MCP configuration **never requires restarting Zap**:
 
 | Action Channel | Command / Gesture | Semantics |
 | :--- | :--- | :--- |

@@ -322,6 +322,7 @@ async fn run_command_hook(
     crate::process_utils::suppress_console_window(&mut cmd);
     if let Some(root) = &hook.plugin_root {
         cmd.env("CLAUDE_PLUGIN_ROOT", root);
+        cmd.env("ZAP_PLUGIN_ROOT", root);
         cmd.env("JEIKCODE_PLUGIN_ROOT", root);
     }
     // CI failures must distinguish deadline expiry from launch/path failures without

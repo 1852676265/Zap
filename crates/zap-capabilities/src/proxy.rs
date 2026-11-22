@@ -15,6 +15,7 @@
 use std::env;
 
 /// Process proxy mode env var, published by `apply_process_proxy_config` at startup.
+const ZAP_MODE_ENV: &str = "ZAP_PROXY_MODE";
 const MODE_ENV: &str = "JEIKCODE_PROXY_MODE";
 /// The one explicit mode value that means "bypass all proxies".
 const NO_PROXY_MODE: &str = "no_proxy";
@@ -29,7 +30,12 @@ fn mode_disables_proxy(mode: Option<&str>) -> bool {
 
 /// Whether outbound clients must bypass all proxies for the current process.
 fn proxy_disabled() -> bool {
-    mode_disables_proxy(env::var(MODE_ENV).ok().as_deref())
+    mode_disables_proxy(
+        env::var(ZAP_MODE_ENV)
+            .or_else(|_| env::var(MODE_ENV))
+            .ok()
+            .as_deref(),
+    )
 }
 
 /// The env override that caps outbound TLS at 1.2 (kept in sync with
@@ -37,10 +43,12 @@ fn proxy_disabled() -> bool {
 /// `MODE_ENV` is: this module must build in config-less feature combos). Only read
 /// on the config-less path; the `provider` build defers to `zap_config::tls`.
 #[cfg(not(feature = "provider"))]
+const ZAP_TLS_MAX_ENV: &str = "ZAP_TLS_MAX";
+#[cfg(not(feature = "provider"))]
 const TLS_MAX_ENV: &str = "JEIKCODE_TLS_MAX";
 
 /// Whether the user explicitly requested a process-wide TLS 1.2 ceiling.
-/// Automatic JeikCode fallback is endpoint-aware and lives in the provider.
+/// Automatic fallback is endpoint-aware and lives in the provider.
 fn force_tls12() -> bool {
     #[cfg(feature = "provider")]
     {
@@ -48,7 +56,8 @@ fn force_tls12() -> bool {
     }
     #[cfg(not(feature = "provider"))]
     {
-        env::var(TLS_MAX_ENV)
+        env::var(ZAP_TLS_MAX_ENV)
+            .or_else(|_| env::var(TLS_MAX_ENV))
             .ok()
             .map(|raw| {
                 let v = raw.trim();

@@ -201,6 +201,7 @@ impl StdioClient {
         if let Some(session_id) = &self.session_id {
             let trimmed = session_id.trim();
             if !trimmed.is_empty() && !trimmed.contains('\0') {
+                cmd.env("ZAP_SESSION_ID", trimmed);
                 cmd.env("JEIKCODE_SESSION_ID", trimmed);
             }
         }

@@ -86,7 +86,7 @@ no_fold_tools = [               # Whitelist tools: returned raw and never compre
 
 - Effective threshold for terminal tools = `min(max_bytes, terminal_max_bytes)`.
 - Exempt tools (`no_fold_tools` list + tools declaring `never_truncate_result()`) completely bypass folding.
-- Both thresholds support environment variable overrides: `JEIKCODE_TOOL_OUTPUT_THRESHOLD_BYTES` / `JEIKCODE_TOOL_OUTPUT_TERMINAL_THRESHOLD_BYTES` (environment variables take precedence over config.toml).
+- Both thresholds support environment variable overrides: `ZAP_TOOL_OUTPUT_THRESHOLD_BYTES` / `ZAP_TOOL_OUTPUT_TERMINAL_THRESHOLD_BYTES` (environment variables take precedence over config.toml).
 
 ---
 
@@ -94,7 +94,7 @@ no_fold_tools = [               # Whitelist tools: returned raw and never compre
 
 ```toml
 [tools.todo]
-enabled = true                  # Enable task checklist mechanism (overridable via JEIKCODE_TODO env)
+enabled = true                  # Enable task checklist mechanism (overridable via ZAP_TODO env)
 eager = "auto"                  # Proactivity: "auto" (intent-based) | "preferred" (frequent prompts) | "always" (forced creation on turn 1)
 ```
 
@@ -115,7 +115,7 @@ compact_threshold = 0.9         # Auto-compaction watermark fraction (0.1–1.0;
 # compact_max_tokens = 350000   # Optional hard token cap for auto-compaction (stricter limit wins)
 ```
 
-Environment variable overrides: `JEIKCODE_CONNECT_TIMEOUT_SECS`, `JEIKCODE_OPEN_TIMEOUT_SECS`, `JEIKCODE_TTFT_SECS` (or `JEIKCODE_FIRST_TOKEN_TIMEOUT_SECS`), `JEIKCODE_TRANSITION_SECS`, `JEIKCODE_STREAMING_SECS` (or `JEIKCODE_STREAM_TIMEOUT_SECS`). Setting to `0` disables that specific timeout stage. SSE ping, `ResponseId`, and `Usage` do not reset the content sliding window.
+Environment variable overrides: `ZAP_CONNECT_TIMEOUT_SECS`, `ZAP_OPEN_TIMEOUT_SECS`, `ZAP_TTFT_SECS` (or `ZAP_FIRST_TOKEN_TIMEOUT_SECS`), `ZAP_TRANSITION_SECS`, `ZAP_STREAMING_SECS` (or `ZAP_STREAM_TIMEOUT_SECS`). Setting to `0` disables that specific timeout stage. SSE ping, `ResponseId`, and `Usage` do not reset the content sliding window.
 
 ### Automatic retries (unified ladder)
 
@@ -177,4 +177,4 @@ ai_session_naming = true        # Asynchronously generate session titles using A
 - **Reload Triggers**:
   1. **Agent Side**: Invoke the built-in tool `zap_config(action="reload")`; takes effect on the next turn immediately after the current turn completes.
   2. **User Side**: Enter `/reload` in WebUI or TUI terminal to reread configuration immediately.
-- Neither method **requires restarting the JeikCode process**.
+- Neither method **requires restarting the Zap process**.

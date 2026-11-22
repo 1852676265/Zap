@@ -180,9 +180,10 @@ pub fn asset_or_index(path: &str) -> Option<std::borrow::Cow<'static, [u8]>> {
 
 /// axum handler：服务任意 webui 路径。
 pub async fn serve_webui(uri: Uri) -> Response {
-    // dev 模式：设置 JEIKCODE_WEBUI_DEV=http://localhost:5173 后，
+    // dev 模式：设置 ZAP_WEBUI_DEV=http://localhost:5173 (兼容 JEIKCODE_WEBUI_DEV) 后，
     // 重定向到 vite dev server，前端开发可享受热更新而非嵌入 bundle。
-    if let Ok(dev) = std::env::var("JEIKCODE_WEBUI_DEV") {
+    if let Ok(dev) = std::env::var("ZAP_WEBUI_DEV").or_else(|_| std::env::var("JEIKCODE_WEBUI_DEV"))
+    {
         let target = format!("{}{}", dev.trim_end_matches('/'), uri.path());
         return axum::response::Redirect::temporary(&target).into_response();
     }

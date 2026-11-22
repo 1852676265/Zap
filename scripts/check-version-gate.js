@@ -9,7 +9,7 @@ const fs = require('fs');
 const https = require('https');
 
 const tag = process.env.TAG_NAME || process.argv[2];
-const repo = process.env.REPO || process.argv[3] || '1852676265/JeikCode';
+const repo = process.env.REPO || process.argv[3] || '1852676265/Zap';
 const token = process.env.GITHUB_TOKEN;
 
 if (!tag) {
@@ -72,7 +72,7 @@ async function fetchPreviousGitHubRelease(currentTag) {
   const url = `https://api.github.com/repos/${repo}/releases?per_page=15`;
   const options = {
     headers: {
-      'User-Agent': 'JeikCode-Release-Gate',
+      'User-Agent': 'Zap-Release-Gate',
       'Accept': 'application/vnd.github+json',
       'Authorization': `token ${token}`
     }

@@ -4,13 +4,13 @@
 
 ## 1. Default Update Sources & Environment Overrides
 
-JeikCode pulls updates and version manifests from the official GitHub repository by default:
+Zap pulls updates and version manifests from the official GitHub repository by default:
 
 | Item | Default Endpoint | Environment Variable Override | Description |
 | :--- | :--- | :--- | :--- |
-| **Version Manifest** | `https://github.com/1852676265/JeikCode/releases/latest/download/latest.json` | `JEIKCODE_UPDATE_MANIFEST_URL` | Contains platform versions, SHA256 checksums, and asset sizes. |
-| **Download Base** | `https://github.com/1852676265/JeikCode/releases/download` | `JEIKCODE_UPDATE_DOWNLOAD_BASE` | Concatenates `/{version}/{asset_name}` to download binary packages. |
-| **Official Repository** | `https://github.com/1852676265/JeikCode` | - | Official source repository. |
+| **Version Manifest** | `https://github.com/1852676265/Zap/releases/latest/download/latest.json` | `ZAP_UPDATE_MANIFEST_URL` | Contains platform versions, SHA256 checksums, and asset sizes. |
+| **Download Base** | `https://github.com/1852676265/Zap/releases/download` | `ZAP_UPDATE_DOWNLOAD_BASE` | Concatenates `/{version}/{asset_name}` to download binary packages. |
+| **Official Repository** | `https://github.com/1852676265/Zap` | - | Official source repository. |
 
 ---
 
@@ -24,10 +24,10 @@ Configure at the **very top of `~/.zap/config.toml` (before any `[table]`)**:
 # ==============================================================================
 
 # Custom version manifest URL
-update_manifest_url = "https://github.com/1852676265/JeikCode/releases/latest/download/latest.json"
+update_manifest_url = "https://github.com/1852676265/Zap/releases/latest/download/latest.json"
 
 # Custom binary download base URL
-update_download_base = "https://github.com/1852676265/JeikCode/releases/download"
+update_download_base = "https://github.com/1852676265/Zap/releases/download"
 
 # Automatically check and download updates in background (default false)
 auto_update = false
@@ -46,24 +46,24 @@ Entering `/update` or `/upgrade` in the TUI/WebUI slash command bar is completel
 
 ```bash
 # Interactive upgrade: Downloads new release and displays config diff dialog for selective overwrite
-jeikcode update
-jeikcode upgrade
+zap update
+zap upgrade
 
 # Fully unattended silent upgrade: Applies official default updates (prompts, rules, teaches, thesaurus); strictly preserves user mcp.json and skills
-jeikcode update -y
-jeikcode upgrade --yes
+zap update -y
+zap upgrade --yes
 
 # Set custom update source and persist to config.toml
-jeikcode update set https://github.com/1852676265/JeikCode
+zap update set https://github.com/1852676265/Zap
 
 # Inspect currently effective update endpoints
-jeikcode update get
+zap update get
 
 # Reset to official default update sources
-jeikcode update reset
+zap update reset
 
 # Quick rollback to previous version
-jeikcode update rollback
+zap update rollback
 ```
 
 ---
@@ -72,7 +72,7 @@ jeikcode update rollback
 
 ```bash
 # Start Web daemon and register as system service (auto-start on boot)
-jeikcode --host 0.0.0.0 --port 13457
+zap --host 0.0.0.0 --port 13457
 ```
 
 - **Linux**: Generates and registers as a systemd service.
@@ -85,5 +85,5 @@ jeikcode --host 0.0.0.0 --port 13457
 ## 5. Reload & Effective Semantics
 
 - **Environment Variables**: Take effect immediately with highest priority.
-- **CLI Commands**: `jeikcode update set <URL>` persists immediately to `config.toml`.
+- **CLI Commands**: `zap update set <URL>` persists immediately to `config.toml`.
 - **Manual Edits**: Modifying `config.toml` directly requires invoking `zap_config(action="reload")` or entering `/reload` to apply without process restart.

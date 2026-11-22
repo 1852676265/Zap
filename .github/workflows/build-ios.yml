@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build-ipa:
-    name: Build JeikCode iOS App (.ipa)
+    name: Build Zap iOS App (.ipa)
     runs-on: macos-14
 
     steps:
@@ -62,14 +62,14 @@ jobs:
           cd webui/ios/App
           mkdir -p Payload
           cp -r build/Build/Products/Release-iphoneos/App.app Payload/
-          zip -r -q JeikCode.ipa Payload
-          ls -lh JeikCode.ipa
+          zip -r -q Zap.ipa Payload
+          ls -lh Zap.ipa
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JeikCode-iOS-IPA
-          path: webui/ios/App/JeikCode.ipa
+          name: Zap-iOS-IPA
+          path: webui/ios/App/Zap.ipa
           retention-days: 14
 
       - name: Upload IPA to GitHub Release via GitHub CLI
@@ -77,7 +77,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Uploading JeikCode.ipa via GitHub CLI..."
+          echo "Uploading Zap.ipa via GitHub CLI..."
           for i in 1 2 3; do
-            gh release upload "${{ github.ref_name }}" webui/ios/App/JeikCode.ipa --clobber && break || sleep 5
+            gh release upload "${{ github.ref_name }}" webui/ios/App/Zap.ipa --clobber && break || sleep 5
           done

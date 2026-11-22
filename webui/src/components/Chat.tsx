@@ -77,7 +77,7 @@ const STEER_NATURAL_DRAIN_GRACE_MS = 1500;
  * （subscribe_live_with_replay），把已画完的正文/思考再落一遍。
  */
 const WATCH_REATTACH_AFTER_HIDDEN_MS = 60000;
-import { postChatPrompt, stopChat, postChatSteer, admitChatSteer, cancelChatSteer, postSystemNotify, getActiveChatSessions, getChatRuntime, getChatPending, watchChatSession, SSEEvent, getSessionFreshness, SessionDetail, SessionMetaWithProject, listProjectSessions, getModels, ModelInfo, ImageData, postLiveProvider, postLiveMode, getApprovalMode, getApprovalModeState, peekBootstrapCache, ApprovalMode, SessionMessage, SessionTokenUsage, SessionTurnOutline, getSkills, SkillInfo, getCommands, CommandInfo, listDir, changeDir, postConfigReload, postMcpReload, getMcpStatus, postLiveMcpTrust, postCommand, setDefaultProvider, uploadSessionFiles, type CommandResult, type UploadProgress, UserInputRequestEvent, getChatQueue, saveChatQueue, claimChatQueue, releaseChatQueue, type QueuedMessageApiItem, patchSessionMessage, deleteSessionMessage, truncateSession, type SessionMutationEvent } from '../api';
+import { postChatPrompt, stopChat, postChatSteer, admitChatSteer, cancelChatSteer, postSystemNotify, getActiveChatSessions, getChatRuntime, getChatPending, watchChatSession, SSEEvent, getSessionFreshness, SessionDetail, SessionMetaWithProject, listProjectSessions, getModels, ModelInfo, ImageData, postLiveProvider, postLiveMode, getApprovalMode, getApprovalModeState, peekBootstrapCache, ApprovalMode, SessionMessage, SessionTokenUsage, SessionTurnOutline, getSkills, SkillInfo, getCommands, CommandInfo, listDir, changeDir, postConfigReload, postMcpReload, getMcpStatus, postLiveMcpTrust, postCommand, setDefaultProvider, uploadSessionFiles, getProjects, getSidebarProjects, type ProjectInfo, type CommandResult, type UploadProgress, UserInputRequestEvent, getChatQueue, saveChatQueue, claimChatQueue, releaseChatQueue, type QueuedMessageApiItem, patchSessionMessage, deleteSessionMessage, truncateSession, type SessionMutationEvent } from '../api';
 import { pullSession } from '../lib/sessionPull';
 import { InlineBubbleEditor } from './InlineBubbleEditor';
 import {
@@ -259,7 +259,7 @@ import {
   type LiveTodoDocument,
   type TodoItem,
 } from '../lib/todos';
-import { displayPath, pathBasename, getRelativePathToProject } from '../lib/displayPath';
+import { displayPath, isUserHomeDir, pathBasename, getRelativePathToProject } from '../lib/displayPath';
 import { toolTouchesWorktree } from '../lib/gitRefresh';
 import {
   getSessionCache,
@@ -478,10 +478,13 @@ interface ChatProps {
   onLanding?: (landing: boolean) => void;
   /** 侧栏「技能」菜单选中的技能：变化时把 `/name ` 插入输入框。 */
   skillInsert?: { name: string; seq: number } | null;
+  /** 启动新会话后立即自动发送的分析或引导 Prompt。 */
+  pendingPrompt?: string | null;
+  onConsumedPendingPrompt?: () => void;
   /** 打开会话侧栏（/sessions 命令）。 */
   onOpenSidebar?: () => void;
-  /** 开始新会话（/new 命令）。 */
-  onNewSession?: () => void;
+  /** 开始新会话（/new 命令；传空串表示脱离项目独立会话，传目录则切换至目标工程）。 */
+  onNewSession?: (targetDir?: string) => void;
   diffTabs?: any[];
   setDiffTabs?: (tabs: any[] | ((prev: any[]) => any[])) => void;
   activeMainTabId?: string;
@@ -533,6 +536,8 @@ export function Chat({
   onCwdChanged,
   onLanding,
   skillInsert,
+  pendingPrompt,
+  onConsumedPendingPrompt,
   onSessionRenamed,
   onOpenSidebar,
   onNewSession,
@@ -665,11 +670,43 @@ export function Chat({
   }
 
   // 当前会话的权威工作目录：优先使用当前会话自身的 working_dir，回退到传入的全局 cwd。
-  // 防止多项目切换或新建会话时由于外层 cwd 暂时漂移导致把当前会话的消息发往错误目录。
-  const effectiveWorkingDir =
+  // 若工作目录为主目录（如 C:\Users\LiSB）或未显式绑定工程，则视为纯粹未绑定的独立会话（空目录），
+  // 杜绝将系统根目录或用户主目录当作普通工程绑定。
+  const rawWorkingDir =
     (activeSession && activeSession.id === sessionId && activeSession.working_dir)
       ? activeSession.working_dir
       : cwd;
+  const effectiveWorkingDir =
+    rawWorkingDir && !isUserHomeDir(rawWorkingDir) && rawWorkingDir !== '__global__'
+      ? rawWorkingDir
+      : '';
+
+  // 落地页项目选择器状态（类似 Codex 体验，支持切换工程或无项目独立会话）
+  const [landingProjects, setLandingProjects] = useState<ProjectInfo[]>([]);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projectSearch, setProjectSearch] = useState('');
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(false);
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setProjectMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape, true);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape, true);
+    };
+  }, [projectMenuOpen]);
   /** Mark an AUTHORITATIVE turn terminal (done/stopped/error), NOT a programmatic
    *  send-now stop. It tells the next clock start that the previous task completed. */
   function markTurnTerminal(sid?: string | null) {
@@ -2084,7 +2121,7 @@ export function Chat({
   const contextLimit = activeModelMeta?.context_window;
   // 审批模式（build / accept_edits / bypass / plan）。进程级 runtime 状态，
   // 由 /live snapshot + 'mode' 事件同步，切换调 postLiveMode（当前回合立即生效）。
-  // confirmedMode 是 daemon 已确认值。--host 新建会话默认 Build；协议会话观察时显示 Auto。
+  // confirmedMode 是 daemon 已确认值。新建会话与协议会话默认均显示 Auto（wire: bypass）。
   const cachedBootMode = peekBootstrapCache()?.approval_mode;
   const [modeState, setModeState] = useState(() =>
     initModeState((cachedBootMode?.mode ?? 'bypass') as ApprovalMode),
@@ -5311,7 +5348,7 @@ export function Chat({
               ? modeForSessionOrigin(origin)
               : modeCacheRef.current.get(loadId)
               ?? (activeSession?.id === loadId ? (activeSession.approval_mode as ApprovalMode) : null)
-              ?? 'build';
+              ?? 'bypass';
             nativeModeRef.current = targetMode;
             setModeState(initModeState(targetMode));
             modeCacheRef.current.set(loadId, targetMode);
@@ -5930,12 +5967,13 @@ export function Chat({
   // @ 文件菜单：把 @ 后文本拆成「目录段 + 过滤词」，以支持进入子目录 / 返回上级。
   // 例如 "examples/fo" → 列 cwd/examples 的内容，并按前缀 "fo" 过滤。
   const { scopeDir: atDirPart, filter: atFilter } = splitAtToken(atQuery);
+  const atBaseDir = effectiveWorkingDir || '~';
   const atTargetDir =
     atDirPart === ''
-      ? effectiveWorkingDir
+      ? atBaseDir
       : atDirPart.startsWith('/') || atDirPart.startsWith('~')
         ? atDirPart
-        : effectiveWorkingDir.replace(/\/+$/, '') + '/' + atDirPart;
+        : atBaseDir.replace(/\/+$/, '') + '/' + atDirPart;
 
   // 目录变化（cwd 切换 / 进入子目录）时重新拉取；仅过滤词变化不触发。后端会 canonicalize `..`。
   useEffect(() => {
@@ -6695,7 +6733,7 @@ export function Chat({
         if (parsed >= 200 && parsed <= 1200) return parsed;
       }
     } catch {}
-    return 360;
+    return 480;
   });
 
   useEffect(() => {
@@ -6816,7 +6854,7 @@ export function Chat({
   }, []);
 
   const setRightPanelWidth = (w: number) => {
-    const clamped = Math.max(200, Math.min(1200, Math.round(w)));
+    const clamped = Math.max(260, Math.min(1200, Math.round(w)));
     setRightPanelWidthState(clamped);
   };
 
@@ -6955,22 +6993,22 @@ export function Chat({
     const targetEl = rightPanelRef.current || stageRef.current;
     if (!targetEl) return;
     const handle = e.currentTarget as HTMLElement | null;
-    let lastWidth = Math.max(
-      280,
-      Math.min(1200, Math.round(targetEl.getBoundingClientRect().right - e.clientX)),
-    );
+    const zoom = getPageZoom() || 1.0;
+    const calcWidth = (clientX: number) => {
+      const rect = targetEl.getBoundingClientRect();
+      const viewportW = typeof window !== 'undefined' ? window.innerWidth / zoom : 1440;
+      const maxWidth = Math.max(280, Math.min(1200, Math.round(viewportW - 360)));
+      return Math.max(260, Math.min(maxWidth, Math.round((rect.right - clientX) / zoom)));
+    };
+    let lastWidth = calcWidth(e.clientX);
     isResizingRef.current = true;
     handle?.classList.add('resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
     const apply = (clientX: number) => {
-      const rect = targetEl.getBoundingClientRect();
-      lastWidth = Math.max(280, Math.min(1200, Math.round(rect.right - clientX)));
-      if (rightPanelRef.current) {
-        rightPanelRef.current.style.setProperty('--right-panel-width', `${lastWidth}px`);
-        rightPanelRef.current.style.width = `${lastWidth}px`;
-      }
+      lastWidth = calcWidth(clientX);
+      rightPanelRef.current?.style.setProperty('--right-panel-width', `${lastWidth}px`);
       stageRef.current?.style.setProperty('--right-panel-width', `${lastWidth}px`);
     };
 
@@ -7004,6 +7042,7 @@ export function Chat({
   // 也不会把正在拖的宽度覆盖回旧值。
   useEffect(() => {
     if (isResizingRef.current) return;
+    rightPanelRef.current?.style.setProperty('--right-panel-width', `${rightPanelWidth}px`);
     stageRef.current?.style.setProperty('--right-panel-width', `${rightPanelWidth}px`);
   });
 
@@ -8824,7 +8863,7 @@ export function Chat({
           onConfirm: async () => {
             setRightPanelCollapsed(false);
             setRightPanelTab('terminal');
-            dispatchOrQueueTerminalCommand('jeikcode init --force');
+            dispatchOrQueueTerminalCommand('zap init --force');
           },
         });
       },
@@ -9360,7 +9399,7 @@ export function Chat({
           void syncSessionCacheFromDisk(ph, targetSid);
         }
         const folder = (effectiveWorkingDir ?? '').split(/[\\/]/).filter((p) => p.length > 0).pop() ?? '';
-        const sessionName = activeSession?.name || folder || 'JeikCode';
+        const sessionName = activeSession?.name || folder || 'Zap';
         const previewText = event.type === 'error' ? (event.message || 'Error occurred') : 'Task completed';
         dispatchSystemNotification({
           title: sessionName,
@@ -10077,7 +10116,7 @@ export function Chat({
           isWindowAway()
         ) {
           const folder = (effectiveWorkingDir ?? '').split(/[\\/]/).filter((part) => part.length > 0).pop() ?? '';
-          const sessionName = activeSession?.name || folder || 'JeikCode';
+          const sessionName = activeSession?.name || folder || 'Zap';
           const sid = (event as any).session_id || activeIdRef.current;
           dispatchSystemNotification({
             title: t('notify.review.title'),
@@ -10095,7 +10134,7 @@ export function Chat({
         setUserInputReq(event);
         {
           const folder = (effectiveWorkingDir ?? '').split(/[\\/]/).filter((part) => part.length > 0).pop() ?? '';
-          const sessionName = activeSession?.name || folder || 'JeikCode';
+          const sessionName = activeSession?.name || folder || 'Zap';
           const sid = (event as any).session_id || activeIdRef.current;
           const detail = (event as any).question || (event as any).header || 'Input requested';
           dispatchSystemNotification({
@@ -11599,10 +11638,8 @@ export function Chat({
 
     let messageText = text;
     if (files.length > 0) {
-      if (!effectiveWorkingDir) {
-        setAttachError(t('attach.noCwd'));
-        return;
-      }
+      // 目标工作目录：优先使用绑定的有效工程目录；若处于无项目/全局自由会话，自动 fallback 到 '__global__'，不再阻断上传
+      const uploadTargetDir = effectiveWorkingDir || rawWorkingDir || '__global__';
       setAttachError(null);
       setInput('');
       setPendingAttach([]);
@@ -11614,7 +11651,7 @@ export function Chat({
       setUploading(true);
       try {
         const paths = await uploadSessionFiles(
-          effectiveWorkingDir,
+          uploadTargetDir,
           files.map((item) => item.file),
           setUploadProgress,
         );
@@ -13832,6 +13869,70 @@ export function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [landing]);
 
+  const refreshLandingProjects = useCallback(() => {
+    Promise.all([
+      getProjects().catch(() => [] as ProjectInfo[]),
+      getSidebarProjects().catch(() => ({ hidden: [], pinned: [] })),
+    ])
+      .then(([list, sidebar]) => {
+        const hidden = new Set(sidebar.hidden || []);
+        const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const all: ProjectInfo[] = [];
+
+        if (Array.isArray(list)) {
+          for (const p of list) {
+            if (!p.working_dir || isUserHomeDir(p.working_dir) || hidden.has(p.hash)) continue;
+            all.push(p);
+          }
+        }
+
+        if (Array.isArray(sidebar.pinned)) {
+          for (const pinned of sidebar.pinned) {
+            if (!pinned.working_dir || isUserHomeDir(pinned.working_dir) || hidden.has(pinned.hash)) continue;
+            const pinnedNorm = norm(pinned.working_dir);
+            if (!all.some((p) => p.hash === pinned.hash || norm(p.working_dir) === pinnedNorm)) {
+              all.push(pinned);
+            }
+          }
+        }
+
+        setLandingProjects(all);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (landing || projectMenuOpen) {
+      refreshLandingProjects();
+    }
+  }, [landing, projectMenuOpen, refreshLandingProjects]);
+
+  useEffect(() => {
+    const handleSidebarChange = () => refreshLandingProjects();
+    window.addEventListener('jeikcode:sidebar_projects', handleSidebarChange);
+    return () => window.removeEventListener('jeikcode:sidebar_projects', handleSidebarChange);
+  }, [refreshLandingProjects]);
+
+  // 确保刚通过目录选择器切入、尚无会话记录的新目录也立即出现在下拉列表顶部并可打勾
+  const visibleLandingProjects = useMemo(() => {
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const list = landingProjects.slice();
+    if (effectiveWorkingDir) {
+      const targetNorm = norm(effectiveWorkingDir);
+      if (!list.some((p) => norm(p.working_dir) === targetNorm)) {
+        list.unshift({
+          hash: activeSession?.project_hash || '',
+          name: pathBasename(effectiveWorkingDir) || effectiveWorkingDir,
+          working_dir: effectiveWorkingDir,
+          session_count: 0,
+          created_at: 0,
+          last_updated: 0,
+        });
+      }
+    }
+    return list;
+  }, [landingProjects, effectiveWorkingDir, activeSession?.project_hash]);
+
   // 刷新/恢复完成后把首帧焦点交还对话输入框。终端面板只在用户主动打开时聚焦；
   // 这里做最后兜底：只要焦点还停在 body，就在首屏稳定后聚焦输入框。
   // 只执行一次，之后用户切会话/点终端都不再被本 effect 抢焦点。
@@ -13876,9 +13977,114 @@ export function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skillInsert]);
 
+  // 外部注入的自动提问/分析 Prompt（例如从项目/会话右键「一键分析会话」触发）
+  const pendingPromptHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!pendingPrompt) {
+      pendingPromptHandledRef.current = null;
+      return;
+    }
+    if (pendingPromptHandledRef.current === pendingPrompt) return;
+    pendingPromptHandledRef.current = pendingPrompt;
+    const timer = setTimeout(() => {
+      void sendMessage(pendingPrompt);
+      onConsumedPendingPrompt?.();
+    }, 60);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPrompt]);
+
   // 落地页副标题：项目名 + 缩写路径（剥掉 Windows `\\?\` 扩展前缀）。
   const projName = pathBasename(effectiveWorkingDir);
   const projPath = displayPath(effectiveWorkingDir);
+
+  // 落地页项目/工作区域选择弹层：工程绑定态与独立对话态共用同一实现
+  const renderLandingProjectPopover = () => {
+    if (!projectMenuOpen) return null;
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const targetNorm = effectiveWorkingDir ? norm(effectiveWorkingDir) : '';
+    const q = projectSearch.trim().toLowerCase();
+    const filteredProjects = visibleLandingProjects.filter((p) => {
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.working_dir.toLowerCase().includes(q)
+      );
+    });
+    return (
+      <div class="landing-project-popover" onClick={(e) => e.stopPropagation()}>
+        <div class="landing-project-search-box">
+          <span class="landing-project-search-icon">🔍</span>
+          <input
+            type="text"
+            class="landing-project-search-input"
+            placeholder={t('chat.searchProjects')}
+            value={projectSearch}
+            onInput={(e) => setProjectSearch((e.target as HTMLInputElement).value)}
+            autoFocus
+          />
+          {projectSearch && (
+            <button
+              type="button"
+              class="landing-project-search-clear"
+              onClick={() => setProjectSearch('')}
+            >
+              ×
+            </button>
+          )}
+        </div>
+
+        <div class="landing-project-list">
+          {filteredProjects.map((p) => {
+            const isSelected = Boolean(targetNorm && norm(p.working_dir) === targetNorm);
+            return (
+              <button
+                key={p.hash || p.working_dir}
+                type="button"
+                class={'landing-project-item' + (isSelected ? ' selected' : '')}
+                onClick={() => {
+                  setProjectMenuOpen(false);
+                  onNewSession?.(p.working_dir);
+                }}
+                title={p.working_dir}
+              >
+                <span class="landing-project-item-icon">📁</span>
+                <span class="landing-project-item-name">{p.name || pathBasename(p.working_dir)}</span>
+                {isSelected && <span class="landing-project-item-check">✓</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        <div class="landing-project-divider" />
+
+        <button
+          type="button"
+          class="landing-project-action"
+          onClick={() => {
+            setProjectMenuOpen(false);
+            onOpenCwd?.();
+          }}
+        >
+          <span class="landing-project-action-icon">＋</span>
+          <span>{t('chat.newProjectFolder')}</span>
+        </button>
+
+        <button
+          type="button"
+          class={'landing-project-action' + (!effectiveWorkingDir ? ' selected' : '')}
+          onClick={() => {
+            setProjectMenuOpen(false);
+            onNewSession?.('');
+          }}
+        >
+          <span class="landing-project-action-icon">✕</span>
+          <span>{t('chat.workOutsideProjects')}</span>
+          {!effectiveWorkingDir && <span class="landing-project-item-check">✓</span>}
+        </button>
+      </div>
+    );
+  };
 
   // 输入框只渲染一份，按落地/常规两处择一挂载（避免两个 textarea 抢同一 ref）。
   // 用函数返回新 VNode：两个分支切换时绝不能复用同一个 VNode 实例，
@@ -14302,25 +14508,65 @@ export function Chat({
                 <div class="landing-brand">
                   <span class="landing-brand-name">Zap</span>
                 </div>
-                <div class="landing-tagline">{t('chat.greeting')}</div>
-                {cwd && (
-                  <div class="landing-cwd" title={cwd}>
-                    <span class="landing-cwd-label">
-                      {t('chat.sessionCwd', { path: '' }).trim()}
-                    </span>
-                    <span class="landing-cwd-path">{cwd}</span>
-                  </div>
-                )}
+                <div class="landing-tagline">
+                  {effectiveWorkingDir ? (
+                    <div class="landing-tagline-with-project">
+                      <span class="landing-tagline-prefix">{t('chat.landingTaglinePrefix')}</span>
+                      <div class="landing-project-picker-wrap" ref={projectMenuRef}>
+                        <button
+                          type="button"
+                          class="landing-project-btn"
+                          onClick={() => {
+                            setProjectMenuOpen((v) => {
+                              if (!v) setProjectSearch('');
+                              return !v;
+                            });
+                          }}
+                          title={projPath || effectiveWorkingDir}
+                        >
+                          <span class="landing-project-btn-name">{projName || effectiveWorkingDir}</span>
+                          <span class="landing-project-btn-arrow">▾</span>
+                        </button>
+                        {renderLandingProjectPopover()}
+                      </div>
+                      <span class="landing-tagline-suffix">{t('chat.landingTaglineSuffix')}</span>
+                    </div>
+                  ) : (
+                    <div class="landing-tagline-with-project">
+                      <span class="landing-tagline-prefix">{t('chat.greetingNoProject')}</span>
+                      <div class="landing-project-picker-wrap" ref={projectMenuRef}>
+                        <button
+                          type="button"
+                          class="landing-project-btn is-standalone"
+                          onClick={() => {
+                            setProjectMenuOpen((v) => {
+                              if (!v) setProjectSearch('');
+                              return !v;
+                            });
+                          }}
+                          title={t('chat.workOutsideProjects')}
+                        >
+                          <span class="landing-project-btn-icon">💬</span>
+                          <span class="landing-project-btn-name">{t('chat.workOutsideProjects')}</span>
+                          <span class="landing-project-btn-arrow">▾</span>
+                        </button>
+                        {renderLandingProjectPopover()}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div class="landing-input">
                   {renderInputBox()}
                 </div>
-                <div class="landing-chips">
-                  {quickChips.map((c) => (
-                    <button key={c.label} class="landing-chip" onClick={() => fillInput(c.insert)}>
-                      {c.label}
-                    </button>
-                  ))}
-                </div>
+                {effectiveWorkingDir && (
+                  <div class="landing-chips">
+                    {quickChips.map((c) => (
+                      <button key={c.label} class="landing-chip" onClick={() => fillInput(c.insert)}>
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

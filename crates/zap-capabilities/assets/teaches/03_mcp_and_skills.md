@@ -10,33 +10,33 @@
 3. **优先级**：同名配置下，项目级覆盖全局级。
 
 ### 1.2 CLI 快速管理 MCP 工具
-使用 `jeikcode mcp` 命令行自动管理配置（自动写入并安全格式化 JSON，无需手动编辑）：
+使用 `zap mcp` 命令行自动管理配置（自动写入并安全格式化 JSON，无需手动编辑）：
 
 ```bash
 # 写入当前项目 .mcp.json (stdio 进程模式)
-jeikcode mcp add playwright npx @playwright/mcp@latest
+zap mcp add playwright npx @playwright/mcp@latest
 
 # 添加 HTTP / SSE 远程 MCP 服务 (支持自定义请求头与信任标记)
-jeikcode mcp add-http remote-api https://mcp.example.com/sse -H "Authorization: Bearer secret-token" --trust
+zap mcp add-http remote-api https://mcp.example.com/sse -H "Authorization: Bearer secret-token" --trust
 
 # 写入全局 ~/.zap/mcp.json
-jeikcode mcp add playwright npx -y @playwright/mcp@latest --global
+zap mcp add playwright npx -y @playwright/mcp@latest --global
 
 # 查看当前已配置 MCP 工具列表
-jeikcode mcp list
-jeikcode mcp ls --json
+zap mcp list
+zap mcp ls --json
 
 # 移除指定 MCP 工具（自动安全清理）
-jeikcode mcp remove playwright
-jeikcode mcp rm remote-api --global
+zap mcp remove playwright
+zap mcp rm remote-api --global
 
 # 指定工作区目录
-jeikcode mcp add playwright npx @playwright/mcp@latest -C /path/to/repo
+zap mcp add playwright npx @playwright/mcp@latest -C /path/to/repo
 
 # GitHub 官方 OAuth MCP
-jeikcode mcp add-github-oauth github --global
-jeikcode mcp login github
-jeikcode mcp logout github
+zap mcp add-github-oauth github --global
+zap mcp login github
+zap mcp logout github
 ```
 
 ### 1.3 `mcp.json` 标准配置格式
@@ -76,7 +76,7 @@ jeikcode mcp logout github
 - **`scope` 范围模式（`"global"` vs `"project"` vs `"session"`）**：
   - `"global"`：全局级共享。跨所有项目与会话复用单例进程，生命周期贯穿应用。适合完全无本地工程状态的纯云端或公共服务（如 Brave 网页搜索、公网翻译等），实现资源极限轻量。
   - `"project"`（默认）：项目级共享单例。同项目下所有会话复用同一子进程，生命周期跟随项目。适合无状态或工程级工具（如 filesystem、git、代码分析）。
-  - `"session"`：会话级独立隔离。每个会话单独启动一个独立子进程，并自动向子进程注入环境变量 `JEIKCODE_SESSION_ID=<当前会话ID>`。适合浏览器（Playwright）、有状态调试器等需要独占沙箱的工具。
+  - `"session"`：会话级独立隔离。每个会话单独启动一个独立子进程，并自动向子进程注入环境变量 `ZAP_SESSION_ID=<当前会话ID>`。适合浏览器（Playwright）、有状态调试器等需要独占沙箱的工具。
   - **进程闲置回收**：在 `scope: "session"` 模式下，当会话切走且距离上次工具调用超过 `[mcp.session] idle_ttl_secs`（默认 600 秒 / 10 分钟）时，系统会自动回收终止该进程释放资源；在 `config.toml` 中设置 `idle_ttl_secs = 0` 可关闭闲置回收。
 - **`maxConcurrentCalls` 并发调用上限（单服务并发控制）**：
   - **缺省默认值**：`8`（不写即为 8，支持最多 8 个请求同时并发执行，适合文件读取、网页搜索等无状态服务）；
@@ -101,7 +101,7 @@ Daemon 提供 MCP 服务的动态管理与热重载接口：
 
 ### 1.6 重载与生效方式
 
-修改配置后**无需重启 JeikCode 进程**：
+修改配置后**无需重启 Zap 进程**：
 
 | 操作途径 | 命令 / 动作 | 说明 |
 | :--- | :--- | :--- |

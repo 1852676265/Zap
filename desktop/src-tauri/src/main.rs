@@ -1013,7 +1013,7 @@ mod tests {
             "http://[::1]:8080/",
             "http://0.0.0.0:3000/",
             "http://app.localhost:3000/",
-            "https://github.com/jeikl/JeikCode",
+            "https://github.com/1852676265/Zap",
             "https://google.com",
         ] {
             let parsed = parse_url(raw);

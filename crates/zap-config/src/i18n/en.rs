@@ -19,10 +19,10 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         } else {
             "ℹ️ No updates selected; configuration is unchanged.".into()
         },
-        Msg::ServerNoServices => "No JeikCode host services are installed.".into(),
+        Msg::ServerNoServices => "No Zap host services are installed.".into(),
         Msg::ServerServiceTableHeader => "ID   Service name                   Port   Status     Platform   Path".into(),
         Msg::WelcomeBannerLine1 =>
-            "Welcome to JeikCode. Pick an option to get started:".into(),
+            "Welcome to Zap. Pick an option to get started:".into(),
         Msg::WelcomeBannerLine2 =>
             "(↑↓ to navigate, Enter to confirm, Esc to skip)".into(),
         Msg::WelcomeOptionConfigureManually => "Configure manually".into(),
@@ -40,11 +40,11 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::StatusRuntimeUnavailable =>
             "runtime unavailable · restart or inspect the error above".into(),
         Msg::StatusOfficialBuildRequired =>
-            "JeikCode gateway signing is not available in this build — use /provider".into(),
+            "Zap gateway signing is not available in this build — use /provider".into(),
         Msg::StatusUpgradeHint { version } =>
             format!("↑ {version} available · /upgrade").into(),
         Msg::StatusUpgradeHintPm { version } =>
-            format!("↑ {version} available · brew upgrade jeikcode").into(),
+            format!("↑ {version} available · brew upgrade zap").into(),
         Msg::StatusModelNotConfigured =>
             "(not configured)".into(),
         Msg::StatusClipboardImageHint =>
@@ -52,7 +52,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::StatusClipboardImageHintSlash =>
             "Image in clipboard · alt+v / ctrl+alt+v / /paste".into(),
         Msg::StatusWebuiHint =>
-            "Tips: Use /webui to open JeikCode in your browser".into(),
+            "Tips: Use /webui to open Zap in your browser".into(),
 
         // ── /status command body ──
         Msg::StatusBody { model, dir, config } =>
@@ -116,7 +116,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
     Mouse wheel                      Scroll the chat area
     Mouse drag                       Select text
     Shift+mouse drag                 Use the terminal's native selection
-    Ctrl+Shift+C                     Copy the JeikCode selection
+    Ctrl+Shift+C                     Copy the Zap selection
 
   ── Control flow ──
     Esc                              Clear input / close modal / cancel action
@@ -500,7 +500,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::CmdProviderUnavailable =>
             "Provider is unavailable. Use /login to sign in or /provider to configure one.".into(),
         Msg::CmdProviderUnsupportedBuild =>
-            "This build cannot access the JeikCode gateway. Install an official build or use /provider to switch providers.".into(),
+            "This build cannot access the Zap gateway. Install an official build or use /provider to switch providers.".into(),
         Msg::CmdProviderReloading =>
             "Provider/model is switching. Send after the switch completes.".into(),
         Msg::SubmitHeldUntilProviderReady =>
@@ -603,7 +603,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
 
         // ── /upgrade ──
         Msg::UpgradePackageManaged =>
-            "This build is managed by HarmonyBrew. Run `brew upgrade jeikcode` to upgrade.".into(),
+            "This build is managed by HarmonyBrew. Run `brew upgrade zap` to upgrade.".into(),
         Msg::UpgradeUnknownArg { arg } =>
             format!("unknown /upgrade argument: {}\n  usage: /upgrade [rollback|--force]", arg).into(),
 
@@ -635,7 +635,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::McpServersHeader =>
             "  MCP Servers:\n".into(),
         Msg::McpReloadFailed { error } =>
-            format!("mcp reload failed: failed to load .mcp.json / $JEIKCODE_HOME/mcp.json: {:#}", error).into(),
+            format!("mcp reload failed: failed to load .mcp.json / $ZAP_HOME/mcp.json: {:#}", error).into(),
         // /mcp login / logout
         Msg::McpOAuthLoginUsage =>
             "  Usage: /mcp login <server>\n  Example: /mcp login github\n".into(),
@@ -734,7 +734,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::CmdSetupRunning =>
             "Re-initializing and synchronizing local configurations...".into(),
         Msg::SetupReinitialized { files, skills } =>
-            format!("✓ JeikCode environment and configurations re-initialized ({files} file(s) synchronized, {skills} skill(s) reloaded)").into(),
+            format!("✓ Zap environment and configurations re-initialized ({files} file(s) synchronized, {skills} skill(s) reloaded)").into(),
         Msg::CmdSetupSkillsReloaded { count } =>
             format!("  🔄 Skills reloaded — {} available", count).into(),
         Msg::CmdSetupError { error } =>
@@ -784,7 +784,7 @@ pub(super) fn en(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::OfflineModeActive =>
             "Offline mode: web tools, telemetry, and auto-update are disabled.".into(),
         Msg::PluginHooksUntrusted { count, names } => format!(
-            "{count} plugin(s) ship untrusted hooks ({names}) — they won't run. Trust: jeikcode plugin trust <name>"
+            "{count} plugin(s) ship untrusted hooks ({names}) — they won't run. Trust: zap plugin trust <name>"
         ).into(),
         Msg::PluginInstalling { plugin, marketplace } =>
             format!("installing `{plugin}@{marketplace}`…").into(),
@@ -848,7 +848,7 @@ Msg::PluginMgrInstallingLabel => "Installing…".into(),
         Msg::PluginReloadDone { skills, warnings } =>
             format!("Plugins reloaded: {skills} skill(s), {warnings} warning(s)").into(),
         Msg::PluginGitNotFound =>
-            "💡 git is not installed or not on PATH. Plugin marketplace auto-install and auto-update are disabled. Install git (e.g. `xcode-select --install` on macOS, `sudo apt install git` on Ubuntu) and restart JeikCode.".into(),
+            "💡 git is not installed or not on PATH. Plugin marketplace auto-install and auto-update are disabled. Install git (e.g. `xcode-select --install` on macOS, `sudo apt install git` on Ubuntu) and restart Zap.".into(),
         Msg::PluginMarketplaceAdded { name, commit, count, plugins } =>
             format!(
                 "✓ marketplace `{name}` added at {commit} ({count} plugins)\n  \
@@ -867,7 +867,7 @@ Msg::PluginMgrInstallingLabel => "Installing…".into(),
 
         // ── Command descriptions ──
         Msg::CmdDescWebui => "Launch the browser webui (subcommands: stop, lan, --host <addr>)".into(),
-        Msg::CmdDescSetup => "Re-initialize JeikCode environment and configurations".into(),
+        Msg::CmdDescSetup => "Re-initialize Zap environment and configurations".into(),
         Msg::CmdDescNew => "Start a new session (clears conversation)".into(),
         Msg::CmdDescSessions => "List and switch between sessions".into(),
         Msg::SessionSwitched { short_id } =>
@@ -884,7 +884,7 @@ Msg::PluginMgrInstallingLabel => "Installing…".into(),
             "Manage providers (add / edit / delete / set global default)".into(),
         Msg::CmdDescStatus => "Show session status".into(),
         Msg::CmdDescConfig => "Show config path".into(),
-        Msg::CmdDescReload => "Reload $JEIKCODE_HOME/config.toml from disk".into(),
+        Msg::CmdDescReload => "Reload $ZAP_HOME/config.toml from disk".into(),
         Msg::CmdDescCd => "Change working directory and start a new session".into(),
 Msg::CmdDescInit => "Analyze the project and generate AGENTS.md".into(),
 Msg::CmdDescBg => "Background sessions: /bg, /bg list, /bg <N>, /bg drop <N>".into(),
@@ -902,7 +902,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::CmdDescUndo => "Undo: roll conversation memory back a turn (/undo or /undo N)".into(),
         Msg::CmdDescRewind => "Rewind: restore the conversation to an earlier checkpoint".into(),
         Msg::CmdDescWorktree => "Git worktree isolation (create/list/done/cleanup)".into(),
-        Msg::CmdDescUpgrade => "Upgrade jeikcode to latest (subcommand: rollback)".into(),
+        Msg::CmdDescUpgrade => "Upgrade zap to latest (subcommand: rollback)".into(),
         Msg::CmdDescPlan => "Switch to Plan mode (read-only exploration)".into(),
         Msg::CmdDescBuild => "Switch to Build mode (full execution)".into(),
         Msg::CmdDescAuto => "Switch to Auto mode (auto-approve all tools)".into(),
@@ -911,7 +911,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::CmdDescHelp => "Show this help".into(),
         Msg::CmdDescKeys => "Show keyboard shortcuts".into(),
         Msg::CmdDescLanguage => "Switch display language".into(),
-        Msg::CmdDescQuit => "Exit JeikCode".into(),
+        Msg::CmdDescQuit => "Exit Zap".into(),
         Msg::CmdDescSkills => "Browse loaded skills".into(),
         Msg::CmdDescPlugin => "Plugin marketplace (subcommands: marketplace, install, uninstall, reload, list)".into(),
         Msg::CmdDescPaste => "Attach an image from the clipboard (also Alt+V / Ctrl+Alt+V)".into(),
@@ -929,7 +929,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::SaveInvalidPath { path } => format!("Invalid path — directory does not exist: {path}").into(),
         Msg::SaveRefuseOverwrite { path } => format!("Target exists and isn't a markdown file — refused to overwrite it (avoids clobbering source/config): {path}. Use a .md filename or a new path.").into(),
         Msg::CodeBlockCopied => "📋 Copied code block to clipboard".into(),
-        Msg::CmdDescGuide => "Ask JeikCode config/usage via jeikcode_config_guide".into(),
+        Msg::CmdDescGuide => "Ask Zap config/usage via zap_config".into(),
         Msg::CmdDescView => "View file content in an overlay modal".into(),
         Msg::CmdDescApp => "Expose this session to the mobile App via relay (QR pairing; /app stop to detach)".into(),
         Msg::CmdDescReview => "Code review the current changes (/review · /review staged · /review <base>)".into(),
@@ -938,17 +938,17 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::CmdDescTodo => "Show the current todo list; `/todo add <task>` appends one, `/todo clear` wipes it".into(),
         Msg::CmdDescSchedule => "List scheduled tasks and next run times".into(),
         Msg::CmdDescDesktop =>
-            "Open the JeikCode desktop app (launch it if installed, else show the download link)".into(),
+            "Open the Zap desktop app (launch it if installed, else show the download link)".into(),
         Msg::DesktopOpening { name, path } =>
             format!("Opening {}…\n  {}\n", name, path).into(),
         Msg::DesktopNotInstalled { url } =>
-            format!("JeikCode desktop app not found. Download & install:\n  {}\n", url).into(),
+            format!("Zap desktop app not found. Download & install:\n  {}\n", url).into(),
         Msg::DesktopLaunchFailed { path, err } =>
             format!("Found the app but couldn't launch it: {}\n  {}\n", err, path).into(),
         Msg::TodoNoList => "No task list yet (the model hasn't created todos).".into(),
         Msg::TodoListHeader => "Current tasks:".into(),
         Msg::TodoAddUsage => "Usage: /todo add <task description>".into(),
-        Msg::GuideMenuHeader => "📖 JeikCode Guide — type /guide <question> (built-in config guide)".into(),
+        Msg::GuideMenuHeader => "📖 Zap Guide — type /guide <question> (built-in config guide)".into(),
         Msg::GuideMenuTopics => "Common topics:".into(),
         Msg::GuideMenuGettingStarted => "Getting started          First install, provider setup".into(),
         Msg::GuideMenuSwitchModel => "Set default model        /model /provider usage".into(),
@@ -965,7 +965,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
 ".into(),
         Msg::GuideMenuDocUrl => "".into(),
         Msg::CmdGuideFallbackPrompt { question } => format!(
-            "Answer the user's JeikCode usage/config question. FIRST call the `jeikcode_config_guide` tool with the best-matching `topic` (overview, prompts, models, mcp, skills, thesaurus, tools, directories, project, updates, or all). THEN answer concisely in the user's language based only on that tool output. Do not invent settings, and do not promote third-party skill stores.\n\nUser question: {question}"
+            "Answer the user's Zap usage/config question. FIRST call the `zap_config` tool with the best-matching `topic` (overview, prompts, models, mcp, skills, thesaurus, tools, directories, project, updates, or all). THEN answer concisely in the user's language based only on that tool output. Do not invent settings, and do not promote third-party skill stores.\n\nUser question: {question}"
         ).into(),
         Msg::CmdGuideInstalling => "Preparing guide answer, please wait...".into(),
         Msg::CmdGuideAutoInstall => "Optional ask skill not installed — using built-in guide.".into(),
@@ -991,7 +991,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::OnboardingStepHeaderWelcome => "Step 1/3 · Welcome".into(),
         Msg::OnboardingStepHeaderLanguage => "Step 2/3 · Language".into(),
         Msg::OnboardingStepHeaderSetup => "Step 3/3 · Setup".into(),
-        Msg::OnboardingPanelTitle => "JeikCode".into(),
+        Msg::OnboardingPanelTitle => "Zap".into(),
         Msg::OnboardingIntroVersionLine { v } =>
             format!("Version {v}  ·  AI coding agent in your terminal").into(),
         Msg::OnboardingIntroBullet1 =>
@@ -1210,30 +1210,30 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         // -- CLI jeikcode --help i18n --
         Msg::CliAbout => "AI coding assistant in your terminal".into(),
         Msg::CliAboutStatus => "Show current login status".into(),
-        Msg::CliAboutUpgrade => "Upgrade jeikcode in place. `update` and `up` are aliases. `up main` or `up beta` selects the channel; an optional version installs that release. Tutorial: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutUpgrade => "Upgrade zap in place. `update` and `up` are aliases. `up main` or `up beta` selects the channel; an optional version installs that release. Tutorial: https://github.com/1852676265/Zap".into(),
         Msg::CliHelpUpgradeForce => "Reinstall even when already on the latest version".into(),
         Msg::CliHelpUpgradeYes => "Automatically apply default config changes without interactive prompts".into(),
         Msg::CliHelpUpgradeBeta => "Upgrade from the beta (prerelease) channel".into(),
         Msg::CliHelpUpgradeMain => "Upgrade from the stable/main channel (default)".into(),
-        Msg::CliAboutList => "List historical versions (`list` / `list main` = stable, `list beta` = beta). Tutorial: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutList => "List historical versions (`list` / `list main` = stable, `list beta` = beta). Tutorial: https://github.com/1852676265/Zap".into(),
         Msg::CliHelpListChannel => "Channel: main (default, stable) or beta".into(),
-        Msg::CliAboutDown => "Install a specific release, including older versions (`down main <version>` / `down beta <version>`). Tutorial: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutDown => "Install a specific release, including older versions (`down main <version>` / `down beta <version>`). Tutorial: https://github.com/1852676265/Zap".into(),
         Msg::CliHelpDownChannel => "Channel: main or beta".into(),
         Msg::CliHelpDownVersion => "Version to install, for example v7.2.3 or 7.2.4-beta.8".into(),
-        Msg::CliAboutRollback => "Roll back to the previous version (swap with .bak on disk). Tutorial: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutRollback => "Roll back to the previous version (swap with .bak on disk). Tutorial: https://github.com/1852676265/Zap".into(),
         Msg::CliAboutMcp => "Manage MCP server entries in .mcp.json".into(),
         Msg::CliAboutDaemon => "Start the HTTP daemon for IDE integration".into(),
         Msg::CliAboutWebui => "Start the local browser webui".into(),
         Msg::CliAboutServe => {
-            "Start a headless JeikCode server for remote attach (web UI + API)".into()
+            "Start a headless Zap server for remote attach (web UI + API)".into()
         }
         Msg::CliAboutAttach => {
-            "Attach a local client to a running JeikCode server (open web UI)".into()
+            "Attach a local client to a running Zap server (open web UI)".into()
         }
         Msg::CliAboutTelemetry => "Telemetry controls".into(),
         Msg::CliAboutPlugin => "Manage skill/command plugins".into(),
-        Msg::CliAboutUninstall => "Uninstall JeikCode. With no arguments, ask whether to keep user configuration. `simple` removes only the program. `all` removes everything.".into(),
-        Msg::CliAboutSetup => "Re-initialize JeikCode environment and bundled configurations to ~/.zap/".into(),
+        Msg::CliAboutUninstall => "Uninstall Zap. With no arguments, ask whether to keep user configuration. `simple` removes only the program. `all` removes everything.".into(),
+        Msg::CliAboutSetup => "Re-initialize Zap environment and bundled configurations to ~/.zap/".into(),
         Msg::CliAboutHooks => "Manage hooks (list, test, enable/disable)".into(),
         Msg::CliAboutHooksList => "List all loaded hooks with their status".into(),
         Msg::CliAboutHooksTest => "Test a specific hook by name".into(),
@@ -1279,9 +1279,9 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::CliHelpUninstallDryRun => "Print the plan; do nothing".into(),
         Msg::CliAboutUninstallSimple => "Remove only the program and PATH entry. Keep user configuration. No prompts.".into(),
         Msg::CliAboutUninstallAll => "Remove the program, PATH entry, and all user configuration. No prompts.".into(),
-        Msg::UninstallNoTty => "jeikcode uninstall: refusing to run interactively without a TTY.\nUse `jeikcode uninstall simple` to remove only the program, or `jeikcode uninstall all` to remove the program and user configuration.\nFlags: --yes, --purge, --keep-data, --dry-run.".into(),
-        Msg::UninstallConflict => "jeikcode uninstall: those options conflict. Use one of `simple`, `all`, --purge, --keep-data, or --yes.".into(),
-        Msg::UninstallIntro => "This will uninstall JeikCode.\nThe program and its PATH entry are always removed.".into(),
+        Msg::UninstallNoTty => "zap uninstall: refusing to run interactively without a TTY.\nUse `zap uninstall simple` to remove only the program, or `zap uninstall all` to remove the program and user configuration.\nFlags: --yes, --purge, --keep-data, --dry-run.".into(),
+        Msg::UninstallConflict => "zap uninstall: those options conflict. Use one of `simple`, `all`, --purge, --keep-data, or --yes.".into(),
+        Msg::UninstallIntro => "This will uninstall Zap.\nThe program and its PATH entry are always removed.".into(),
         Msg::UninstallRemovingBinary => "\nProgram and PATH entry to remove:".into(),
         Msg::UninstallConfigHeader { dir } => format!("\nUser configuration ({dir}):").into(),
         Msg::UninstallNoConfig => "\nNo user configuration was found.".into(),
@@ -1292,15 +1292,15 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::UninstallSummaryRemoveConfig => "  Remove: user configuration".into(),
         Msg::UninstallContinue => "\nContinue? [y/N]: ".into(),
         Msg::UninstallAborted => "aborted.".into(),
-        Msg::UninstallKillFound { count } => format!("\nFound {count} running jeikcode process(es):").into(),
+        Msg::UninstallKillFound { count } => format!("\nFound {count} running zap process(es):").into(),
         Msg::UninstallKillAsk => "Stop them and continue? [y/N]: ".into(),
         Msg::UninstallKillDeclined => "aborted: running processes were not stopped.".into(),
-        Msg::UninstallAutoKilled { count } => format!("Stopping {count} other jeikcode process(es).").into(),
+        Msg::UninstallAutoKilled { count } => format!("Stopping {count} other zap process(es).").into(),
         Msg::UninstallKillFailed { pid, error } => format!("could not stop pid {pid}: {error}").into(),
         Msg::UninstallDryRun => "DRY RUN — no changes will be made.\n".into(),
         Msg::UninstallWillRemove => "WILL REMOVE".into(),
         Msg::UninstallWillKeep => "KEEP".into(),
-        Msg::UninstallKeptHint => "Kept (run `jeikcode uninstall all` to remove later):".into(),
+        Msg::UninstallKeptHint => "Kept (run `zap uninstall all` to remove later):".into(),
         Msg::UninstallRemoved => "Removed:".into(),
         Msg::UninstallFailed => "Failed:".into(),
         Msg::UninstallBackups => "Backups:".into(),
@@ -1321,12 +1321,12 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
         Msg::ProviderInitFailed { detail } =>
             format!("provider init failed: {detail}").into(),
         Msg::ProviderInitSourceBuild =>
-            "This is a source build — the JeikCode free gateway isn't available. Use /provider to \
+            "This is a source build — the Zap free gateway isn't available. Use /provider to \
              configure a model with your own api_key (e.g. DeepSeek / GLM / OpenAI), or switch to \
              an official release build.".into(),
         Msg::GatewayAuthUnavailable { base_url } =>
             format!(
-                "provider base_url '{base_url}' is an JeikCode gateway this build can't \
+                "provider base_url '{base_url}' is an Zap gateway this build can't \
                  authenticate against. Use the official binary, or point the provider at a \
                  plain OpenAI-compatible endpoint with an api_key."
             ).into(),
@@ -1336,7 +1336,7 @@ Msg::CmdDescBackground => "Run a one-shot task in an isolated background context
              and glyphs/the mascot render degraded. \x1b[1;96mWindows Terminal\x1b[0m gives the full experience."
                 .into(),
         Msg::ServeNoTokenSecurityWarning =>
-            "[CRITICAL SECURITY WARNING] No access token configured!\nIf you have not set up a corresponding firewall, please ask JeikCode AI to help establish firewall rules and whitelist IPs; otherwise, your server can easily be compromised by hackers!".into(),
+            "[CRITICAL SECURITY WARNING] No access token configured!\nIf you have not set up a corresponding firewall, please ask Zap AI to help establish firewall rules and whitelist IPs; otherwise, your server can easily be compromised by hackers!".into(),
         Msg::AgentRetryEmpty { attempt, max, wait } => if wait > 0 {
             format!("Model returned an empty response, retrying in {wait}s ({attempt}/{max})...")
         } else {

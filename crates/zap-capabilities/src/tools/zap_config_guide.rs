@@ -573,9 +573,9 @@ mod tests {
         };
         let res = tool.execute(r#"{"topic":"updates"}"#, &ctx).await;
         assert!(!res.is_error);
-        assert!(res.content.contains("github.com/1852676265/JeikCode"));
-        assert!(res.content.contains("JEIKCODE_UPDATE_MANIFEST_URL"));
-        assert!(res.content.contains("JEIKCODE_UPDATE_DOWNLOAD_BASE"));
+        assert!(res.content.contains("github.com/1852676265/Zap"));
+        assert!(res.content.contains("ZAP_UPDATE_MANIFEST_URL"));
+        assert!(res.content.contains("ZAP_UPDATE_DOWNLOAD_BASE"));
         assert!(res.content.contains("/upgrade"));
     }
 
@@ -585,19 +585,19 @@ mod tests {
         assert!(DOC_MCP_SKILLS.contains("zap_config"));
         assert!(DOC_MCP_SKILLS.contains("/mcp reload"));
         assert!(DOC_MCP_SKILLS.contains("刷新按钮"));
-        assert!(DOC_MCP_SKILLS.contains("jeikcode mcp add"));
+        assert!(DOC_MCP_SKILLS.contains("zap mcp add"));
         assert!(DOC_MCP_SKILLS.contains("/skills"));
         assert!(DOC_OVERVIEW.contains("zap_config"));
-        assert!(DOC_OVERVIEW.contains("jeikcode mcp add"));
+        assert!(DOC_OVERVIEW.contains("zap mcp add"));
 
         // English assets parity
         assert!(DOC_MCP_SKILLS_EN.contains("zap_config"));
         assert!(DOC_MCP_SKILLS_EN.contains("/mcp reload"));
         assert!(DOC_MCP_SKILLS_EN.contains("Refresh button"));
-        assert!(DOC_MCP_SKILLS_EN.contains("jeikcode mcp add"));
+        assert!(DOC_MCP_SKILLS_EN.contains("zap mcp add"));
         assert!(DOC_MCP_SKILLS_EN.contains("/skills"));
         assert!(DOC_OVERVIEW_EN.contains("zap_config"));
-        assert!(DOC_OVERVIEW_EN.contains("jeikcode mcp add"));
+        assert!(DOC_OVERVIEW_EN.contains("zap mcp add"));
     }
 
     #[tokio::test]

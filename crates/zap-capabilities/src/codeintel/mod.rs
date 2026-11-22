@@ -57,20 +57,22 @@ pub fn codeintel_tool_names() -> &'static [&'static str] {
 /// Returned by `code_explore` when the workspace has no
 /// `.zap/codegraph` index. Steers the model to inspect workspace
 /// layout, distinguishes single vs multi-repo scenarios, and guides
-/// direct or separated `jeikcode init --force` indexing.
+/// direct or separated `zap init --force` indexing.
 pub fn no_codegraph_tool_guidance() -> &'static str {
     "当前目录下尚未建立代码图谱索引（`.zap/codegraph` 不存在或为空）。\n\
      \n\
      【路由诊断与行动指引】：\n\
      1. 请先用 `read` 查看当前工作目录结构；\n\
-     2. 场景 A（单一项目独立代码仓库）：若当前目录是明确的单一项目，请直接运行jeikcode init --force建立索引后重新调用此工具；\n\
-     3. 场景 B（多项目综合文件夹 / 多个不相关仓库的汇总目录）：强烈不建议直接在多仓库综合根目录下建立全局索引！跨多个不相关项目建索引会导致大量的检索噪音、符号混淆与性能损耗；请分别进入具体的各个独立子仓库目录下运行 `jeikcode init --force`。唯一的例外是：如果这些子目录本身是同一个紧密协同项目的前后端（例如同一个全栈应用的前端与后端模块），此时请直接在当前目录执行jeikcode init --force；\n\
+     2. 场景 A（单一项目独立代码仓库）：若当前目录是明确的单一项目，请直接运行 zap init --force 建立索引后重新调用此工具；\n\
+     3. 场景 B（多项目综合文件夹 / 多个不相关仓库的汇总目录）：强烈不建议直接在多仓库综合根目录下建立全局索引！跨多个不相关项目建索引会导致大量的检索噪音、符号混淆与性能损耗；请分别进入具体的各个独立子仓库目录下运行 `zap init --force`。唯一的例外是：如果这些子目录本身是同一个紧密协同项目的前后端（例如同一个全栈应用的前端与后端模块），此时请直接在当前目录执行 zap init --force；\n\
      4. 场景 C（系统大范围目录，如 `/`、`/root`、`~`）：不要再调用 `code_explore`，直接降级改用 `read` / `glob` / `grep` 等轻量工具。"
 }
 
-/// Register codeintel tools using default mode (or environment JEIKCODE_CODEINTEL_MODE).
+/// Register codeintel tools using default mode (or environment ZAP_CODEINTEL_MODE / JEIKCODE_CODEINTEL_MODE).
 pub fn register_codeintel_tools(reg: &mut ToolRegistry) {
-    let env_mode = std::env::var("JEIKCODE_CODEINTEL_MODE").ok();
+    let env_mode = std::env::var("ZAP_CODEINTEL_MODE")
+        .or_else(|_| std::env::var("JEIKCODE_CODEINTEL_MODE"))
+        .ok();
     let mode = CodeIntelMode::from_env_or_config(env_mode.as_deref(), None);
     register_codeintel_tools_with_mode(reg, &mode);
 }
@@ -109,7 +111,7 @@ pub fn notify_code_index_file_changed(path: &Path, content: Option<&str>) {
 ///
 /// Only runs when `{root}/.zap/codegraph` already has a non-empty index.
 /// Missing or empty graphs are never auto-created — the user must run
-/// `jeikcode init .` for a first index. Incremental refresh of an existing
+/// `zap init .` for a first index. Incremental refresh of an existing
 /// index stays in the background.
 pub fn prewarm_code_index(root: &Path) {
     let root_buf = canonical(root);
@@ -352,7 +354,7 @@ mod tests {
         let g = no_codegraph_tool_guidance();
         assert!(g.contains("read"), "{g}");
         assert!(g.contains("code_explore"), "{g}");
-        assert!(g.contains("jeikcode init --force"), "{g}");
+        assert!(g.contains("zap init --force"), "{g}");
         assert!(g.contains("单一项目"), "{g}");
         assert!(g.contains("前后端"), "{g}");
     }

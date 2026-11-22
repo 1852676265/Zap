@@ -56,15 +56,16 @@ jobs:
           cache: npm
           cache-dependency-path: webui/package-lock.json
 
-      # WebUI 侧栏版本号在 `vite build` 时从 Cargo.toml / JEIKCODE_VERSION 烘进 JS。
+      # WebUI 侧栏版本号在 `vite build` 时从 Cargo.toml / ZAP_VERSION 烘进 JS。
       # Rust job 的 Tag 注入发生在本步之后，这里必须先注入，否则发布品侧栏会止步于工作区里的旧 version。
       - name: Sync version from Git Tag
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           VERSION=${TAG_NAME#v}
-          echo "Syncing Cargo.toml + JEIKCODE_VERSION to $VERSION from tag $TAG_NAME ..."
+          echo "Syncing Cargo.toml + ZAP_VERSION to $VERSION from tag $TAG_NAME ..."
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          echo "ZAP_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "JEIKCODE_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Build WebUI
@@ -139,14 +140,14 @@ jobs:
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/jeikcode.exe dist/jeikcode-${TAG_NAME}-windows-${{ matrix.arch }}.exe
+          cp target/${{ matrix.target }}/release/zap.exe dist/zap-${TAG_NAME}-windows-${{ matrix.arch }}.exe
 
       - name: Upload Windows CLI artifacts
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
           name: cli-windows-${{ matrix.arch }}
-          path: dist/jeikcode-*
+          path: dist/zap-*
           if-no-files-found: error
 
   # Windows CLI 编译完成之后创建一次 Release。清单是 Release 资产，不回写 main。
@@ -194,11 +195,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: JeikCode ${{ github.ref_name }}
+          name: Zap ${{ github.ref_name }}
           body_path: release_notes.md
           generate_release_notes: true
           files: |
-            dist/jeikcode-*
+            dist/zap-*
             dist/latest.json
           prerelease: ${{ contains(github.ref_name, '-') }}
           make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}
@@ -220,7 +221,7 @@ jobs:
           - name: windows-x64 (nsis)
             os: windows-latest
             artifact: cli-windows-x64
-            cli: jeikcode-${{ github.ref_name }}-windows-x64.exe
+            cli: zap-${{ github.ref_name }}-windows-x64.exe
             bundles: nsis
             rust_target: ""
 

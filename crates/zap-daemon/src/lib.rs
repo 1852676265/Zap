@@ -11850,7 +11850,7 @@ fn classify_delete_session_error(error: &anyhow::Error) -> (StatusCode, Json<Api
         _ => delete_session_api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "DELETE_FAILED",
-            "Failed to delete the session. Check the JeikCode logs for details.",
+            "Failed to delete the session. Check the Zap logs for details.",
         ),
     }
 }
@@ -12050,7 +12050,7 @@ fn classify_repair_session_error(
         _ => delete_session_api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "REPAIR_FAILED",
-            "Failed to inspect or repair the session. Check the JeikCode logs for details.",
+            "Failed to inspect or repair the session. Check the Zap logs for details.",
         )
         .into_response(),
     }
@@ -12081,7 +12081,7 @@ async fn repair_session(
             delete_session_api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "REPAIR_FAILED",
-                "Failed to inspect or repair the session. Check the JeikCode logs for details.",
+                "Failed to inspect or repair the session. Check the Zap logs for details.",
             )
             .into_response()
         }
@@ -12203,7 +12203,7 @@ async fn delete_session(
                 delete_session_api_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "DELETE_FAILED",
-                    "Failed to delete the session. Check the JeikCode logs for details.",
+                    "Failed to delete the session. Check the Zap logs for details.",
                 )
                 .into_response()
             }
@@ -21172,7 +21172,7 @@ async fn handle_terminal_socket(
                 let (mut sender, _) = socket.split();
                 let _ = sender
                     .send(Message::Text(format!(
-                        "\r\n\x1b[31m[JeikCode] failed to start terminal: {e}\x1b[0m\r\n"
+                        "\r\n\x1b[31m[Zap] failed to start terminal: {e}\x1b[0m\r\n"
                     )))
                     .await;
                 return;
@@ -21291,7 +21291,7 @@ async fn terminal_create(Json(req): Json<TerminalCreatePayload>) -> impl IntoRes
         cwd: cwd.clone(),
         shell,
         history: vec![
-            format!("[JeikCode Persistent Terminal Session: {term_id}]"),
+            format!("[Zap Persistent Terminal Session: {term_id}]"),
             format!("Active workspace: {cwd}"),
             "Connected to background process runner.\r\n".to_string(),
         ],
@@ -24978,6 +24978,7 @@ pub async fn run_server(opts: ServerOpts) -> anyhow::Result<()> {
         // both read JEIKCODE_REQUEST_USER_INPUT). Do NOT auto-answer questions —
         // the model must not have a "ask user" tool under YOLO automation.
         // SAFETY: serve is headless; setting process env here is intentional.
+        std::env::set_var("ZAP_REQUEST_USER_INPUT", "0");
         std::env::set_var("JEIKCODE_REQUEST_USER_INPUT", "0");
         if !quiet {
             eprintln!(

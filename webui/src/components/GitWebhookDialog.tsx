@@ -648,7 +648,7 @@ export function GitWebhookDialog({ project, onClose, onSaved }: GitWebhookDialog
         appId,
         privateKeyPath: config.githubAppPrivateKeyPath,
         privateKey: config.githubAppPrivateKey,
-        repoIdentifier: config.repoIdentifier || 'jeikl/JeikCode',
+        repoIdentifier: config.repoIdentifier || '1852676265/Zap',
         projectHash: project.hash,
       });
       if (res.success && res.token) {

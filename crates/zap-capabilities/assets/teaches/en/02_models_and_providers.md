@@ -127,7 +127,7 @@ reasoning_history = "exclude"
 
 ## 6. Reload & Effective Semantics
 
-Modifying `config.toml` **never requires restarting JeikCode**:
+Modifying `config.toml` **never requires restarting Zap**:
 1. **Agent Auto-Reload**: Invoke the built-in tool `zap_config(action="reload")` after saving edits.
 2. **User Manual Reload**: Enter the `/reload` command in WebUI or TUI.
 Reloaded models and configurations take effect immediately after the current turn completes and can be selected on the next turn.

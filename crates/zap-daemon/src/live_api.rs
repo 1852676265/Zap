@@ -2131,6 +2131,7 @@ pub(crate) enum LiveWireEvent {
         turn_ordinal: u32,
     },
     /// 已落盘的显示通知（重试进度等）：同 `id` 原地更新，`display_seq` 是账本坐标。
+    #[allow(dead_code)]
     #[serde(rename = "display_notice")]
     DisplayNotice {
         session_id: String,
@@ -4266,6 +4267,7 @@ pub(crate) async fn approval_mode_get(
     })
 }
 
+#[allow(dead_code)]
 async fn apply_live_mode(mode: ApprovalMode) -> bool {
     apply_live_mode_scoped(None, mode).await
 }
@@ -4406,15 +4408,15 @@ async fn clear_pending_permissions_on_auto(state: &AppState, scope: Option<&str>
 
 /// 进程冷启动初始化：读取 `~/.zap/desktop-settings.json` 中的 Agent 模式策略。
 /// `agent_mode_policy == "global"` 时开启全局统一模式；否则以记忆模式启动（关闭全局覆盖，
-/// 各会话按自身 `meta.approval_mode` 恢复，新会话回落为 Build）。
+/// 各会话按自身 `meta.approval_mode` 恢复，新会话回落为 Auto）。
 pub(crate) fn init_agent_mode_from_desktop_settings() {
     let settings = crate::api_config::load_desktop_settings_payload();
     if settings.agent_mode_policy == "global" {
         let mode = parse_approval_mode_wire(Some(&settings.agent_global_mode))
-            .unwrap_or(ApprovalMode::Build);
+            .unwrap_or(ApprovalMode::Auto);
         live_set_global_mode_enabled(true, Some(mode));
     } else {
-        live_set_global_mode_enabled(false, Some(ApprovalMode::Build));
+        live_set_global_mode_enabled(false, Some(ApprovalMode::Auto));
     }
 }
 
@@ -4426,7 +4428,7 @@ pub(crate) async fn apply_persisted_agent_mode_policy(
 ) {
     let is_global = policy.trim().eq_ignore_ascii_case("global");
     let target_mode =
-        parse_approval_mode_wire(Some(global_mode_wire)).unwrap_or(ApprovalMode::Build);
+        parse_approval_mode_wire(Some(global_mode_wire)).unwrap_or(ApprovalMode::Auto);
     if is_global {
         live_set_global_mode_enabled(true, Some(target_mode));
         let _ = apply_live_mode_scoped(None, target_mode).await;

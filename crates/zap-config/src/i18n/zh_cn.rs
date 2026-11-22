@@ -19,10 +19,10 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         } else {
             "ℹ️ 未选择任何更新项，配置保持不变。".into()
         },
-        Msg::ServerNoServices => "没有已安装的 JeikCode 服务。".into(),
+        Msg::ServerNoServices => "没有已安装的 Zap 服务。".into(),
         Msg::ServerServiceTableHeader => "ID   服务名                         端口   状态       平台       路径".into(),
         Msg::WelcomeBannerLine1 =>
-            "欢迎使用 JeikCode，请选择一项开始：".into(),
+            "欢迎使用 Zap，请选择一项开始：".into(),
         Msg::WelcomeBannerLine2 =>
             "（↑↓ 切换，Enter 确认，Esc 跳过）".into(),
         Msg::WelcomeOptionConfigureManually => "手动配置".into(),
@@ -39,11 +39,11 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::StatusRuntimeUnavailable =>
             "Runtime 不可用 · 请重启或查看上方错误".into(),
         Msg::StatusOfficialBuildRequired =>
-            "当前构建不支持 JeikCode 网关签名 — 请用 /provider 配置".into(),
+            "当前构建不支持 Zap 网关签名 — 请用 /provider 配置".into(),
         Msg::StatusUpgradeHint { version } =>
             format!("↑ {version} 可用 · 使用 /upgrade 升级").into(),
         Msg::StatusUpgradeHintPm { version } =>
-            format!("↑ {version} 可用 · 运行 brew upgrade jeikcode 升级").into(),
+            format!("↑ {version} 可用 · 运行 brew upgrade zap 升级").into(),
         Msg::StatusModelNotConfigured =>
             "（未配置）".into(),
         Msg::StatusClipboardImageHint =>
@@ -51,7 +51,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::StatusClipboardImageHintSlash =>
             "剪贴板有图片 · alt+v / ctrl+alt+v / /paste".into(),
         Msg::StatusWebuiHint =>
-            "提示：使用 /webui 在浏览器中打开 JeikCode".into(),
+            "提示：使用 /webui 在浏览器中打开 Zap".into(),
 
         // ── /status 命令主体 ──
         Msg::StatusBody { model, dir, config } =>
@@ -115,7 +115,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
     鼠标滚轮                         滚动聊天区
     鼠标拖选                         选择文本
     Shift+鼠标拖选                   使用终端原生文本选择
-    Ctrl+Shift+C                     复制 JeikCode 选区
+    Ctrl+Shift+C                     复制 Zap 选区
 
   ── 流程控制 ──
     Esc                              清空输入 / 关闭弹层 / 取消当前操作
@@ -490,7 +490,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::CmdProviderUnavailable =>
             "Provider 当前不可用。请使用 /login 登录，或用 /provider 配置。".into(),
         Msg::CmdProviderUnsupportedBuild =>
-            "当前构建不支持 JeikCode 官方网关。请安装官方版本，或使用 /provider 切换其他 Provider。".into(),
+            "当前构建不支持 Zap 官方网关。请安装官方版本，或使用 /provider 切换其他 Provider。".into(),
         Msg::CmdProviderReloading =>
             "正在切换 Provider/模型，请等待切换完成后再发送。".into(),
         Msg::SubmitHeldUntilProviderReady =>
@@ -593,7 +593,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
 
         // ── /upgrade ──
         Msg::UpgradePackageManaged =>
-            "本版本由 HarmonyBrew 管理，请运行 `brew upgrade jeikcode` 升级".into(),
+            "本版本由 HarmonyBrew 管理，请运行 `brew upgrade zap` 升级".into(),
         Msg::UpgradeUnknownArg { arg } =>
             format!("未知的 /upgrade 参数：{}\n  用法：/upgrade [rollback|--force]", arg).into(),
 
@@ -625,7 +625,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::McpServersHeader =>
             "  MCP 服务器：\n".into(),
         Msg::McpReloadFailed { error } =>
-            format!("MCP 重载失败：无法加载 .mcp.json / $JEIKCODE_HOME/mcp.json：{:#}", error).into(),
+            format!("MCP 重载失败：无法加载 .mcp.json / $ZAP_HOME/mcp.json：{:#}", error).into(),
         // /mcp login / logout
         Msg::McpOAuthLoginUsage =>
             "  用法：/mcp login <服务名>\n  示例：/mcp login github\n".into(),
@@ -724,7 +724,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::CmdSetupRunning =>
             "正在重新初始化并同步本地配置...".into(),
         Msg::SetupReinitialized { files, skills } =>
-            format!("✓ JeikCode 环境与配置已重新初始化（已同步 {files} 个配置文件，已重载 {skills} 个可用技能）").into(),
+            format!("✓ Zap 环境与配置已重新初始化（已同步 {files} 个配置文件，已重载 {skills} 个可用技能）").into(),
         Msg::CmdSetupSkillsReloaded { count } =>
             format!("  🔄 Skills 已重载 — {} 个可用", count).into(),
         Msg::CmdSetupError { error } =>
@@ -774,7 +774,7 @@ pub(super) fn zh_cn(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::OfflineModeActive =>
             "离线模式：已停用联网工具、遥测与自动更新。".into(),
         Msg::PluginHooksUntrusted { count, names } => format!(
-            "{count} 个插件带未信任的 hook（{names}）—— 不会运行。运行 jeikcode plugin trust <name> 授权。"
+            "{count} 个插件带未信任的 hook（{names}）—— 不会运行。运行 zap plugin trust <name> 授权。"
         ).into(),
         Msg::PluginInstalling { plugin, marketplace } =>
             format!("正在安装 `{plugin}@{marketplace}`…").into(),
@@ -838,7 +838,7 @@ Msg::PluginActionBackDesc => "返回已安装插件列表".into(),
         Msg::PluginReloadDone { skills, warnings } =>
             format!("插件已重新加载：{skills} 个 skill，{warnings} 个警告").into(),
         Msg::PluginGitNotFound =>
-            "💡 当前环境未安装 git 或 git 不在 PATH 中，插件市场自动安装和自动更新已禁用。请安装 git（macOS 可执行 `xcode-select --install`，Ubuntu 可执行 `sudo apt install git`）后重启 JeikCode。".into(),
+            "💡 当前环境未安装 git 或 git 不在 PATH 中，插件市场自动安装和自动更新已禁用。请安装 git（macOS 可执行 `xcode-select --install`，Ubuntu 可执行 `sudo apt install git`）后重启 Zap。".into(),
         Msg::PluginMarketplaceAdded { name, commit, count, plugins } =>
             format!(
                 "✓ 已添加 marketplace `{name}`（commit {commit}，共 {count} 个插件）\n  \
@@ -857,7 +857,7 @@ Msg::PluginActionBackDesc => "返回已安装插件列表".into(),
 
         // ── 命令描述 ──
         Msg::CmdDescWebui => "启动浏览器 webui（子命令：stop / lan / --host <地址>）".into(),
-        Msg::CmdDescSetup => "重新初始化 JeikCode 环境与配置".into(),
+        Msg::CmdDescSetup => "重新初始化 Zap 环境与配置".into(),
         Msg::CmdDescNew => "开始新会话（清除对话）".into(),
         Msg::CmdDescSessions => "列出并切换会话".into(),
         Msg::SessionSwitched { short_id } =>
@@ -871,7 +871,7 @@ Msg::PluginActionBackDesc => "返回已安装插件列表".into(),
         Msg::CmdDescProvider => "管理 Provider（添加、编辑、删除、设为全局默认）".into(),
         Msg::CmdDescStatus => "显示会话状态".into(),
         Msg::CmdDescConfig => "显示配置文件路径".into(),
-        Msg::CmdDescReload => "从磁盘重新加载 $JEIKCODE_HOME/config.toml".into(),
+        Msg::CmdDescReload => "从磁盘重新加载 $ZAP_HOME/config.toml".into(),
         Msg::CmdDescCd => "切换工作目录并开启新建对话".into(),
 Msg::CmdDescInit => "分析项目并生成 AGENTS.md".into(),
 Msg::CmdDescBg => "后台会话：/bg、/bg list、/bg <N>、/bg drop <N>".into(),
@@ -898,7 +898,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::CmdDescHelp => "显示帮助".into(),
         Msg::CmdDescKeys => "显示键盘快捷键".into(),
         Msg::CmdDescLanguage => "切换显示语言".into(),
-        Msg::CmdDescQuit => "退出 JeikCode".into(),
+        Msg::CmdDescQuit => "退出 Zap".into(),
         Msg::CmdDescSkills => "浏览已加载的技能".into(),
         Msg::CmdDescPlugin => "插件市场（子命令：marketplace, install, uninstall, reload, list）".into(),
         Msg::CmdDescPaste => "从剪贴板粘贴图片（快捷键 Alt+V / Ctrl+Alt+V；Windows Terminal 下 Ctrl+V 常被拦截）".into(),
@@ -916,7 +916,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::SaveInvalidPath { path } => format!("路径无效——目录不存在：{path}").into(),
         Msg::SaveRefuseOverwrite { path } => format!("目标已存在且非 markdown 文件，已拒绝覆盖（避免误删源码/配置）：{path}。请换个 .md 文件名或新路径。").into(),
         Msg::CodeBlockCopied => "📋 代码块已复制到剪贴板".into(),
-        Msg::CmdDescGuide => "通过 jeikcode_config_guide 查询配置与用法".into(),
+        Msg::CmdDescGuide => "通过 zap_config 查询配置与用法".into(),
         Msg::CmdDescView => "在浮层窗口中查看文件内容".into(),
         Msg::CmdDescApp => "通过中继将当前会话暴露给手机 App（扫码配对；/app stop 断开）".into(),
         Msg::CmdDescReview => "审查当前代码改动（/review · /review staged · /review <基准>）".into(),
@@ -925,17 +925,17 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::CmdDescTodo => "显示当前任务清单；`/todo add <任务>` 追加一条，`/todo clear` 清空".into(),
         Msg::CmdDescSchedule => "查看定时任务列表和下次运行时间".into(),
         Msg::CmdDescDesktop =>
-            "打开 JeikCode 桌面端（已安装则启动，否则显示下载地址）".into(),
+            "打开 Zap 桌面端（已安装则启动，否则显示下载地址）".into(),
         Msg::DesktopOpening { name, path } =>
             format!("正在打开 {}…\n  {}\n", name, path).into(),
         Msg::DesktopNotInstalled { url } =>
-            format!("未检测到 JeikCode 桌面端。下载安装：\n  {}\n", url).into(),
+            format!("未检测到 Zap 桌面端。下载安装：\n  {}\n", url).into(),
         Msg::DesktopLaunchFailed { path, err } =>
             format!("找到了应用但启动失败：{}\n  {}\n", err, path).into(),
         Msg::TodoNoList => "当前无任务清单（模型尚未创建 todo）。".into(),
         Msg::TodoListHeader => "当前任务清单:".into(),
         Msg::TodoAddUsage => "用法：/todo add <任务描述>".into(),
-        Msg::GuideMenuHeader => "📖 JeikCode 使用指南 — 输入 /guide <问题>（走内置配置指南）".into(),
+        Msg::GuideMenuHeader => "📖 Zap 使用指南 — 输入 /guide <问题>（走内置配置指南）".into(),
         Msg::GuideMenuTopics => "常用话题：".into(),
         Msg::GuideMenuGettingStarted => "怎么开始使用          首次安装、配置 provider".into(),
         Msg::GuideMenuSwitchModel => "怎么设置默认模型       /model /provider 操作".into(),
@@ -952,7 +952,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
 ".into(),
         Msg::GuideMenuDocUrl => "".into(),
         Msg::CmdGuideFallbackPrompt { question } => format!(
-            "Answer the user's JeikCode usage/config question. FIRST call the `jeikcode_config_guide` tool with the best-matching `topic` (overview, prompts, models, mcp, skills, thesaurus, tools, directories, project, updates, or all). THEN answer concisely in the user's language based only on that tool output. Do not invent settings, and do not promote third-party skill stores.\n\nUser question: {question}"
+            "Answer the user's Zap usage/config question. FIRST call the `zap_config` tool with the best-matching `topic` (overview, prompts, models, mcp, skills, thesaurus, tools, directories, project, updates, or all). THEN answer concisely in the user's language based only on that tool output. Do not invent settings, and do not promote third-party skill stores.\n\nUser question: {question}"
         ).into(),
         Msg::CmdGuideInstalling => "正在准备指南回答，请稍候...".into(),
         Msg::CmdGuideAutoInstall => "可选 ask skill 未安装，改用内置指南回答。".into(),
@@ -978,7 +978,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::OnboardingStepHeaderWelcome => "第 1/3 步 · 欢迎".into(),
         Msg::OnboardingStepHeaderLanguage => "第 2/3 步 · 语言".into(),
         Msg::OnboardingStepHeaderSetup => "第 3/3 步 · 配置".into(),
-        Msg::OnboardingPanelTitle => "JeikCode".into(),
+        Msg::OnboardingPanelTitle => "Zap".into(),
         Msg::OnboardingIntroVersionLine { v } =>
             format!("版本 {v}  ·  在终端里运行的 AI 编程代理").into(),
         Msg::OnboardingIntroBullet1 =>
@@ -1129,7 +1129,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
             "[headless] --dangerously-skip-permissions：所有工具调用将自动批准".into(),
 
         Msg::AdminWarningBanner =>
-            "\x1b[33m\u{26a0} 警告：正在以管理员权限运行。\n   模型可能可以访问系统文件。\n   建议改用普通权限、并在受限的工作目录中运行 JeikCode。\x1b[39m\n".into(),
+            "\x1b[33m\u{26a0} 警告：正在以管理员权限运行。\n   模型可能可以访问系统文件。\n   建议改用普通权限、并在受限的工作目录中运行 Zap。\x1b[39m\n".into(),
         Msg::AdminWarningHeadless =>
             "[warning] 正在以管理员权限运行 — 模型可能可以访问系统文件。".into(),
 
@@ -1187,30 +1187,30 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         // ── CLI jeikcode --help i18n ──
         Msg::CliAbout => "终端中的 AI 编程助手".into(),
         Msg::CliAboutStatus => "查看当前登录状态".into(),
-        Msg::CliAboutUpgrade => "就地升级 jeikcode。`update` 与 `up` 等价；`up main` 或 `up beta` 选择通道，后面可跟版本号。详细教程：https://jeikcode.top/zh/guide/updates.html".into(),
+        Msg::CliAboutUpgrade => "就地升级 zap。`update` 与 `up` 等价；`up main` 或 `up beta` 选择通道，后面可跟版本号。详细教程：https://github.com/1852676265/Zap".into(),
         Msg::CliHelpUpgradeForce => "即使当前已是最新版本也强制重新安装".into(),
         Msg::CliHelpUpgradeYes => "升级后自动确认并应用默认配置变更，无需交互确认".into(),
         Msg::CliHelpUpgradeBeta => "从 beta（预发布）通道升级".into(),
         Msg::CliHelpUpgradeMain => "从正式版 / main 通道升级（默认）".into(),
-        Msg::CliAboutList => "列出历史版本（`list` / `list main` 为正式版，`list beta` 为预览版）。详细教程：https://jeikcode.top/zh/guide/updates.html".into(),
+        Msg::CliAboutList => "列出历史版本（`list` / `list main` 为正式版，`list beta` 为预览版）。详细教程：https://github.com/1852676265/Zap".into(),
         Msg::CliHelpListChannel => "通道：main（默认，正式版）或 beta".into(),
-        Msg::CliAboutDown => "安装指定版本，包含更旧的版本（`down main <版本>` / `down beta <版本>`）。详细教程：https://jeikcode.top/zh/guide/updates.html".into(),
+        Msg::CliAboutDown => "安装指定版本，包含更旧的版本（`down main <版本>` / `down beta <版本>`）。详细教程：https://github.com/1852676265/Zap".into(),
         Msg::CliHelpDownChannel => "通道：main 或 beta".into(),
         Msg::CliHelpDownVersion => "要安装的版本号，例如 v7.2.3 或 7.2.4-beta.8".into(),
-        Msg::CliAboutRollback => "回退到上一个版本（与 .bak 交换）。详细教程：https://jeikcode.top/zh/guide/updates.html".into(),
+        Msg::CliAboutRollback => "回退到上一个版本（与 .bak 交换）。详细教程：https://github.com/1852676265/Zap".into(),
         Msg::CliAboutMcp => "管理 .mcp.json 中的 MCP 服务器配置".into(),
         Msg::CliAboutDaemon => "启动用于 IDE 集成的 HTTP 守护进程".into(),
         Msg::CliAboutWebui => "启动本地浏览器 webui".into(),
         Msg::CliAboutServe => {
-            "启动无界面 JeikCode 服务端，供远程 attach（Web UI + API）".into()
+            "启动无界面 Zap 服务端，供远程 attach（Web UI + API）".into()
         }
         Msg::CliAboutAttach => {
-            "连接正在运行的 JeikCode 服务端（打开 Web UI）".into()
+            "连接正在运行的 Zap 服务端（打开 Web UI）".into()
         }
         Msg::CliAboutTelemetry => "遥测控制".into(),
         Msg::CliAboutPlugin => "管理技能/命令插件".into(),
-        Msg::CliAboutUninstall => "卸载 JeikCode。无参数时交互询问是否保留用户配置；simple 只删程序；all 全部删除。".into(),
-        Msg::CliAboutSetup => "重新初始化 JeikCode 环境与内置配置到 ~/.zap/".into(),
+        Msg::CliAboutUninstall => "卸载 Zap。无参数时交互询问是否保留用户配置；simple 只删程序；all 全部删除。".into(),
+        Msg::CliAboutSetup => "重新初始化 Zap 环境与内置配置到 ~/.zap/".into(),
         Msg::CliAboutHooks => "管理钩子（列表、测试、启用/禁用）".into(),
         Msg::CliAboutHooksList => "列出所有已加载钩子及其状态".into(),
         Msg::CliAboutHooksTest => "按名称测试指定钩子".into(),
@@ -1256,9 +1256,9 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::CliHelpUninstallDryRun => "仅打印计划；不执行操作".into(),
         Msg::CliAboutUninstallSimple => "只删除程序和 PATH 项，保留用户配置。无交互。".into(),
         Msg::CliAboutUninstallAll => "删除程序、PATH 项和全部用户配置。无交互。".into(),
-        Msg::UninstallNoTty => "jeikcode uninstall：当前没有终端，不能交互卸载。\n只删除程序请用 `jeikcode uninstall simple`；连同用户配置一起删除请用 `jeikcode uninstall all`。\n也可使用 --yes、--purge、--keep-data、--dry-run。".into(),
-        Msg::UninstallConflict => "jeikcode uninstall：这些选项互相冲突。请只使用 simple、all、--purge、--keep-data 或 --yes 其中之一。".into(),
-        Msg::UninstallIntro => "即将卸载 JeikCode。\n程序本体和 PATH 项一定会移除。".into(),
+        Msg::UninstallNoTty => "zap uninstall：当前没有终端，不能交互卸载。\n只删除程序请用 `zap uninstall simple`；连同用户配置一起删除请用 `zap uninstall all`。\n也可使用 --yes、--purge、--keep-data、--dry-run。".into(),
+        Msg::UninstallConflict => "zap uninstall：这些选项互相冲突。请只使用 simple、all、--purge、--keep-data 或 --yes 其中之一。".into(),
+        Msg::UninstallIntro => "即将卸载 Zap。\n程序本体和 PATH 项一定会移除。".into(),
         Msg::UninstallRemovingBinary => "\n将移除的程序与 PATH 项：".into(),
         Msg::UninstallConfigHeader { dir } => format!("\n用户配置（{dir}）：").into(),
         Msg::UninstallNoConfig => "\n未找到用户配置。".into(),
@@ -1269,15 +1269,15 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::UninstallSummaryRemoveConfig => "  移除：用户配置".into(),
         Msg::UninstallContinue => "\n继续？[y/N]: ".into(),
         Msg::UninstallAborted => "已取消。".into(),
-        Msg::UninstallKillFound { count } => format!("\n发现 {count} 个正在运行的 jeikcode 进程：").into(),
+        Msg::UninstallKillFound { count } => format!("\n发现 {count} 个正在运行的 zap 进程：").into(),
         Msg::UninstallKillAsk => "结束这些进程并继续？[y/N]: ".into(),
         Msg::UninstallKillDeclined => "已取消：运行中的进程未被结束。".into(),
-        Msg::UninstallAutoKilled { count } => format!("正在结束其他 {count} 个 jeikcode 进程。").into(),
+        Msg::UninstallAutoKilled { count } => format!("正在结束其他 {count} 个 zap 进程。").into(),
         Msg::UninstallKillFailed { pid, error } => format!("无法结束 pid {pid}：{error}").into(),
         Msg::UninstallDryRun => "DRY RUN — 不会做任何更改。\n".into(),
         Msg::UninstallWillRemove => "将移除".into(),
         Msg::UninstallWillKeep => "保留".into(),
-        Msg::UninstallKeptHint => "已保留（之后可用 `jeikcode uninstall all` 删除）：".into(),
+        Msg::UninstallKeptHint => "已保留（之后可用 `zap uninstall all` 删除）：".into(),
         Msg::UninstallRemoved => "已移除：".into(),
         Msg::UninstallFailed => "失败：".into(),
         Msg::UninstallBackups => "备份：".into(),
@@ -1298,11 +1298,11 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
         Msg::ProviderInitFailed { detail } =>
             format!("模型初始化失败：{detail}").into(),
         Msg::ProviderInitSourceBuild =>
-            "当前为源码构建，无法使用 JeikCode 免费网关。请用 /provider 配置一个自带 api_key \
+            "当前为源码构建，无法使用 Zap 免费网关。请用 /provider 配置一个自带 api_key \
              的模型（如 DeepSeek 官方 / GLM / OpenAI），或改用官方发布版。".into(),
         Msg::GatewayAuthUnavailable { base_url } =>
             format!(
-                "provider base_url「{base_url}」是 JeikCode 网关，当前构建无法对其鉴权。请使用官方版本，\
+                "provider base_url「{base_url}」是 Zap 网关，当前构建无法对其鉴权。请使用官方版本，\
                  或将该 provider 指向带 api_key 的标准 OpenAI 兼容端点。"
             ).into(),
         Msg::StreamStalled => "按 esc 可取消".into(),
@@ -1311,7 +1311,7 @@ Msg::CmdDescBackground => "在隔离的后台上下文中运行一次性任务�
              换用 \x1b[1;96mWindows Terminal\x1b[0m 体验更佳。"
                 .into(),
         Msg::ServeNoTokenSecurityWarning =>
-            "【严重安全警告】检测到你未配置访问令牌 (Token)！\n如果你当前未设置对应防火墙，请向 JeikCode 的 AI 询问让其帮忙设立防火墙和白名单 IP，否则你的服务器很容易被黑客入侵！".into(),
+            "【严重安全警告】检测到你未配置访问令牌 (Token)！\n如果你当前未设置对应防火墙，请向 Zap 的 AI 询问让其帮忙设立防火墙和白名单 IP，否则你的服务器很容易被黑客入侵！".into(),
         Msg::AgentRetryEmpty { attempt, max, wait } => if wait > 0 {
             format!("模型返回空响应，{wait} 秒后重试({attempt}/{max})...")
         } else {

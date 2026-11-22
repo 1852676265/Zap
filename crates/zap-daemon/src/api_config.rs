@@ -1741,7 +1741,7 @@ fn default_agent_mode_policy() -> String {
 }
 
 fn default_agent_global_mode() -> String {
-    "build".to_string()
+    "bypass".to_string()
 }
 
 fn default_toggle_shortcut() -> String {
@@ -1818,7 +1818,7 @@ pub(crate) fn normalize_desktop_settings(
     };
     payload.agent_global_mode =
         crate::live_api::parse_approval_mode_wire(Some(&payload.agent_global_mode))
-            .unwrap_or(crate::approval_mode::ApprovalMode::Build)
+            .unwrap_or(crate::approval_mode::ApprovalMode::Auto)
             .wire()
             .to_string();
     payload.toggle_shortcut = payload.toggle_shortcut.trim().to_string();
@@ -2614,7 +2614,7 @@ mod tests {
         assert_eq!(after_close.agent_mode_policy, "global");
         assert_eq!(after_close.agent_global_mode, "bypass");
 
-        // Unknown values normalize safely back to memory + build defaults.
+        // Unknown values normalize safely back to memory + bypass (Auto) defaults.
         let normalized = super::normalize_desktop_settings(super::DesktopSettingsPayload {
             close_action: "".into(),
             agent_mode_policy: "invalid".into(),
@@ -2623,7 +2623,7 @@ mod tests {
         });
         assert_eq!(normalized.close_action, "ask");
         assert_eq!(normalized.agent_mode_policy, "memory");
-        assert_eq!(normalized.agent_global_mode, "build");
+        assert_eq!(normalized.agent_global_mode, "bypass");
     }
 
     #[test]
@@ -2638,7 +2638,7 @@ mod tests {
         let loaded = super::load_desktop_settings_payload_at(&path);
         assert_eq!(loaded.close_action, "tray");
         assert_eq!(loaded.agent_mode_policy, "global");
-        assert_eq!(loaded.agent_global_mode, "build");
+        assert_eq!(loaded.agent_global_mode, "bypass");
     }
 
     #[test]

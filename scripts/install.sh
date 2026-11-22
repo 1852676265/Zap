@@ -1,21 +1,21 @@
 #!/bin/sh
-# JeikCode installer — curl | sh
+# Zap installer — curl | sh
 #
-#   curl -fsSL https://raw.githubusercontent.com/1852676265/JeikCode/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/1852676265/Zap/main/scripts/install.sh | sh
 #
 # Env overrides:
-#   JEIKCODE_VERSION   release tag to install (default: latest release asset latest.json)
-#   JEIKCODE_PREFIX    install dir (absolute path; default: /usr/local/bin if writable,
+#   ZAP_VERSION (or JEIKCODE_VERSION)   release tag to install (default: latest release asset latest.json)
+#   ZAP_PREFIX (or JEIKCODE_PREFIX)     install dir (absolute path; default: /usr/local/bin if writable,
 #                        else ~/.local/bin). On HarmonyOS as non-root, default is ~/.local/bin.
-#   JEIKCODE_MANIFEST_URL / JEIKCODE_DOWNLOAD_BASE  override update channel (optional)
+#   ZAP_MANIFEST_URL / ZAP_DOWNLOAD_BASE  override update channel (optional)
 #
 # IMPORTANT: when changing install paths, the PATH-rc edit format, or filenames here,
 # also update scripts/uninstall.sh AND
-# crates/jeikcode-cli/src/uninstall/paths.rs.
+# crates/zap-cli/src/uninstall/paths.rs.
 set -eu
 
 ZAP_DOWNLOAD_BASE="${ZAP_DOWNLOAD_BASE:-${JEIKCODE_DOWNLOAD_BASE:-}}"
-REPO_BASE="${ZAP_DOWNLOAD_BASE:-https://github.com/1852676265/JeikCode/releases/download}"
+REPO_BASE="${ZAP_DOWNLOAD_BASE:-https://github.com/1852676265/Zap/releases/download}"
 REQUESTED_TAG=""
 EFFECTIVE_VERSION="${ZAP_VERSION:-${JEIKCODE_VERSION:-}}"
 if [ -n "$EFFECTIVE_VERSION" ]; then
@@ -32,9 +32,9 @@ if [ -n "$EFFECTIVE_MANIFEST_URL" ]; then
         *) MANIFEST_URL="${MANIFEST_URL%/}/latest.json" ;;
     esac
 elif [ -n "$REQUESTED_TAG" ]; then
-    MANIFEST_URL="https://github.com/1852676265/JeikCode/releases/download/${REQUESTED_TAG}/latest.json"
+    MANIFEST_URL="https://github.com/1852676265/Zap/releases/download/${REQUESTED_TAG}/latest.json"
 else
-    MANIFEST_URL="https://github.com/1852676265/JeikCode/releases/latest/download/latest.json"
+    MANIFEST_URL="https://github.com/1852676265/Zap/releases/latest/download/latest.json"
 fi
 
 # --- detect platform ---
@@ -136,26 +136,34 @@ printf '%s\n' "$EXPECTED_SIZE" | grep -Eq '^[1-9][0-9]*$' || {
 }
 
 # --- download ---
-DEST="$TMP/jeikcode${ext}"
+DEST="$TMP/zap${ext}"
 
-# Prefer jeikcode-* asset with v-prefix (e.g. v7.0.0); fall back to non-v tag (legacy).
+# Prefer zap-* asset; fall back to legacy jeikcode-* and non-v tags.
 case "$VERSION" in
     v*) PRIMARY_TAG="$VERSION"; SECONDARY_TAG="${VERSION#v}" ;;
     *)  PRIMARY_TAG="v$VERSION"; SECONDARY_TAG="$VERSION" ;;
 esac
 
-BIN_NAME="jeikcode-${PRIMARY_TAG}-${os}-${arch}${ext}"
-URL="${REPO_BASE}/${PRIMARY_TAG}/${BIN_NAME}"
-
-echo "==> Downloading $BIN_NAME"
-echo "    from $URL"
-if ! $_down "$DEST" "$URL"; then
-    ALT_NAME="jeikcode-${SECONDARY_TAG}-${os}-${arch}${ext}"
-    ALT_URL="${REPO_BASE}/${SECONDARY_TAG}/${ALT_NAME}"
-    echo "==> Retrying with $ALT_NAME"
-    echo "    from $ALT_URL"
-    $_down "$DEST" "$ALT_URL"
-fi
+BIN_NAME=""
+URL=""
+for CAND_TAG in "$PRIMARY_TAG" "$SECONDARY_TAG"; do
+    for CAND_PREFIX in "zap" "jeikcode"; do
+        CAND_NAME="${CAND_PREFIX}-${CAND_TAG}-${os}-${arch}${ext}"
+        CAND_URL="${REPO_BASE}/${CAND_TAG}/${CAND_NAME}"
+        echo "==> Downloading $CAND_NAME"
+        echo "    from $CAND_URL"
+        if $_down "$DEST" "$CAND_URL"; then
+            BIN_NAME="$CAND_NAME"
+            URL="$CAND_URL"
+            break 2
+        fi
+        rm -f "$DEST"
+    done
+done
+[ -n "$BIN_NAME" ] || {
+    echo "Error: failed to download binary for ${os}-${arch}." >&2
+    exit 1
+}
 
 # Sanity check: must be a real binary, not an HTML 404 page
 if head -c 4 "$DEST" | grep -q "<" 2>/dev/null; then
@@ -190,12 +198,12 @@ echo "==> Verified SHA256 and size for $TARGET_KEY"
 chmod +x "$DEST"
 
 # --- install ---
-TARGET="$PREFIX/jeikcode${ext}"
+TARGET="$PREFIX/zap${ext}"
 if [ "$os" = "windows" ]; then
     echo "==> Installing to $TARGET"
     if ! mv "$DEST" "$TARGET"; then
         echo "Error: could not write $TARGET." >&2
-        echo "       If jeikcode is already running, close it and re-run this installer." >&2
+        echo "       If zap is already running, close it and re-run this installer." >&2
         exit 1
     fi
 elif [ -e "$TARGET" ] && [ ! -w "$TARGET" ]; then
@@ -214,30 +222,30 @@ echo ""
 echo "Installed: $TARGET"
 "$TARGET" --version 2>/dev/null || true
 
-# Provide zap executable alias / symlink alongside jeikcode
-ZAP_TARGET="$PREFIX/zap${ext}"
-if [ "$TARGET" != "$ZAP_TARGET" ]; then
+# Provide legacy jeikcode executable alias / symlink alongside zap
+LEGACY_TARGET="$PREFIX/jeikcode${ext}"
+if [ "$TARGET" != "$LEGACY_TARGET" ]; then
     if [ "$os" = "windows" ]; then
-        cp -f "$TARGET" "$ZAP_TARGET" 2>/dev/null || true
+        cp -f "$TARGET" "$LEGACY_TARGET" 2>/dev/null || true
     else
-        ln -sf "$TARGET" "$ZAP_TARGET" 2>/dev/null || sudo ln -sf "$TARGET" "$ZAP_TARGET" 2>/dev/null || true
+        ln -sf "$TARGET" "$LEGACY_TARGET" 2>/dev/null || sudo ln -sf "$TARGET" "$LEGACY_TARGET" 2>/dev/null || true
     fi
-    if [ -f "$ZAP_TARGET" ] || [ -L "$ZAP_TARGET" ]; then
-        echo "Created alias: $ZAP_TARGET"
+    if [ -f "$LEGACY_TARGET" ] || [ -L "$LEGACY_TARGET" ]; then
+        echo "Created legacy alias: $LEGACY_TARGET"
     fi
 fi
 
 # --- OpenWrt compatibility: automatically link to /usr/bin if needed ---
 OPENWRT_LINKED=0
-if [ "$is_openwrt" = 1 ] && [ "$TARGET" != "/usr/bin/jeikcode${ext}" ] && [ -d /usr/bin ]; then
+if [ "$is_openwrt" = 1 ] && [ "$TARGET" != "/usr/bin/zap${ext}" ] && [ -d /usr/bin ]; then
     if [ -w /usr/bin ]; then
-        ln -sf "$TARGET" "/usr/bin/jeikcode${ext}"
+        ln -sf "$TARGET" "/usr/bin/zap${ext}"
         OPENWRT_LINKED=1
-        echo "==> [OpenWrt] 已自动创建软链接: /usr/bin/jeikcode -> $TARGET"
+        echo "==> [OpenWrt] 已自动创建软链接: /usr/bin/zap -> $TARGET"
     elif command -v sudo >/dev/null 2>&1; then
-        sudo ln -sf "$TARGET" "/usr/bin/jeikcode${ext}"
+        sudo ln -sf "$TARGET" "/usr/bin/zap${ext}"
         OPENWRT_LINKED=1
-        echo "==> [OpenWrt] 已自动创建软链接: /usr/bin/jeikcode -> $TARGET (sudo)"
+        echo "==> [OpenWrt] 已自动创建软链接: /usr/bin/zap -> $TARGET (sudo)"
     fi
 fi
 
@@ -266,7 +274,7 @@ if [ "$os" = "windows" ]; then
     echo ""
     echo "Note: installed for this Unix shell (MSYS/MinGW/Git-Bash/Cygwin)."
     echo "      For a system-wide Windows install (cmd / PowerShell PATH), use instead:"
-    echo "      powershell -c \"irm https://raw.githubusercontent.com/1852676265/JeikCode/main/scripts/install.ps1 | iex\""
+    echo "      powershell -c \"irm https://raw.githubusercontent.com/1852676265/Zap/main/scripts/install.ps1 | iex\""
 fi
 
 EFFECTIVE_NO_PATH_UPDATE="${ZAP_NO_PATH_UPDATE:-${JEIKCODE_NO_PATH_UPDATE:-0}}"
@@ -291,7 +299,7 @@ if [ "$EFFECTIVE_NO_PATH_UPDATE" != "1" ]; then
                     :
                 else
                     echo "" >> "$RC"
-                    echo "# Added by JeikCode installer" >> "$RC"
+                    echo "# Added by Zap installer" >> "$RC"
                     echo "$LINE" >> "$RC"
                     echo ""
                     echo "Added $PREFIX to PATH in $RC"

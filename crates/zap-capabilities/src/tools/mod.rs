@@ -177,7 +177,8 @@ pub fn register_coding_tools_with_vision_and_bash_state(
     // Gate on JEIKCODE_TODO env var (0/false/off → skip; anything else or absent → register).
     // Mirrors jeikcode_core::config::todo_enabled_from_env but inlined here because
     // zap-capabilities must NOT depend on jeikcode-core (layering constraint).
-    let todo_env_off = std::env::var("JEIKCODE_TODO")
+    let todo_env_off = std::env::var("ZAP_TODO")
+        .or_else(|_| std::env::var("JEIKCODE_TODO"))
         .ok()
         .map(|v| {
             matches!(
@@ -203,7 +204,8 @@ pub fn register_coding_tools_with_vision_and_bash_state(
     // need the tools layer).  If you change the logic here, mirror the change in
     // `zap-config/src/config/mod.rs::request_user_input_enabled_from_env` and vice
     // versa.  The two blocks MUST stay in sync.
-    let request_user_input_on = match std::env::var("JEIKCODE_REQUEST_USER_INPUT")
+    let request_user_input_on = match std::env::var("ZAP_REQUEST_USER_INPUT")
+        .or_else(|_| std::env::var("JEIKCODE_REQUEST_USER_INPUT"))
         .ok()
         .as_deref()
         .map(|v| v.trim().to_ascii_lowercase())

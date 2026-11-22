@@ -31,22 +31,35 @@ pub fn resolve_timeout_policy(coding: &zap_config::config::CodingConfig) -> Time
     }
     TimeoutPolicy {
         connect: transport_secs(
-            &["JEIKCODE_CONNECT_TIMEOUT_SECS"],
+            &["ZAP_CONNECT_TIMEOUT_SECS", "JEIKCODE_CONNECT_TIMEOUT_SECS"],
             coding.connect_timeout_secs,
             TimeoutPolicy::DEFAULT_CONNECT_SECS,
         ),
         open: transport_secs(
-            &["JEIKCODE_OPEN_TIMEOUT_SECS"],
+            &["ZAP_OPEN_TIMEOUT_SECS", "JEIKCODE_OPEN_TIMEOUT_SECS"],
             coding.open_timeout_secs,
             TimeoutPolicy::DEFAULT_OPEN_SECS,
         ),
         ttft: content_secs(
-            &["JEIKCODE_TTFT_SECS", "JEIKCODE_FIRST_TOKEN_TIMEOUT_SECS"],
+            &[
+                "ZAP_TTFT_SECS",
+                "ZAP_FIRST_TOKEN_TIMEOUT_SECS",
+                "JEIKCODE_TTFT_SECS",
+                "JEIKCODE_FIRST_TOKEN_TIMEOUT_SECS",
+            ],
             coding.ttft_secs,
         ),
-        transition: content_secs(&["JEIKCODE_TRANSITION_SECS"], coding.transition_secs),
+        transition: content_secs(
+            &["ZAP_TRANSITION_SECS", "JEIKCODE_TRANSITION_SECS"],
+            coding.transition_secs,
+        ),
         streaming: content_secs(
-            &["JEIKCODE_STREAMING_SECS", "JEIKCODE_STREAM_TIMEOUT_SECS"],
+            &[
+                "ZAP_STREAMING_SECS",
+                "ZAP_STREAM_TIMEOUT_SECS",
+                "JEIKCODE_STREAMING_SECS",
+                "JEIKCODE_STREAM_TIMEOUT_SECS",
+            ],
             coding.streaming_sliding_secs,
         ),
     }
@@ -434,11 +447,17 @@ impl CodingRuntimeConfig {
             skip_tls_verify: r.map(|r| r.skip_tls_verify).unwrap_or(false),
             loop_max_rounds: resolve_loop_max_rounds(
                 config.loop_config.max_rounds,
-                std::env::var("JEIKCODE_LOOP_MAX_ROUNDS").ok().as_deref(),
+                std::env::var("ZAP_LOOP_MAX_ROUNDS")
+                    .or_else(|_| std::env::var("JEIKCODE_LOOP_MAX_ROUNDS"))
+                    .ok()
+                    .as_deref(),
             ),
             turn_max_rounds: resolve_turn_max_rounds(
                 config.coding.max_rounds,
-                std::env::var("JEIKCODE_TURN_MAX_ROUNDS").ok().as_deref(),
+                std::env::var("ZAP_TURN_MAX_ROUNDS")
+                    .or_else(|_| std::env::var("JEIKCODE_TURN_MAX_ROUNDS"))
+                    .ok()
+                    .as_deref(),
             ),
             compact_threshold: zap_config::config::sanitize_compact_threshold(
                 config.coding.compact_threshold,
@@ -451,7 +470,8 @@ impl CodingRuntimeConfig {
                 .and_then(zap_config::config::sanitize_compact_max_tokens),
             timeouts: resolve_timeout_policy(&config.coding),
             first_token_timeout_retries: {
-                std::env::var("JEIKCODE_FIRST_TOKEN_RETRIES")
+                std::env::var("ZAP_FIRST_TOKEN_RETRIES")
+                    .or_else(|_| std::env::var("JEIKCODE_FIRST_TOKEN_RETRIES"))
                     .ok()
                     .and_then(|s| s.trim().parse::<u32>().ok())
                     .unwrap_or(config.coding.first_token_timeout_retries)
@@ -466,14 +486,16 @@ impl CodingRuntimeConfig {
             extra_system_append: None,
             session_display_name: None,
             // env wins over `[tools.tool_output] max_bytes`; missing → None (default).
-            tool_output_max_bytes: std::env::var("JEIKCODE_TOOL_OUTPUT_THRESHOLD_BYTES")
+            tool_output_max_bytes: std::env::var("ZAP_TOOL_OUTPUT_THRESHOLD_BYTES")
+                .or_else(|_| std::env::var("JEIKCODE_TOOL_OUTPUT_THRESHOLD_BYTES"))
                 .ok()
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .or(config.tools.tool_output.max_bytes),
             // Same env-wins rule for the terminal early line.
             tool_output_terminal_max_bytes: std::env::var(
-                "JEIKCODE_TOOL_OUTPUT_TERMINAL_THRESHOLD_BYTES",
+                "ZAP_TOOL_OUTPUT_TERMINAL_THRESHOLD_BYTES",
             )
+            .or_else(|_| std::env::var("JEIKCODE_TOOL_OUTPUT_TERMINAL_THRESHOLD_BYTES"))
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .or(config.tools.tool_output.terminal_max_bytes),
@@ -680,7 +702,8 @@ const GOAL_ROUND_FALLBACK: u32 = 0;
 
 /// Explicit `JEIKCODE_GOAL_MAX_ROUNDS` override, if set and parseable.
 pub fn goal_max_rounds_env() -> Option<u32> {
-    std::env::var("JEIKCODE_GOAL_MAX_ROUNDS")
+    std::env::var("ZAP_GOAL_MAX_ROUNDS")
+        .or_else(|_| std::env::var("JEIKCODE_GOAL_MAX_ROUNDS"))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
 }
@@ -696,7 +719,8 @@ fn default_goal_max_rounds() -> u32 {
     derive_goal_max_rounds(goal_max_rounds_env(), None)
 }
 fn default_turn_max_rounds() -> u32 {
-    std::env::var("JEIKCODE_TURN_MAX_ROUNDS")
+    std::env::var("ZAP_TURN_MAX_ROUNDS")
+        .or_else(|_| std::env::var("JEIKCODE_TURN_MAX_ROUNDS"))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
         .unwrap_or(0)
@@ -704,10 +728,12 @@ fn default_turn_max_rounds() -> u32 {
 
 fn default_tool_loop_policy() -> Option<ToolLoopPolicy> {
     resolve_tool_loop_policy(
-        std::env::var("JEIKCODE_TOOL_LOOP_WARNING_THRESHOLD")
+        std::env::var("ZAP_TOOL_LOOP_WARNING_THRESHOLD")
+            .or_else(|_| std::env::var("JEIKCODE_TOOL_LOOP_WARNING_THRESHOLD"))
             .ok()
             .as_deref(),
-        std::env::var("JEIKCODE_TOOL_LOOP_STOP_THRESHOLD")
+        std::env::var("ZAP_TOOL_LOOP_STOP_THRESHOLD")
+            .or_else(|_| std::env::var("JEIKCODE_TOOL_LOOP_STOP_THRESHOLD"))
             .ok()
             .as_deref(),
     )
@@ -741,13 +767,20 @@ fn default_goal_max_duration_secs() -> u64 {
     // only checked between rounds so a single long round sails past it. Default OFF
     // (0 = disabled); the goal is bounded by the round cap + evaluator. Re-enable
     // explicitly via JEIKCODE_GOAL_MAX_DURATION_SECS if a hard time cap is ever wanted.
-    std::env::var("JEIKCODE_GOAL_MAX_DURATION_SECS")
+    std::env::var("ZAP_GOAL_MAX_DURATION_SECS")
+        .or_else(|_| std::env::var("JEIKCODE_GOAL_MAX_DURATION_SECS"))
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0)
 }
 fn default_loop_max_rounds() -> u32 {
-    resolve_loop_max_rounds(0, std::env::var("JEIKCODE_LOOP_MAX_ROUNDS").ok().as_deref())
+    resolve_loop_max_rounds(
+        0,
+        std::env::var("ZAP_LOOP_MAX_ROUNDS")
+            .or_else(|_| std::env::var("JEIKCODE_LOOP_MAX_ROUNDS"))
+            .ok()
+            .as_deref(),
+    )
 }
 
 /// Resolve the product-level `/loop` round high-water mark.

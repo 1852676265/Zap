@@ -31,11 +31,11 @@ onMounted(async () => {
 
 <template>
   <div class="hero-image-box">
-    <img src="/logo.svg" alt="JeikCode Logo" class="hero-main-logo" />
+    <img src="/logo.svg" alt="Zap Logo" class="hero-main-logo" />
     <div class="hero-version-tag-wrapper">
       <!-- 1. 正式稳定版徽章 -->
       <a
-        :href="`https://github.com/jeikl/JeikCode/releases/tag/${stableVersion}`"
+        :href="`https://github.com/1852676265/Zap/releases/tag/${stableVersion}`"
         target="_blank"
         rel="noopener noreferrer"
         class="hero-version-badge badge-stable"
@@ -49,7 +49,7 @@ onMounted(async () => {
       <!-- 2. Beta 预览版徽章 -->
       <a
         v-if="betaVersion"
-        :href="`https://github.com/jeikl/JeikCode/releases/tag/${betaVersion}`"
+        :href="`https://github.com/1852676265/Zap/releases/tag/${betaVersion}`"
         target="_blank"
         rel="noopener noreferrer"
         class="hero-version-badge badge-beta"

@@ -10,11 +10,15 @@
       (function() {
         try {
           var t = localStorage.getItem('zap.theme') || localStorage.getItem('jeikcode.theme');
-          if (t === 'light' || t === 'dark' || t === 'system') {
-            document.documentElement.setAttribute('data-theme', t);
-          } else {
-            document.documentElement.setAttribute('data-theme', 'dark');
+          var resolved = 'dark';
+          if (t === 'light' || t === 'dark') {
+            resolved = t;
+          } else if (t === 'system') {
+            var m = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+            resolved = (m && m.matches) ? 'dark' : 'light';
           }
+          document.documentElement.setAttribute('data-theme', resolved);
+          if (t) document.documentElement.setAttribute('data-theme-preference', t);
         } catch (e) {}
       })();
     </script>

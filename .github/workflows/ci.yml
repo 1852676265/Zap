@@ -100,25 +100,25 @@ jobs:
         env:
           JEIKCODE_HOME: ${{ runner.temp }}/jeikcode-home
       - name: Test updater distribution gates
-        run: cargo test -p jeikcode-updater --lib --features distro-pm --locked
+        run: cargo test -p zap-updater --lib --features distro-pm --locked
         env:
-          JEIKCODE_HOME: ${{ runner.temp }}/jeikcode-home
+          ZAP_HOME: ${{ runner.temp }}/zap-home
       - name: Test read tool integrity & capabilities
-        run: "cargo test -p jeikcode-capabilities --lib tools::read:: --locked"
+        run: "cargo test -p zap-capabilities --lib tools::read:: --locked"
         env:
-          JEIKCODE_HOME: ${{ runner.temp }}/jeikcode-home
+          ZAP_HOME: ${{ runner.temp }}/zap-home
       - name: Smoke persisted catalog timestamp units
         shell: bash
         env:
-          JEIKCODE_HOME: ${{ runner.temp }}/jeikcode-home
+          ZAP_HOME: ${{ runner.temp }}/zap-home
           JEIKCODE_CATALOG_SMOKE_ROOT: ${{ runner.temp }}/catalog-timestamp-smoke
         run: |
           set -euo pipefail
-          smoke=crates/jeikcode-capabilities/examples/__catalog_timestamp_smoke.rs
+          smoke=crates/zap-capabilities/examples/__catalog_timestamp_smoke.rs
           mkdir -p "$(dirname "$smoke")"
           trap 'rm -f "$smoke"' EXIT
           cat > "$smoke" <<'RS'
-          use jeikcode_capabilities::session::{SessionManager, SessionMeta};
+          use zap_capabilities::session::{SessionManager, SessionMeta};
           use std::{fs, path::PathBuf};
 
           fn main() {
@@ -147,17 +147,17 @@ jobs:
               fs::remove_dir_all(root).unwrap();
           }
           RS
-          cargo run --quiet --locked -p jeikcode-capabilities --features session --example __catalog_timestamp_smoke
-          cargo test --locked -p jeikcode-capabilities --features session --lib session::manager::tests::catalog_scan_merges_physical_sources_and_keeps_diagnostics -- --exact
+          cargo run --quiet --locked -p zap-capabilities --features session --example __catalog_timestamp_smoke
+          cargo test --locked -p zap-capabilities --features session --lib session::manager::tests::catalog_scan_merges_physical_sources_and_keeps_diagnostics -- --exact
       - name: Test capabilities integration suite
-        run: cargo test -p jeikcode-capabilities --test tools_integration --test http_mock --test anthropic_mock --test ollama_mock --test compaction_cache --test session_fixture_invariants --locked
+        run: cargo test -p zap-capabilities --test tools_integration --test http_mock --test anthropic_mock --test ollama_mock --test compaction_cache --test session_fixture_invariants --locked
         env:
-          JEIKCODE_HOME: ${{ runner.temp }}/jeikcode-home
+          ZAP_HOME: ${{ runner.temp }}/zap-home
       - name: Verify embedded WebUI
-        run: "cargo test -p jeikcode-daemon --lib webui::tests:: --locked"
+        run: "cargo test -p zap-daemon --lib webui::tests:: --locked"
         env:
-          JEIKCODE_HOME: ${{ runner.temp }}/jeikcode-home
+          ZAP_HOME: ${{ runner.temp }}/zap-home
       - name: Test TUI library contracts
-        run: cargo test --locked -p jeikcode-tuix --lib -- --test-threads=1
+        run: cargo test --locked -p zap-tuix --lib -- --test-threads=1
         env:
-          JEIKCODE_HOME: ${{ runner.temp }}/jeikcode-home
+          ZAP_HOME: ${{ runner.temp }}/zap-home

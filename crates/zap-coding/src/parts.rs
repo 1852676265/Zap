@@ -363,7 +363,10 @@ async fn prepare_with_plugin_hooks_reusing_lease(
         names.retain(|name| name != "request_user_input");
     }
     let codeintel_mode = zap_capabilities::codeintel::CodeIntelMode::from_env_or_config(
-        std::env::var("JEIKCODE_CODEINTEL_MODE").ok().as_deref(),
+        std::env::var("ZAP_CODEINTEL_MODE")
+            .or_else(|_| std::env::var("JEIKCODE_CODEINTEL_MODE"))
+            .ok()
+            .as_deref(),
         None,
     );
     zap_capabilities::codeintel::register_codeintel_tools_with_mode(&mut registry, &codeintel_mode);
@@ -379,7 +382,11 @@ async fn prepare_with_plugin_hooks_reusing_lease(
         let provider = cfg
             .web_search_provider
             .clone()
-            .or_else(|| std::env::var("JEIKCODE_WEB_SEARCH_PROVIDER").ok())
+            .or_else(|| {
+                std::env::var("ZAP_WEB_SEARCH_PROVIDER")
+                    .or_else(|_| std::env::var("JEIKCODE_WEB_SEARCH_PROVIDER"))
+                    .ok()
+            })
             .filter(|p| !p.trim().is_empty());
         let web_search = match provider {
             Some(p) => WebSearchTool::with_provider(&p),
@@ -398,8 +405,11 @@ async fn prepare_with_plugin_hooks_reusing_lease(
     // Child tools: read-only `explore` vs edit-capable `worker`.
     let subagent_parent_session: Arc<std::sync::OnceLock<(Arc<SessionManager>, String)>> =
         Arc::new(std::sync::OnceLock::new());
+    let subagent_env = std::env::var("ZAP_SUBAGENT")
+        .or_else(|_| std::env::var("JEIKCODE_SUBAGENT"))
+        .ok();
     let subagent_provider: Option<SharedReviewProvider> =
-        if subagent_enabled_from_env(std::env::var("JEIKCODE_SUBAGENT").ok().as_deref()) {
+        if subagent_enabled_from_env(subagent_env.as_deref()) {
             use zap_capabilities::tools::TaskTool;
 
             let slot: SharedReviewProvider = Arc::new(std::sync::RwLock::new(None));
@@ -480,12 +490,11 @@ async fn prepare_with_plugin_hooks_reusing_lease(
                 .as_ref()
                 .map(|c| c.subagent.clone())
                 .unwrap_or_default();
-            let (max_concurrent, max_rounds) = subagent_runtime_knobs(
-                &subagent_cfg,
-                std::env::var("JEIKCODE_SUBAGENT_MAX_ROUNDS")
-                    .ok()
-                    .as_deref(),
-            );
+            let max_rounds_env = std::env::var("ZAP_SUBAGENT_MAX_ROUNDS")
+                .or_else(|_| std::env::var("JEIKCODE_SUBAGENT_MAX_ROUNDS"))
+                .ok();
+            let (max_concurrent, max_rounds) =
+                subagent_runtime_knobs(&subagent_cfg, max_rounds_env.as_deref());
             registry.register(Arc::new(
                 TaskTool::new(
                     make_fast,
@@ -1802,6 +1811,7 @@ pub fn assemble(
     Ok(agent)
 }
 
+const ZAP_PERSONA_PREFIX: &str = "You are Zap, an AI coding agent running the ";
 const JEIKCODE_PERSONA_PREFIX: &str =
     "You are JeikCode, an AI coding agent by JeikCode running the ";
 const MODEL_CHANGE_CONTEXT_PREFIX: &str = "=== MODEL CHANGE ===";
@@ -1810,7 +1820,10 @@ fn persona_model(text: &str) -> Option<&str> {
     // Legacy snapshots / custom persona templates that still name the model in the prose.
     // New personas deliberately carry no model marker; the model is tracked in
     // `SessionSnapshot::model` instead.
-    if let Some(rest) = text.strip_prefix(JEIKCODE_PERSONA_PREFIX) {
+    if let Some(rest) = text
+        .strip_prefix(ZAP_PERSONA_PREFIX)
+        .or_else(|| text.strip_prefix(JEIKCODE_PERSONA_PREFIX))
+    {
         return rest.split_once(" model.").map(|(model, _)| model);
     }
     if let Some(pos) = text.find(" running the ") {
@@ -1825,7 +1838,9 @@ fn is_persona_block_1(message: &Message) -> bool {
         return false;
     }
     message.text.starts_with("<environment>")
+        || message.text.starts_with(ZAP_PERSONA_PREFIX)
         || message.text.starts_with(JEIKCODE_PERSONA_PREFIX)
+        || message.text.starts_with("You are Zap")
         || message.text.starts_with("You are JeikCode")
         || (message.text.contains(" running the ")
             && message.text.contains(" model.")

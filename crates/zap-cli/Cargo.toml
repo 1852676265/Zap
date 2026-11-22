@@ -2,7 +2,7 @@
 name = "zap"
 version.workspace = true
 edition.workspace = true
-default-run = "jeikcode"
+default-run = "zap"
 
 [[bin]]
 name = "zap"

@@ -19,10 +19,10 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         } else {
             "ℹ️ Chưa chọn mục cập nhật nào; giữ nguyên cấu hình.".into()
         },
-        Msg::ServerNoServices => "Chưa có dịch vụ JeikCode nào được cài đặt.".into(),
+        Msg::ServerNoServices => "Chưa có dịch vụ Zap nào được cài đặt.".into(),
         Msg::ServerServiceTableHeader => "ID   Tên dịch vụ                    Cổng   Trạng thái Nền tảng   Đường dẫn".into(),
         Msg::WelcomeBannerLine1 =>
-            "Chào mừng đến với JeikCode. Chọn một mục để bắt đầu:".into(),
+            "Chào mừng đến với Zap. Chọn một mục để bắt đầu:".into(),
         Msg::WelcomeBannerLine2 =>
             "(↑↓ để di chuyển, Enter để xác nhận, Esc để bỏ qua)".into(),
         Msg::WelcomeOptionConfigureManually => "Cấu hình thủ công".into(),
@@ -39,11 +39,11 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::StatusRuntimeUnavailable =>
             "môi trường thực thi không khả dụng · khởi động lại hoặc xem lỗi phía trên".into(),
         Msg::StatusOfficialBuildRequired =>
-            "Bản dựng này không hỗ trợ ký yêu cầu qua cổng JeikCode — dùng /provider".into(),
+            "Bản dựng này không hỗ trợ ký yêu cầu qua cổng Zap — dùng /provider".into(),
         Msg::StatusUpgradeHint { version } =>
             format!("↑ Có phiên bản {version} · /upgrade").into(),
         Msg::StatusUpgradeHintPm { version } =>
-            format!("↑ Có phiên bản {version} · brew upgrade jeikcode").into(),
+            format!("↑ Có phiên bản {version} · brew upgrade zap").into(),
         Msg::StatusModelNotConfigured =>
             "(chưa cấu hình)".into(),
         Msg::StatusClipboardImageHint =>
@@ -51,7 +51,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::StatusClipboardImageHintSlash =>
             "Có ảnh trong bộ nhớ tạm · alt+v / ctrl+alt+v / /paste".into(),
         Msg::StatusWebuiHint =>
-            "Mẹo: Dùng /webui để mở JeikCode trong trình duyệt".into(),
+            "Mẹo: Dùng /webui để mở Zap trong trình duyệt".into(),
 
         Msg::StatusBody { model, dir, config } =>
             format!(
@@ -113,7 +113,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
     Lăn chuột                        Cuộn vùng trò chuyện
     Kéo chuột                        Chọn văn bản
     Shift+kéo chuột                  Dùng chọn văn bản gốc của terminal
-    Ctrl+Shift+C                     Sao chép vùng chọn JeikCode
+    Ctrl+Shift+C                     Sao chép vùng chọn Zap
 
   ── Điều khiển ──
     Esc                              Xóa nội dung nhập / đóng hộp thoại / hủy
@@ -486,7 +486,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::CmdProviderUnavailable =>
             "Nhà cung cấp không khả dụng. Dùng /login để đăng nhập hoặc /provider để cấu hình.".into(),
         Msg::CmdProviderUnsupportedBuild =>
-            "Bản dựng này không truy cập được cổng JeikCode. Cài bản chính thức hoặc dùng /provider để đổi nhà cung cấp.".into(),
+            "Bản dựng này không truy cập được cổng Zap. Cài bản chính thức hoặc dùng /provider để đổi nhà cung cấp.".into(),
         Msg::CmdProviderReloading =>
             "Đang đổi nhà cung cấp/mô hình. Hãy gửi sau khi hoàn tất.".into(),
         Msg::SubmitHeldUntilProviderReady =>
@@ -577,7 +577,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
             format!("git diff thất bại: {}", error).into(),
 
         Msg::UpgradePackageManaged =>
-            "Bản dựng này được HarmonyBrew quản lý. Chạy `brew upgrade jeikcode` để nâng cấp.".into(),
+            "Bản dựng này được HarmonyBrew quản lý. Chạy `brew upgrade zap` để nâng cấp.".into(),
         Msg::UpgradeUnknownArg { arg } =>
             format!("tham số /upgrade không xác định: {}\n  cách dùng: /upgrade [rollback|--force]", arg).into(),
 
@@ -607,7 +607,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::McpServersHeader =>
             "  Máy chủ MCP:\n".into(),
         Msg::McpReloadFailed { error } =>
-            format!("tải lại MCP thất bại: không tải được .mcp.json / $JEIKCODE_HOME/mcp.json: {:#}", error).into(),
+            format!("tải lại MCP thất bại: không tải được .mcp.json / $ZAP_HOME/mcp.json: {:#}", error).into(),
 
         Msg::McpOAuthLoginUsage =>
             "  Cách dùng: /mcp login <server>\n  Ví dụ: /mcp login github\n".into(),
@@ -703,7 +703,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::CmdSetupRunning =>
             "Đang đồng bộ cấu hình cục bộ...".into(),
         Msg::SetupReinitialized { files, skills } =>
-            format!("✓ Đã khởi tạo lại môi trường và cấu hình JeikCode (đã đồng bộ {files} tệp, đã tải lại {skills} kỹ năng)").into(),
+            format!("✓ Đã khởi tạo lại môi trường và cấu hình Zap (đã đồng bộ {files} tệp, đã tải lại {skills} kỹ năng)").into(),
         Msg::CmdSetupSkillsReloaded { count } =>
             format!("  🔄 Đã tải lại kỹ năng — có {} kỹ năng", count).into(),
         Msg::CmdSetupError { error } =>
@@ -752,7 +752,7 @@ pub(super) fn vi(msg: Msg<'_>) -> Cow<'static, str> {
         Msg::OfflineModeActive =>
             "Chế độ ngoại tuyến: tắt công cụ web, đo lường và tự cập nhật.".into(),
         Msg::PluginHooksUntrusted { count, names } => format!(
-            "{count} tiện ích có hook chưa được tin cậy ({names}) — sẽ không chạy. Để tin cậy: jeikcode plugin trust <name>"
+            "{count} tiện ích có hook chưa được tin cậy ({names}) — sẽ không chạy. Để tin cậy: zap plugin trust <name>"
         ).into(),
         Msg::PluginInstalling { plugin, marketplace } =>
             format!("đang cài `{plugin}@{marketplace}`…").into(),
@@ -816,7 +816,7 @@ Msg::PluginMgrInstallingLabel => "Đang cài…".into(),
         Msg::PluginReloadDone { skills, warnings } =>
             format!("Đã tải lại tiện ích: {skills} kỹ năng, {warnings} cảnh báo").into(),
         Msg::PluginGitNotFound =>
-            "💡 Chưa cài git hoặc git không có trong PATH. Tự cài và cập nhật kho tiện ích đã bị tắt. Cài git (ví dụ `xcode-select --install` trên macOS, `sudo apt install git` trên Ubuntu) rồi khởi động lại JeikCode.".into(),
+            "💡 Chưa cài git hoặc git không có trong PATH. Tự cài và cập nhật kho tiện ích đã bị tắt. Cài git (ví dụ `xcode-select --install` trên macOS, `sudo apt install git` trên Ubuntu) rồi khởi động lại Zap.".into(),
         Msg::PluginMarketplaceAdded { name, commit, count, plugins } =>
             format!(
                 "✓ đã thêm kho `{name}` tại {commit} ({count} tiện ích)\n  Tiện ích: {plugins} — chạy /plugin install <plugin>@{name} để cài trước khi dùng lệnh"
@@ -851,7 +851,7 @@ Msg::CmdDescSetup =>
             "Quản lý nhà cung cấp (thêm / sửa / xóa / đặt mặc định toàn cục)".into(),
         Msg::CmdDescStatus => "Hiển thị trạng thái phiên".into(),
         Msg::CmdDescConfig => "Hiển thị đường dẫn cấu hình".into(),
-        Msg::CmdDescReload => "Tải lại $JEIKCODE_HOME/config.toml từ đĩa".into(),
+        Msg::CmdDescReload => "Tải lại $ZAP_HOME/config.toml từ đĩa".into(),
         Msg::CmdDescCd => "Đổi thư mục làm việc và bắt đầu phiên mới".into(),
 Msg::CmdDescInit => "Phân tích dự án và tạo AGENTS.md".into(),
 Msg::CmdDescBg => "Phiên nền: /bg, /bg list, /bg <N>, /bg drop <N>".into(),
@@ -869,7 +869,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::CmdDescUndo => "Hoàn tác: quay bộ nhớ hội thoại lại một lượt (/undo hoặc /undo N)".into(),
         Msg::CmdDescRewind => "Quay lại: khôi phục hội thoại về điểm kiểm tra trước".into(),
         Msg::CmdDescWorktree => "Cách ly bằng Git worktree (create/list/done/cleanup)".into(),
-        Msg::CmdDescUpgrade => "Nâng cấp jeikcode lên mới nhất (lệnh con: rollback)".into(),
+        Msg::CmdDescUpgrade => "Nâng cấp zap lên mới nhất (lệnh con: rollback)".into(),
         Msg::CmdDescPlan => "Chuyển sang chế độ Plan (khám phá chỉ đọc)".into(),
         Msg::CmdDescBuild => "Chuyển sang chế độ Build (thực thi đầy đủ)".into(),
         Msg::CmdDescAuto => "Chuyển sang chế độ Auto (tự phê duyệt mọi công cụ)".into(),
@@ -878,7 +878,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::CmdDescHelp => "Hiển thị trợ giúp này".into(),
         Msg::CmdDescKeys => "Hiển thị phím tắt".into(),
         Msg::CmdDescLanguage => "Đổi ngôn ngữ hiển thị".into(),
-        Msg::CmdDescQuit => "Thoát JeikCode".into(),
+        Msg::CmdDescQuit => "Thoát Zap".into(),
         Msg::CmdDescSkills => "Xem kỹ năng đã tải".into(),
         Msg::CmdDescPlugin => "Kho tiện ích (lệnh con: marketplace, install, uninstall, reload, list)".into(),
         Msg::CmdDescPaste => "Đính kèm ảnh từ bộ nhớ tạm (cũng dùng Alt+V / Ctrl+Alt+V)".into(),
@@ -896,7 +896,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::SaveInvalidPath { path } => format!("Đường dẫn không hợp lệ — thư mục không tồn tại: {path}").into(),
         Msg::SaveRefuseOverwrite { path } => format!("Đích đã tồn tại và không phải tệp markdown — từ chối ghi đè để tránh mất mã nguồn/cấu hình: {path}. Dùng tên tệp .md hoặc đường dẫn mới.").into(),
         Msg::CodeBlockCopied => "📋 Đã sao chép khối mã vào bộ nhớ tạm".into(),
-        Msg::CmdDescGuide => "Hỏi cách dùng/cấu hình JeikCode qua jeikcode_config_guide".into(),
+        Msg::CmdDescGuide => "Hỏi cách dùng/cấu hình Zap qua zap_config".into(),
         Msg::CmdDescView => "Xem nội dung tệp trong hộp thoại nổi".into(),
         Msg::CmdDescApp => "Chia sẻ phiên này với ứng dụng di động qua chuyển tiếp (ghép đôi QR; /app stop để ngắt)".into(),
         Msg::CmdDescReview => "Rà soát mã của thay đổi hiện tại (/review · /review staged · /review <base>)".into(),
@@ -905,17 +905,17 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::CmdDescTodo => "Hiển thị việc cần làm; `/todo add <task>` để thêm, `/todo clear` để xóa hết".into(),
         Msg::CmdDescSchedule => "Liệt kê tác vụ định kỳ và thời gian chạy tiếp".into(),
         Msg::CmdDescDesktop =>
-            "Mở ứng dụng JeikCode trên máy tính (khởi chạy nếu đã cài, nếu chưa thì hiện liên kết tải)".into(),
+            "Mở ứng dụng Zap trên máy tính (khởi chạy nếu đã cài, nếu chưa thì hiện liên kết tải)".into(),
         Msg::DesktopOpening { name, path } =>
             format!("Đang mở {}…\n  {}\n", name, path).into(),
         Msg::DesktopNotInstalled { url } =>
-            format!("Không tìm thấy ứng dụng JeikCode trên máy tính. Tải và cài:\n  {}\n", url).into(),
+            format!("Không tìm thấy ứng dụng Zap trên máy tính. Tải và cài:\n  {}\n", url).into(),
         Msg::DesktopLaunchFailed { path, err } =>
             format!("Tìm thấy ứng dụng nhưng không khởi chạy được: {}\n  {}\n", err, path).into(),
         Msg::TodoNoList => "Chưa có danh sách việc (mô hình chưa tạo việc cần làm).".into(),
         Msg::TodoListHeader => "Công việc hiện tại:".into(),
         Msg::TodoAddUsage => "Cách dùng: /todo add <task description>".into(),
-        Msg::GuideMenuHeader => "📖 Hướng dẫn JeikCode — nhập /guide <question> (hướng dẫn cấu hình tích hợp)".into(),
+        Msg::GuideMenuHeader => "📖 Hướng dẫn Zap — nhập /guide <question> (hướng dẫn cấu hình tích hợp)".into(),
         Msg::GuideMenuTopics => "Chủ đề thường gặp:".into(),
         Msg::GuideMenuGettingStarted => "Bắt đầu                  Cài lần đầu, thiết lập nhà cung cấp".into(),
         Msg::GuideMenuSwitchModel => "Đặt mô hình mặc định     Cách dùng /model /provider".into(),
@@ -929,7 +929,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::GuideMenuTip => "   Mẹo: nhập /guide <câu hỏi của bạn> để nhận trả lời cụ thể.   Ví dụ: /guide Cách đặt mô hình mặc định ".into(),
         Msg::GuideMenuDocUrl => "".into(),
         Msg::CmdGuideFallbackPrompt { question } => format!(
-            "Trả lời câu hỏi cách dùng/cấu hình JeikCode của người dùng. TRƯỚC TIÊN gọi công cụ `jeikcode_config_guide` với `topic` phù hợp nhất (overview, prompts, models, mcp, skills, thesaurus, tools, directories, project, updates, hoặc all). SAU ĐÓ trả lời ngắn gọn bằng ngôn ngữ của người dùng, chỉ dựa trên kết quả công cụ. Không bịa thiết lập và không quảng bá kho kỹ năng bên thứ ba.\n\nCâu hỏi của người dùng: {question}"
+            "Trả lời câu hỏi cách dùng/cấu hình Zap của người dùng. TRƯỚC TIÊN gọi công cụ `zap_config` với `topic` phù hợp nhất (overview, prompts, models, mcp, skills, thesaurus, tools, directories, project, updates, hoặc all). SAU ĐÓ trả lời ngắn gọn bằng ngôn ngữ của người dùng, chỉ dựa trên kết quả công cụ. Không bịa thiết lập và không quảng bá kho kỹ năng bên thứ ba.\n\nCâu hỏi của người dùng: {question}"
         ).into(),
         Msg::CmdGuideInstalling => "Đang chuẩn bị trả lời hướng dẫn, vui lòng chờ...".into(),
         Msg::CmdGuideAutoInstall => "Chưa cài kỹ năng hỏi tùy chọn — dùng hướng dẫn tích hợp.".into(),
@@ -952,7 +952,7 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::OnboardingStepHeaderWelcome => "Bước 1/3 · Chào mừng".into(),
         Msg::OnboardingStepHeaderLanguage => "Bước 2/3 · Ngôn ngữ".into(),
         Msg::OnboardingStepHeaderSetup => "Bước 3/3 · Thiết lập".into(),
-        Msg::OnboardingPanelTitle => "JeikCode".into(),
+        Msg::OnboardingPanelTitle => "Zap".into(),
         Msg::OnboardingIntroVersionLine { v } =>
             format!("Phiên bản {v} · Tác tử lập trình AI trong terminal").into(),
         Msg::OnboardingIntroBullet1 =>
@@ -1147,29 +1147,29 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
 
         Msg::CliAbout => "Trợ lý lập trình AI trong terminal của bạn".into(),
         Msg::CliAboutStatus => "Hiển thị trạng thái đăng nhập hiện tại".into(),
-        Msg::CliAboutUpgrade => "Nâng cấp jeikcode tại chỗ. `update` và `up` là bí danh. `up main` hoặc `up beta` chọn kênh; có thể kèm phiên bản. Hướng dẫn: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutUpgrade => "Nâng cấp zap tại chỗ. `update` và `up` là bí danh. `up main` hoặc `up beta` chọn kênh; có thể kèm phiên bản. Hướng dẫn: https://github.com/1852676265/Zap".into(),
         Msg::CliHelpUpgradeForce => "Cài lại ngay cả khi đã dùng phiên bản mới nhất".into(),
         Msg::CliHelpUpgradeYes => "Tự áp dụng thay đổi cấu hình mặc định mà không hỏi tương tác".into(),
         Msg::CliHelpUpgradeBeta => "Nâng cấp từ kênh beta (bản xem trước)".into(),
         Msg::CliHelpUpgradeMain => "Nâng cấp từ kênh ổn định/main (mặc định)".into(),
-        Msg::CliAboutList => "Liệt kê phiên bản đã phát hành (`list` / `list main` = ổn định, `list beta` = beta). Hướng dẫn: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutList => "Liệt kê phiên bản đã phát hành (`list` / `list main` = ổn định, `list beta` = beta). Hướng dẫn: https://github.com/1852676265/Zap".into(),
         Msg::CliHelpListChannel => "Kênh: main (mặc định, ổn định) hoặc beta".into(),
-        Msg::CliAboutDown => "Cài một bản phát hành cụ thể, kể cả bản cũ hơn (`down main <version>` / `down beta <version>`). Hướng dẫn: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutDown => "Cài một bản phát hành cụ thể, kể cả bản cũ hơn (`down main <version>` / `down beta <version>`). Hướng dẫn: https://github.com/1852676265/Zap".into(),
         Msg::CliHelpDownChannel => "Kênh: main hoặc beta".into(),
         Msg::CliHelpDownVersion => "Phiên bản cần cài, ví dụ v7.2.3 hoặc 7.2.4-beta.8".into(),
-        Msg::CliAboutRollback => "Quay lại phiên bản trước (đổi với .bak trên đĩa). Hướng dẫn: https://jeikcode.top/guide/updates.html".into(),
+        Msg::CliAboutRollback => "Quay lại phiên bản trước (đổi với .bak trên đĩa). Hướng dẫn: https://github.com/1852676265/Zap".into(),
         Msg::CliAboutMcp => "Quản lý mục máy chủ MCP trong .mcp.json".into(),
         Msg::CliAboutDaemon => "Khởi động daemon HTTP để tích hợp IDE".into(),
         Msg::CliAboutWebui => "Khởi động giao diện web cục bộ".into(),
         Msg::CliAboutServe => {
-            "Khởi động máy chủ JeikCode không giao diện để kết nối từ xa (web UI + API)".into()
+            "Khởi động máy chủ Zap không giao diện để kết nối từ xa (web UI + API)".into()
         }
         Msg::CliAboutAttach => {
-            "Kết nối máy khách cục bộ với máy chủ JeikCode đang chạy (mở web UI)".into()
+            "Kết nối máy khách cục bộ với máy chủ Zap đang chạy (mở web UI)".into()
         }
         Msg::CliAboutTelemetry => "Điều khiển đo lường".into(),
         Msg::CliAboutPlugin => "Quản lý tiện ích kỹ năng/lệnh".into(),
-        Msg::CliAboutUninstall => "Gỡ JeikCode. Không tham số thì hỏi có giữ cấu hình hay không. `simple` chỉ gỡ chương trình. `all` gỡ toàn bộ.".into(),
+        Msg::CliAboutUninstall => "Gỡ Zap. Không tham số thì hỏi có giữ cấu hình hay không. `simple` chỉ gỡ chương trình. `all` gỡ toàn bộ.".into(),
         Msg::CliAboutSetup => "Cài tệp mẫu (skills/commands/hooks/MCP) vào ~/.zap/".into(),
         Msg::CliAboutHooks => "Quản lý hook (liệt kê, thử, bật/tắt)".into(),
         Msg::CliAboutHooksList => "Liệt kê mọi hook đã tải cùng trạng thái".into(),
@@ -1216,9 +1216,9 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::CliHelpUninstallDryRun => "In kế hoạch; không thực hiện".into(),
         Msg::CliAboutUninstallSimple => "Chỉ gỡ chương trình và mục PATH. Giữ cấu hình người dùng. Không hỏi.".into(),
         Msg::CliAboutUninstallAll => "Gỡ chương trình, mục PATH và toàn bộ cấu hình người dùng. Không hỏi.".into(),
-        Msg::UninstallNoTty => "jeikcode uninstall: không có TTY nên không chạy tương tác.\nDùng `jeikcode uninstall simple` để chỉ gỡ chương trình, hoặc `jeikcode uninstall all` để gỡ cả cấu hình.\nCờ: --yes, --purge, --keep-data, --dry-run.".into(),
-        Msg::UninstallConflict => "jeikcode uninstall: các tùy chọn này xung đột. Chỉ dùng một trong simple, all, --purge, --keep-data hoặc --yes.".into(),
-        Msg::UninstallIntro => "Thao tác này sẽ gỡ JeikCode.\nChương trình và mục PATH luôn bị xóa.".into(),
+        Msg::UninstallNoTty => "zap uninstall: không có TTY nên không chạy tương tác.\nDùng `zap uninstall simple` để chỉ gỡ chương trình, hoặc `zap uninstall all` để gỡ cả cấu hình.\nCờ: --yes, --purge, --keep-data, --dry-run.".into(),
+        Msg::UninstallConflict => "zap uninstall: các tùy chọn này xung đột. Chỉ dùng một trong simple, all, --purge, --keep-data hoặc --yes.".into(),
+        Msg::UninstallIntro => "Thao tác này sẽ gỡ Zap.\nChương trình và mục PATH luôn bị xóa.".into(),
         Msg::UninstallRemovingBinary => "\nChương trình và mục PATH sẽ xóa:".into(),
         Msg::UninstallConfigHeader { dir } => format!("\nCấu hình người dùng ({dir}):").into(),
         Msg::UninstallNoConfig => "\nKhông tìm thấy cấu hình người dùng.".into(),
@@ -1229,15 +1229,15 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::UninstallSummaryRemoveConfig => "  Xóa: cấu hình người dùng".into(),
         Msg::UninstallContinue => "\nTiếp tục? [y/N]: ".into(),
         Msg::UninstallAborted => "đã hủy.".into(),
-        Msg::UninstallKillFound { count } => format!("\nTìm thấy {count} tiến trình jeikcode đang chạy:").into(),
+        Msg::UninstallKillFound { count } => format!("\nTìm thấy {count} tiến trình zap đang chạy:").into(),
         Msg::UninstallKillAsk => "Dừng chúng và tiếp tục? [y/N]: ".into(),
         Msg::UninstallKillDeclined => "đã hủy: tiến trình đang chạy không bị dừng.".into(),
-        Msg::UninstallAutoKilled { count } => format!("Đang dừng {count} tiến trình jeikcode khác.").into(),
+        Msg::UninstallAutoKilled { count } => format!("Đang dừng {count} tiến trình zap khác.").into(),
         Msg::UninstallKillFailed { pid, error } => format!("không dừng được pid {pid}: {error}").into(),
         Msg::UninstallDryRun => "DRY RUN — không có thay đổi nào.\n".into(),
         Msg::UninstallWillRemove => "SẼ XÓA".into(),
         Msg::UninstallWillKeep => "GIỮ".into(),
-        Msg::UninstallKeptHint => "Đã giữ (chạy `jeikcode uninstall all` để xóa sau):".into(),
+        Msg::UninstallKeptHint => "Đã giữ (chạy `zap uninstall all` để xóa sau):".into(),
         Msg::UninstallRemoved => "Đã xóa:".into(),
         Msg::UninstallFailed => "Thất bại:".into(),
         Msg::UninstallBackups => "Bản sao:".into(),
@@ -1257,17 +1257,17 @@ Msg::CmdDescBackground => "Chạy tác vụ một lần trong ngữ cảnh nền
         Msg::ProviderInitFailed { detail } =>
             format!("khởi tạo nhà cung cấp thất bại: {detail}").into(),
         Msg::ProviderInitSourceBuild =>
-            "Đây là bản dựng từ mã nguồn — không dùng được cổng JeikCode miễn phí. Dùng /provider để cấu hình mô hình với api_key riêng (ví dụ DeepSeek / GLM / OpenAI), hoặc chuyển sang bản phát hành chính thức.".into(),
+            "Đây là bản dựng từ mã nguồn — không dùng được cổng Zap miễn phí. Dùng /provider để cấu hình mô hình với api_key riêng (ví dụ DeepSeek / GLM / OpenAI), hoặc chuyển sang bản phát hành chính thức.".into(),
         Msg::GatewayAuthUnavailable { base_url } =>
             format!(
-                "base_url '{base_url}' của nhà cung cấp là cổng JeikCode mà bản dựng này không xác thực được. Dùng tệp thực thi chính thức hoặc đặt nhà cung cấp tới điểm cuối tương thích OpenAI thông thường với api_key."
+                "base_url '{base_url}' của nhà cung cấp là cổng Zap mà bản dựng này không xác thực được. Dùng tệp thực thi chính thức hoặc đặt nhà cung cấp tới điểm cuối tương thích OpenAI thông thường với api_key."
             ).into(),
         Msg::StreamStalled => "esc để hủy".into(),
         Msg::ConhostScrollHint =>
             "Mẹo: console Windows cổ điển có giới hạn — không cuộn lại được khi tác vụ đang chạy, ký tự và linh vật hiển thị kém. \x1b[1;96mWindows Terminal\x1b[0m mang lại trải nghiệm đầy đủ."
                 .into(),
         Msg::ServeNoTokenSecurityWarning =>
-            "[CẢNH BÁO AN NINH NGHIÊM TRỌNG] Phát hiện bạn chưa sử dụng mã truy cập (Token)!\nNếu hiện tại chưa thiết lập tường lửa tương ứng, vui lòng nhờ AI của JeikCode hỗ trợ thiết lập tường lửa và danh sách IP trắng, nếu không máy chủ của bạn rất dễ bị hacker xâm nhập!".into(),
+            "[CẢNH BÁO AN NINH NGHIÊM TRỌNG] Phát hiện bạn chưa sử dụng mã truy cập (Token)!\nNếu hiện tại chưa thiết lập tường lửa tương ứng, vui lòng nhờ AI của Zap hỗ trợ thiết lập tường lửa và danh sách IP trắng, nếu không máy chủ của bạn rất dễ bị hacker xâm nhập!".into(),
         Msg::AgentTruncatedEmptyThinking =>
             "Mô hình đã dùng hết giới hạn token đầu ra ngay trong giai đoạn suy luận trước khi xuất văn bản hoặc lệnh gọi công cụ hoàn chỉnh. Nguyên nhân thường do đọc quá nhiều tệp lớn cùng lúc hoặc ngữ cảnh quá nặng; hãy dùng đọc theo từ khóa/đoạn nhỏ, chạy /compact hoặc tăng max_tokens rồi thử lại.".into(),
         Msg::AgentTruncatedEmptyOutput =>

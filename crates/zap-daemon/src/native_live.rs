@@ -224,12 +224,14 @@ pub(crate) fn runtime_start_is_session_in_use(error: &zap_coding::RuntimeStartEr
 /// Views are observers: they never take a second storage lease. If any client
 /// already runs this session, later clients attach and submit/steer on that
 /// handle so streaming, stop, and approvals fan out to every observer.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UniqueRuntimePlan {
     Observe,
     Spawn,
 }
 
+#[allow(dead_code)]
 pub(crate) fn unique_runtime_plan(has_existing_handle: bool) -> UniqueRuntimePlan {
     if has_existing_handle {
         UniqueRuntimePlan::Observe

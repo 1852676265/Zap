@@ -65,5 +65,5 @@ my-project/
 
 ## 5. Reload & Effective Semantics
 
-- **Automatic Hot-Reload**: `AGENTS.md`, `JEIKCODE.md`, `rules.md`, `glossary.md`, `dbwords.md`, `user-wrap.md`, and `thesaurus/*.txt` are read fresh at the start of every turn, **never requiring a restart or reload**.
+- **Automatic Hot-Reload**: `AGENTS.md`, `ZAP.md`, `JEIKCODE.md`, `rules.md`, `glossary.md`, `dbwords.md`, `user-wrap.md`, and `thesaurus/*.txt` are read fresh at the start of every turn, **never requiring a restart or reload**.
 - **Active Reload Required**: Modifying project-level `.mcp.json` or `.skills/` requires calling `zap_config(action="reload")` or entering `/mcp reload` or `/reload`.

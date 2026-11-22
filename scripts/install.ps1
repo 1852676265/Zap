@@ -1,16 +1,16 @@
-# JeikCode installer for Windows — PowerShell
+# Zap installer for Windows — PowerShell
 #
-#   irm https://raw.githubusercontent.com/1852676265/JeikCode/main/scripts/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/1852676265/Zap/main/scripts/install.ps1 | iex
 #
 # Env overrides:
-#   $env:JEIKCODE_VERSION    release tag (default: latest release asset latest.json)
-#   $env:JEIKCODE_PREFIX     install dir (default: $HOME\.local\bin)
-#   $env:JEIKCODE_MANIFEST_URL / $env:JEIKCODE_DOWNLOAD_BASE  override update channel (optional)
-#   $env:JEIKCODE_NO_PATH_UPDATE=1  do not persist PATH changes (CI/portable installs)
+#   $env:ZAP_VERSION (or $env:JEIKCODE_VERSION)    release tag (default: latest release asset latest.json)
+#   $env:ZAP_PREFIX (or $env:JEIKCODE_PREFIX)      install dir (default: $HOME\.local\bin)
+#   $env:ZAP_MANIFEST_URL / $env:ZAP_DOWNLOAD_BASE  override update channel (optional)
+#   $env:ZAP_NO_PATH_UPDATE=1  do not persist PATH changes (CI/portable installs)
 
 $ErrorActionPreference = "Stop"
 
-$DownloadBase = if ($env:ZAP_DOWNLOAD_BASE) { $env:ZAP_DOWNLOAD_BASE.TrimEnd('/') } elseif ($env:JEIKCODE_DOWNLOAD_BASE) { $env:JEIKCODE_DOWNLOAD_BASE.TrimEnd('/') } else { "https://github.com/1852676265/JeikCode/releases/download" }
+$DownloadBase = if ($env:ZAP_DOWNLOAD_BASE) { $env:ZAP_DOWNLOAD_BASE.TrimEnd('/') } elseif ($env:JEIKCODE_DOWNLOAD_BASE) { $env:JEIKCODE_DOWNLOAD_BASE.TrimEnd('/') } else { "https://github.com/1852676265/Zap/releases/download" }
 $RepoBase   = $DownloadBase
 function Normalize-ReleaseTag([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
@@ -26,9 +26,9 @@ $ManifestUrl = if ($EffectiveManifest) {
     $custom = $EffectiveManifest.TrimEnd('/')
     if ($custom.EndsWith('.json')) { $custom } else { "$custom/latest.json" }
 } elseif ($RequestedTag) {
-    "https://github.com/1852676265/JeikCode/releases/download/$RequestedTag/latest.json"
+    "https://github.com/1852676265/Zap/releases/download/$RequestedTag/latest.json"
 } else {
-    "https://github.com/1852676265/JeikCode/releases/latest/download/latest.json"
+    "https://github.com/1852676265/Zap/releases/latest/download/latest.json"
 }
 
 # --- detect platform ---
@@ -90,20 +90,29 @@ $TagWithoutV = $Version.TrimStart("v")
 $PrimaryTag = $TagWithV
 $SecondaryTag = $TagWithoutV
 
-$BinName = "jeikcode-${PrimaryTag}-${os}-${arch}${ext}"
-$Url = "$RepoBase/$PrimaryTag/$BinName"
-$Dest = Join-Path $env:TEMP $BinName
-
-Write-Host "==> Downloading $BinName"
-Write-Host "    from $Url"
-try {
-    Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
-} catch {
-    $AltName = "jeikcode-${SecondaryTag}-${os}-${arch}${ext}"
-    $AltUrl = "$RepoBase/$SecondaryTag/$AltName"
-    Write-Host "==> Retrying with $AltName"
-    Write-Host "    from $AltUrl"
-    Invoke-WebRequest -Uri $AltUrl -OutFile $Dest -UseBasicParsing
+$Candidates = @(
+    @{ Name = "zap-${PrimaryTag}-${os}-${arch}${ext}"; Tag = $PrimaryTag },
+    @{ Name = "jeikcode-${PrimaryTag}-${os}-${arch}${ext}"; Tag = $PrimaryTag },
+    @{ Name = "zap-${SecondaryTag}-${os}-${arch}${ext}"; Tag = $SecondaryTag },
+    @{ Name = "jeikcode-${SecondaryTag}-${os}-${arch}${ext}"; Tag = $SecondaryTag }
+)
+$Dest = Join-Path $env:TEMP "zap-${PrimaryTag}-${os}-${arch}${ext}"
+$Downloaded = $false
+$Url = ""
+foreach ($c in $Candidates) {
+    $Url = "$RepoBase/$($c.Tag)/$($c.Name)"
+    Write-Host "==> Downloading $($c.Name)"
+    Write-Host "    from $Url"
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+        $Downloaded = $true
+        break
+    } catch {
+        Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+    }
+}
+if (-not $Downloaded) {
+    throw "Could not download release binary for ${os}-${arch} from $RepoBase."
 }
 
 # Sanity check: not an HTML 404 page
@@ -127,13 +136,13 @@ if ($ActualSha -ne $ExpectedSha) {
 Write-Host "==> Verified SHA256 and size for $TargetKey"
 
 # --- install ---
-$Target = Join-Path $Prefix "jeikcode$ext"
+$Target = Join-Path $Prefix "zap$ext"
 Write-Host "==> Installing to $Target"
 try {
     Move-Item -Force $Dest $Target -ErrorAction Stop
 } catch {
     Write-Host "Error: could not write $Target." -ForegroundColor Red
-    Write-Host "       If jeikcode is already running, close it and re-run this installer." -ForegroundColor Red
+    Write-Host "       If zap is already running, close it and re-run this installer." -ForegroundColor Red
     exit 1
 }
 
@@ -141,12 +150,12 @@ Write-Host ""
 Write-Host "Installed: $Target"
 try { & $Target --version 2>$null } catch {}
 
-# Provide zap.exe alias alongside jeikcode.exe
-$ZapTarget = Join-Path $Prefix "zap$ext"
+# Provide legacy jeikcode.exe alias alongside zap.exe
+$LegacyTarget = Join-Path $Prefix "jeikcode$ext"
 try {
-    Copy-Item -Force $Target $ZapTarget -ErrorAction SilentlyContinue
-    if (Test-Path $ZapTarget) {
-        Write-Host "Created alias: $ZapTarget"
+    Copy-Item -Force $Target $LegacyTarget -ErrorAction SilentlyContinue
+    if (Test-Path $LegacyTarget) {
+        Write-Host "Created legacy alias: $LegacyTarget"
     }
 } catch {}
 
