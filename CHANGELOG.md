@@ -21,6 +21,30 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v2.0.0 (2026-11-22)
+
+- **[Zap 2.0 Brand Convergence & Plugin Architecture] Full Zap identity, CLI, and microkernel plugin isolation**:
+  - Unified the CLI command (`zap`), workspace code graph (`zap init --force` to `.zap/codegraph`), system prompts, built-in guides, localization catalogs, `ZAP_*` environment variables (with backward-compatible fallbacks), installer scripts, and official update/release repository (`1852676265/Zap`).
+  - Converged WebUI and runtime extensions onto slot-based microkernel boundaries and decoupled workspace crates.
+- **[WebUI Liquid Glass & Productivity] Streamlined turn capsules, resizable inspector, and restored context menus**:
+  - Added Liquid Glass floating three-column layout with single-capsule aggregated turn reasoning, live rolling thinking indicators, and a cleaner timeline hiding redundant inline tool rows.
+  - Restored the 480px default right inspector panel with zoom-aware drag resizing, sidebar session and project context menus (including one-click session analysis), the Scheduled Tasks entry, direct settings-tab navigation from the sidebar gear, and full light/system theme adaptations.
+- **[Desktop Settings & Stream Reliability] System settings center, Auto mode default, and cross-provider anti-truncation**:
+  - Added System Settings options for launch at login, global show/hide hotkey recording, close-window behavior, runtime model switching, and per-session vs. global Agent mode policy, while enforcing `Auto` as the default approval mode across new and live sessions.
+  - Hardened streaming continuation across Anthropic, Gemini, Responses, and OpenAI-compatible endpoints against premature stream cutoffs, idle stalls, and partial tool-call truncations.
+
+---
+
+- **[Zap 2.0 全面品牌化与微内核架构] 统一 Zap 命令、图谱产物、更新源与插件隔离体系**：
+  - 全面切换默认 CLI 命令（`zap`）、代码图谱命令与存储（`zap init --force` 写入 `.zap/codegraph`）、系统提示词、内置帮助指南、多语言词库、`ZAP_*` 环境变量（保留向后兼容）、安装脚本与官方更新发布源（`1852676265/Zap`）。
+  - 将扩展能力全面收敛至基于前端插槽的插件微内核与独立解耦的后端扩展模块。
+- **[WebUI 液态玻璃体验与交互恢复] 聚合思考胶囊、可调宽检查器与右键分析菜单**：
+  - 全新液态玻璃三栏浮空卡片布局，将多步工具调用间的思考过程聚合为单轮统一思考胶囊并配以实时动态摘要，简化工具中间卡片展示。
+  - 恢复右侧检查器 480px 默认宽度与缩放自适应拖拽调宽，恢复侧边栏会话/项目右键菜单与一键分析会话、定时任务快捷入口、左下角设置齿轮直达系统设置页签以及完整浅色/跟随系统主题适配。
+- **[桌面系统设置、默认模式与流式稳定性] 系统设置中心、Auto 默认模式与全协议防截断续传**：
+  - 新增桌面端启动与窗口设置（开机静默自启、全局唤起快捷键录制、关闭主窗口动作、运行时热切模型及 Agent 全局/记忆模式策略），全链路默认恢复为 `Auto` 审批模式。
+  - 增强 Anthropic、Gemini、Responses 与 OpenAI 兼容协议下的断流续传、超时重连与半截工具调用保护，防止模型中途意外自停。
+
 ## v1.0.20 (2026-11-20)
 
 - **[Multi-Agent Team Orchestration] Five-stage collaborative pipeline, custom project cards, and prompt customization**:
