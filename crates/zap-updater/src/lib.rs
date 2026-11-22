@@ -430,13 +430,15 @@ pub fn cleanup_legacy_dropper_file(running: &Path) {
 ///   并在该目录没有 `zap.exe` 时清理此前误写入的内部目录；
 /// - 仅当以正式 CLI 可执行文件（`zap.exe`）直接运行时，才按需将其所在目录注册到 `Path`。
 fn reconcile_windows_user_path(current: &str, running: &Path, desktop_managed: bool) -> String {
-    let running_name = running
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let running_str = running.to_string_lossy();
+    let (raw_parent, raw_name) = match running_str.rsplit_once(['\\', '/']) {
+        Some((dir, name)) => (Some(dir.to_string()), name),
+        None => (None, running_str.as_ref()),
+    };
+    let running_name = raw_name.to_ascii_lowercase();
     let is_bundled_cli_bin = running_name == "cli-bin";
-    let install_dir = running.parent().map(|d| d.display().to_string());
+    let is_product_cli = matches!(running_name.as_str(), "zap" | "zap.exe");
+    let install_dir = raw_parent.filter(|s| !s.is_empty());
 
     let mut parts: Vec<String> = current
         .split(';')
@@ -453,9 +455,7 @@ fn reconcile_windows_user_path(current: &str, running: &Path, desktop_managed: b
             if is_bundled_cli_bin {
                 if let Some(ref dir_str) = install_dir {
                     if trimmed.eq_ignore_ascii_case(dir_str)
-                        && !running
-                            .parent()
-                            .is_some_and(|parent| parent.join("zap.exe").is_file())
+                        && !Path::new(dir_str).join("zap.exe").is_file()
                     {
                         return false;
                     }
@@ -467,12 +467,13 @@ fn reconcile_windows_user_path(current: &str, running: &Path, desktop_managed: b
         .collect();
 
     // 仅在非桌面托管模式、且当前运行的是正式 CLI 可执行文件（而非 `cli-bin` 或临时/构建目录）时加入 PATH
-    if !desktop_managed && !is_bundled_cli_bin && looks_like_jeikcode_binary(running) {
+    if !desktop_managed && !is_bundled_cli_bin && is_product_cli {
         if let Some(ref dir_str) = install_dir {
             let lower = dir_str.to_ascii_lowercase();
             if !lower.contains("temp")
                 && !lower.contains("staged")
                 && !lower.contains("target\\")
+                && !lower.contains("target/")
                 && !parts.iter().any(|p| p.trim().eq_ignore_ascii_case(dir_str))
             {
                 parts.insert(0, dir_str.clone());
@@ -3662,7 +3663,7 @@ mod tests {
         headers.insert(
             reqwest::header::LINK,
             reqwest::header::HeaderValue::from_static(
-                "<https://api.github.com/repos/jeikl/JeikCode/releases?per_page=100&page=2>; rel=\"next\", <https://api.github.com/repos/jeikl/JeikCode/releases?per_page=100&page=4>; rel=\"last\"",
+                "<https://api.github.com/repos/1852676265/Zap/releases?per_page=100&page=2>; rel=\"next\", <https://api.github.com/repos/1852676265/Zap/releases?per_page=100&page=4>; rel=\"last\"",
             ),
         );
         assert_eq!(
@@ -4402,8 +4403,12 @@ mod tests {
             dir.join(expected)
         );
         assert_eq!(
-            normalize_live_exe_path(dir.join("jeikcode.exe.bak")),
+            normalize_live_exe_path(dir.join("zap.exe.bak")),
             dir.join("zap.exe")
+        );
+        assert_eq!(
+            normalize_live_exe_path(dir.join("jeikcode.exe.bak")),
+            dir.join("jeikcode.exe")
         );
         assert_eq!(normalize_live_exe_path(dir.join("zap")), dir.join("zap"));
     }
