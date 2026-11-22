@@ -529,7 +529,7 @@ impl OnboardingWizard {
         } else {
             // Compact: no logo + no Ctrl+C hint. Just product line +
             // tagline + bullets + press-enter.
-            content.push(format!("JeikCode v{}", env!("CARGO_PKG_VERSION")));
+            content.push(format!("Zap v{}", env!("CARGO_PKG_VERSION")));
             content.push(t(Msg::OnboardingIntroCompactTagline).into_owned());
             content.push(String::new());
             content.push(t(Msg::OnboardingIntroBullet1).into_owned());
@@ -1163,8 +1163,8 @@ mod tests {
             "logo should be hidden in compact mode: {joined}"
         );
         // Compact replaces the version block with a compact product
-        // line `JeikCode vX.Y.Z` + tagline.
-        assert!(joined.contains("JeikCode v"));
+        // line `Zap vX.Y.Z` + tagline.
+        assert!(joined.contains("Zap v"));
         assert!(joined.contains("AI coding agent that lives in your terminal"));
         assert!(joined.contains("Configure your own API key"));
         assert!(joined.contains("Press Enter to continue"));
@@ -1400,7 +1400,7 @@ mod tests {
         assert!(screen.contains("┌─"), "top border missing: {screen}");
         assert!(screen.contains("└─"), "bottom border missing: {screen}");
         // Brand title, step header, key copy.
-        assert!(screen.contains("JeikCode"));
+        assert!(screen.contains("Zap"));
         assert!(screen.contains("Step 1/3 · Welcome"));
         assert!(screen.contains("Press Enter to continue"));
     }
@@ -1443,8 +1443,8 @@ mod tests {
             !screen.contains("█ █ █ █"),
             "ASCII logo present in compact mode: {screen}"
         );
-        // Compact substitutes `JeikCode vX.Y.Z`.
-        assert!(screen.contains("JeikCode v"));
+        // Compact substitutes `Zap vX.Y.Z`.
+        assert!(screen.contains("Zap v"));
         assert!(screen.contains("Press Enter to continue"));
     }
 
@@ -1519,7 +1519,7 @@ mod tests {
         assert!(joined.contains("按 Enter 继续"));
         assert!(joined.contains("Ctrl+C 可随时退出"));
         // Brand title stays English on purpose.
-        assert!(joined.contains("JeikCode"));
+        assert!(joined.contains("Zap"));
     }
 
     // ── ASCII fallback (Windows legacy conhost / LANG=C / TERM=dumb) ──
