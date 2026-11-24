@@ -21,6 +21,26 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v2.0.2 (2026-11-24)
+
+- **[Agent Teams Incremental Collaboration & Revisions] Mid-run member insertion, cascading revisions, and compact prompts**:
+  - Added support for appending new project members and interface specifications during or after a team run without resetting existing member progress.
+  - Added single-member targeted revisions and multi-member cascading revision scheduling with per-member reference images and automatic completion archiving.
+  - Enabled compact prompt mode by default to streamline role instructions and extract concise database schemas, reducing token consumption.
+- **[WebUI Layout, Streaming & Reliability] Sidebar recents grouping, smoother streaming, and improved title generation**:
+  - Moved Recent sessions above Projects in the sidebar with collapsible section headers, localized labels across languages, and filtering for empty draft sessions, while streamlining the right inspector to Questions, Terminal, and Preview.
+  - Optimized live streaming batching, timeline scrolling, active turn tracking, and plugin workbench state preservation, and increased the AI session title token ceiling so reasoning models consistently generate titles.
+
+---
+
+- **[Agent Teams 增量协作与定向改造] 支持途中追加成员、跨成员联动改造与精简提示词**：
+  - 支持在团队运行中途或完成后随时追加新项目成员与补充接口契约，完整保留已有成员的执行进度与交付成果。
+  - 新增单成员定向改造与跨成员联动波次改造调度，支持为单个成员附带专属参考图并在完成后自动归档改造说明。
+  - 默认启用精简提示词模式，自动提炼简洁角色指令与紧凑表结构定义，显著降低多智能体协作的上下文消耗。
+- **[WebUI 布局、流式渲染与稳定性] 侧边栏分组优化、渲染流畅度提升与自动标题加固**：
+  - 将侧边栏「最近会话」分组置顶至「项目」上方并支持折叠与多语言显示，过滤尚未发言的空白草稿会话；精简右侧检查器页签为提问大纲、终端与预览。
+  - 优化流式输出单帧合批渲染、历史滚动跟底、轮次导航定位与插件工作台切换保活，并放宽会话自动命名输出上限以防止推理模型思考耗尽预算导致标题生成失败。
+
 ## v2.0.1 (2026-11-22)
 
 - **[WebUI Software Update Entry] Restored clickable sidebar brand version and About-tab update button**:
