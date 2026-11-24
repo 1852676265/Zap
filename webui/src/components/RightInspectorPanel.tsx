@@ -5,33 +5,28 @@
 // had already drifted (tab order and turn-nav tooltips differed). Tab metadata
 // lives in one table below, so adding a tab is a single edit.
 
-import { createPortal, lazy, Suspense } from 'preact/compat';
+import { createPortal, lazy, memo, Suspense } from 'preact/compat';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { RefObject } from 'preact';
 import { useT } from '../settings';
 import type { TurnNavItem } from '../lib/turnNav';
-import type { GitCommitFile, GitCommitItem, GitStatusItem } from '../api';
 
-const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })));
 const TerminalPanel = lazy(() => import('./TerminalPanel').then((m) => ({ default: m.TerminalPanel })));
 const PreviewPanel = lazy(() => import('./PreviewPanel').then((m) => ({ default: m.PreviewPanel })));
 
-export type RightPanelTab = 'questions' | 'git' | 'terminal' | 'preview';
+export type RightPanelTab = 'questions' | 'terminal' | 'preview';
 
 /** Canonical tab order — header and floating rail both follow it. */
-export const RIGHT_PANEL_TABS: readonly RightPanelTab[] = ['questions', 'git', 'terminal', 'preview'];
+export const RIGHT_PANEL_TABS: readonly RightPanelTab[] = ['questions', 'terminal', 'preview'];
 
 const TAB_LABEL_KEY = {
   questions: 'turnNav.title',
-  git: 'panel.git',
   terminal: 'panel.terminal',
   preview: 'panel.preview',
 } as const;
 
-/** Header title; GitHub uses the richer `git.title` copy. */
 const TAB_TITLE_KEY = {
   questions: 'turnNav.title',
-  git: 'git.title',
   terminal: 'panel.terminal',
   preview: 'panel.preview',
 } as const;
@@ -56,19 +51,32 @@ function TurnNavList({
   items,
   allCount,
   activeId,
+  getActiveId,
+  subscribeActiveId,
   emptyLabel,
   noMatchLabel,
   onJump,
 }: {
   items: TurnNavItem[];
   allCount: number;
-  activeId: string | null;
+  activeId?: string | null;
+  getActiveId?: () => string | null;
+  subscribeActiveId?: (listener: (id: string | null) => void) => () => void;
   emptyLabel: string;
   noMatchLabel: string;
   onJump: (id: string) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
+  const [subscribedActiveId, setSubscribedActiveId] = useState<string | null>(
+    () => (getActiveId ? getActiveId() : (activeId ?? null)),
+  );
+  useEffect(() => {
+    if (!subscribeActiveId) return;
+    if (getActiveId) setSubscribedActiveId(getActiveId());
+    return subscribeActiveId(setSubscribedActiveId);
+  }, [subscribeActiveId, getActiveId]);
+  const resolvedActiveId = subscribeActiveId ? subscribedActiveId : (activeId ?? null);
 
   // 首次具备真实尺寸时滚到底部（最新提问）。
   // 面板可能是隐藏态（tab 不在 questions / 侧栏折叠），这时 `scrollHeight` 为 0，
@@ -101,14 +109,14 @@ function TurnNavList({
   // 激活项变化：仅当它不在视口内时滚到可见（block: nearest 避免无谓跳动）。
   useEffect(() => {
     const root = listRef.current;
-    if (!root || !activeId) return;
-    const el = root.querySelector<HTMLElement>(`[data-turn-nav-item="${CSS.escape(activeId)}"]`);
+    if (!root || !resolvedActiveId) return;
+    const el = root.querySelector<HTMLElement>(`[data-turn-nav-item="${CSS.escape(resolvedActiveId)}"]`);
     if (!el) return;
     const rootRect = root.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
     const visible = elRect.top >= rootRect.top && elRect.bottom <= rootRect.bottom;
     if (!visible) el.scrollIntoView({ block: 'nearest' });
-  }, [activeId, items.length]);
+  }, [resolvedActiveId, items.length]);
 
   return (
     <div class="turn-nav-list" ref={listRef}>
@@ -122,7 +130,7 @@ function TurnNavList({
             data-turn-nav-item={item.id}
             class={
               'turn-nav-item' +
-              (item.id === activeId ? ' active' : '') +
+              (item.id === resolvedActiveId ? ' active' : '') +
               (item.pending ? ' pending' : '')
             }
             title={item.fullText ?? item.text}
@@ -137,13 +145,6 @@ function TurnNavList({
 }
 
 function TabIcon({ tab }: { tab: RightPanelTab }) {
-  if (tab === 'git') {
-    return (
-      <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-        <path fill-rule="evenodd" clip-rule="evenodd" d="M11.75 3a1.75 1.75 0 1 0-1.07 3.13 4.25 4.25 0 0 1-2.93 2.12v-1.5a1.75 1.75 0 1 0-1.5 0v4.5a1.75 1.75 0 1 0 1.5 0V9.8a5.75 5.75 0 0 0 3.75-2.67A1.75 1.75 0 0 0 11.75 3zm-6.25 10a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5zm0-7a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5zm6.25-2a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5z" />
-      </svg>
-    );
-  }
   if (tab === 'terminal') {
     return (
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -184,18 +185,12 @@ export interface RightInspectorProps {
   turnNav: {
     items: TurnNavItem[];
     filtered: TurnNavItem[];
-    activeId: string | null;
+    activeId?: string | null;
+    getActiveId?: () => string | null;
+    subscribeActiveId?: (listener: (id: string | null) => void) => () => void;
     query: string;
     onQueryChange: (query: string) => void;
     onJump: (id: string) => void;
-  };
-  git: {
-    cwd: string;
-    sessionId?: string;
-    refreshTrigger: number;
-    onBranchChanged: (branch: string) => void;
-    onOpenFileDiff: (commit: GitCommitItem, file: GitCommitFile, repoRoot?: string) => void;
-    onOpenWorkingDiff: (file: GitStatusItem, staged: boolean, repoRoot?: string) => void;
   };
   workingDir: string;
   onTerminalCountChange: (count: number) => void;
@@ -215,7 +210,7 @@ export interface RightInspectorProps {
   };
 }
 
-export function RightInspector({
+export const RightInspector = memo(function RightInspector({
   tab,
   onTabChange,
   onSelectTab,
@@ -226,7 +221,6 @@ export function RightInspector({
   counts,
   onResizeStart,
   turnNav,
-  git,
   workingDir,
   onTerminalCountChange,
   onPreviewCountChange,
@@ -239,17 +233,16 @@ export function RightInspector({
   const t = useT();
   const title = t(TAB_TITLE_KEY[tab]);
 
-  // 仅当右侧栏真正展开且切到对应标签时才首次挂载，之后保活（避免冷启动拉起 xterm/Git/代码编辑器）
-  const [mountedTabs, setMountedTabs] = useState<Partial<Record<'git' | 'terminal' | 'preview', true>>>(() =>
-    !collapsed && (tab === 'git' || tab === 'terminal' || tab === 'preview') ? { [tab]: true } : {},
+  // 仅当右侧栏真正展开且切到对应标签时才首次挂载，之后保活（避免冷启动拉起 xterm/代码编辑器）
+  const [mountedTabs, setMountedTabs] = useState<Partial<Record<'terminal' | 'preview', true>>>(() =>
+    !collapsed && (tab === 'terminal' || tab === 'preview') ? { [tab]: true } : {},
   );
   useEffect(() => {
     if (collapsed) return;
-    if (tab === 'git' || tab === 'terminal' || tab === 'preview') {
+    if (tab === 'terminal' || tab === 'preview') {
       setMountedTabs((prev) => (prev[tab] ? prev : { ...prev, [tab]: true }));
     }
   }, [collapsed, tab]);
-  const mountGit = Boolean(mountedTabs.git || (!collapsed && tab === 'git'));
   const mountTerminal = Boolean(mountedTabs.terminal || (!collapsed && tab === 'terminal'));
   const mountPreview = Boolean(mountedTabs.preview || (!collapsed && tab === 'preview'));
 
@@ -368,42 +361,13 @@ export function RightInspector({
                 items={turnNav.filtered}
                 allCount={turnNav.items.length}
                 activeId={turnNav.activeId}
+                getActiveId={turnNav.getActiveId}
+                subscribeActiveId={turnNav.subscribeActiveId}
                 emptyLabel={t('turnNav.empty')}
                 noMatchLabel={t('turnNav.noMatch')}
                 onJump={turnNav.onJump}
               />
             </nav>
-          </div>
-
-          <div
-            {...panelAttrs('git', {
-              display: tab === 'git' ? 'flex' : 'none',
-              flex: 1,
-              flexDirection: 'column',
-              minHeight: 0,
-              height: '100%',
-              width: '100%',
-            })}
-          >
-            {mountGit && (
-              <Suspense
-                fallback={
-                  <div class="git-empty-state">
-                    <div class="git-spinner" />
-                    <span>{t('git.loading')}</span>
-                  </div>
-                }
-              >
-                <GitPanel
-                  cwd={git.cwd}
-                  sessionId={git.sessionId}
-                  refreshTrigger={git.refreshTrigger}
-                  onBranchChanged={git.onBranchChanged}
-                  onOpenFileDiff={git.onOpenFileDiff}
-                  onOpenWorkingDiff={git.onOpenWorkingDiff}
-                />
-              </Suspense>
-            )}
           </div>
 
           {/* The terminal keeps its layout box once mounted and only toggles visibility: xterm v6
@@ -538,4 +502,4 @@ export function RightInspector({
       )}
     </>
   );
-}
+});

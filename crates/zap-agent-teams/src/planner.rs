@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::prompts::{
-    render_template_single_pass, resolve_effective_template, TPL_LEAD_INTERFACE_SPEC,
-    TPL_LEAD_PLANNER_PIPELINE, TPL_LEAD_PLANNER_TRIAGE,
+    extract_compact_sql_ddl, render_template_single_pass, resolve_effective_template,
+    TPL_LEAD_INTERFACE_SPEC, TPL_LEAD_PLANNER_PIPELINE, TPL_LEAD_PLANNER_TRIAGE,
 };
 use std::path::Path;
 use std::time::Duration;
@@ -24,8 +24,8 @@ use super::store::{
 };
 use super::types::{
     compute_and_assign_waves, domain_badge_cn, new_team_id, normalize_domain, now_ts,
-    path_to_clean_str, truncate_chars_safe, RoleBindingPreset, TeamImage, TeamProjectPreset,
-    TeamRun, TeamRunDetail, TeamTask,
+    path_to_clean_str, truncate_chars_safe, RoleBindingPreset, TeamContract, TeamImage,
+    TeamProjectPreset, TeamRun, TeamRunDetail, TeamTask,
 };
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +152,8 @@ pub async fn create_pending_pipeline_run(
             model: p.model.clone(),
             session_id: String::new(),
             custom_prompt: String::new(),
+            images: Vec::new(),
+            revision_note: String::new(),
             status: "pending".to_string(),
             attempt: 0,
             attempt_id: String::new(),
@@ -329,7 +331,7 @@ pub async fn generate_unified_interface_spec(
         .iter()
         .map(|t| {
             format!(
-                "- [{}] {} (项目目录: `{}`, 分工: {})",
+                "- [{}] {} (`{}`): {}",
                 domain_badge_cn(&t.domain),
                 if t.project_name.is_empty() {
                     &t.title
@@ -337,17 +339,27 @@ pub async fn generate_unified_interface_spec(
                     &t.project_name
                 },
                 t.working_dir,
-                t.description
+                truncate_chars_safe(&t.description, 220)
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
 
+    let fallback_plan = if run.execution_plan.trim().is_empty() {
+        "见任务描述".to_string()
+    } else {
+        truncate_chars_safe(&run.execution_plan, 600)
+    };
+    let fallback_sql = if run.sql_schema_draft.trim().is_empty() {
+        "（无新增/改表）".to_string()
+    } else {
+        truncate_chars_safe(&extract_compact_sql_ddl(&run.sql_schema_draft), 1000)
+    };
     let fallback = format!(
-        "### 前后端统一接口与联调约定\n\n#### 1. 参考执行计划\n{}\n\n#### 2. 已确认数据库表结构\n{}\n\n#### 3. 协作分工\n{}\n\n请后端与各前端严格保持 REST 路径、JSON 字段驼峰命名、字典码值与权限字符串完全一致。",
-        if run.execution_plan.is_empty() { "见任务描述" } else { &run.execution_plan },
-        if run.sql_schema_draft.is_empty() { "（本次不涉及新建/修改表结构）" } else { &run.sql_schema_draft },
-        task_summary
+        "### 前后端统一接口与联调约定\n\n#### 1. 接口约定摘要\n{}\n\n#### 2. 表结构要点\n{}\n\n#### 3. 协作分工\n{}\n\n请后端与各端严格对齐 REST 路径、JSON 驼峰字段、字典码值与权限标识。",
+        fallback_plan,
+        fallback_sql,
+        truncate_chars_safe(&task_summary, 900)
     );
 
     let Ok(config) = crate::host::load_config() else {
@@ -386,25 +398,41 @@ pub async fn generate_unified_interface_spec(
         run.sql_schema_draft.clone()
     };
 
-    let global_templates = tokio::task::spawn_blocking(|| {
-        with_team_store(|s| Ok(load_config_conn(&s.conn).prompt_templates))
+    let (global_templates, compact_prompts) = tokio::task::spawn_blocking(|| {
+        with_team_store(|s| {
+            let cfg = load_config_conn(&s.conn);
+            Ok((cfg.prompt_templates, cfg.compact_prompts))
+        })
     })
     .await
     .ok()
     .and_then(Result::ok)
-    .unwrap_or_default();
+    .unwrap_or_else(|| (BTreeMap::new(), true));
     let (template, _) = resolve_effective_template(
         TPL_LEAD_INTERFACE_SPEC,
         None,
         Some(&run.prompt_overrides),
         &global_templates,
     );
+    let (spec_goal, spec_plan, spec_sql) = if compact_prompts {
+        (
+            truncate_chars_safe(&run.user_goal, 600),
+            truncate_chars_safe(&run.execution_plan, 1800),
+            if run.sql_schema_draft.trim().is_empty() {
+                sql_part.clone()
+            } else {
+                truncate_chars_safe(&extract_compact_sql_ddl(&sql_part), 2200)
+            },
+        )
+    } else {
+        (run.user_goal.clone(), run.execution_plan.clone(), sql_part)
+    };
     let prompt = render_template_single_pass(
         &template,
         &[
-            ("user_goal", &run.user_goal),
-            ("execution_plan", &run.execution_plan),
-            ("sql_schema_draft", &sql_part),
+            ("user_goal", &spec_goal),
+            ("execution_plan", &spec_plan),
+            ("sql_schema_draft", &spec_sql),
             ("task_summary", &task_summary),
         ],
     );
@@ -437,7 +465,7 @@ pub async fn generate_unified_interface_spec(
         (!text.trim().is_empty()).then_some(text)
     };
 
-    match tokio::time::timeout(Duration::from_secs(75), fut).await {
+    match tokio::time::timeout(Duration::from_secs(120), fut).await {
         Ok(Some(spec)) => spec,
         _ => fallback,
     }
@@ -797,6 +825,8 @@ fn materialize_planned_tasks(
             model: task_model,
             session_id: String::new(),
             custom_prompt: String::new(),
+            images: Vec::new(),
+            revision_note: String::new(),
             status: "pending".to_string(),
             attempt: 0,
             attempt_id: String::new(),
@@ -1035,12 +1065,24 @@ async fn call_planner_llm(
     let known_repos = if projects.is_empty() {
         "(none)".to_string()
     } else {
-        projects
+        let configured_dirs: std::collections::HashSet<String> = custom_projects
             .iter()
-            .take(15)
+            .map(|p| p.working_dir.trim().to_ascii_lowercase())
+            .collect();
+        let limit = if custom_projects.is_empty() { 10 } else { 5 };
+        let items: Vec<String> = projects
+            .iter()
+            .filter(|p| {
+                !configured_dirs.contains(&path_to_clean_str(&p.working_dir).to_ascii_lowercase())
+            })
+            .take(limit)
             .map(|p| format!("- {} ({})", p.name, path_to_clean_str(&p.working_dir)))
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect();
+        if items.is_empty() {
+            "(covered by Projects)".to_string()
+        } else {
+            items.join("\n")
+        }
     };
 
     let template_id = if mode == "triage" {
@@ -1122,14 +1164,13 @@ fn default_run_title(goal: &str, mode: &str) -> String {
 
 fn default_acceptance_for_domain(domain: &str, mode: &str) -> String {
     if mode == "triage" {
-        return "定位涉及的真实文件路径、行号与可疑根因，输出结构化排查证据且不修改任何业务代码。"
-            .to_string();
+        return "只读定位真实文件路径、行号与根因证据，不修改业务代码。".to_string();
     }
     match domain {
-        "sql" => "完成表结构/索引/迁移脚本设计，确保字段类型与约束完整，并通过 team_publish_contract 发布准确 DDL 契约。".to_string(),
-        "backend" => "严格对齐上游表结构契约实现接口与业务逻辑，完成代码编译/语法校验，并通过 team_publish_contract 发布准确接口请求与响应契约。".to_string(),
-        "frontend" => "严格对齐后端接口契约完成页面交互、状态流转与异常处理，确保前端类型与语法构建无报错。".to_string(),
-        _ => "按任务描述完成全部改动并通过基础语法或构建检查。".to_string(),
+        "sql" => "表结构与约束完整，发布准确 DDL 契约。".to_string(),
+        "backend" => "对齐表结构与锁定接口契约，编译/语法校验通过。".to_string(),
+        "frontend" | "mobile" => "对齐接口契约完成页面交互，构建/类型校验无报错。".to_string(),
+        _ => "按分工完成改动并通过基础语法/构建检查。".to_string(),
     }
 }
 
@@ -1343,5 +1384,714 @@ fn build_heuristic_plan(
             }
         ),
         tasks,
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IncrementalCandidate {
+    #[serde(default)]
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) domain: String,
+    #[serde(default)]
+    pub(crate) working_dir: String,
+    #[serde(default)]
+    pub(crate) notes: String,
+    #[serde(default)]
+    pub(crate) ref_task_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) images: Vec<TeamImage>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IncrementalTaskDraft {
+    #[serde(default)]
+    pub(crate) candidate_index: usize,
+    #[serde(default)]
+    pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) description: String,
+    #[serde(default)]
+    pub(crate) custom_prompt: String,
+    #[serde(default)]
+    pub(crate) acceptance_criteria: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IncrementalPlanResult {
+    pub(crate) tasks: Vec<IncrementalTaskDraft>,
+    pub(crate) interface_spec_addition: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmIncrementalOutput {
+    #[serde(default)]
+    tasks: Vec<IncrementalTaskDraft>,
+    #[serde(default, alias = "interface_spec_addition")]
+    interface_spec_addition: String,
+}
+
+fn build_referenced_member_context(
+    ref_ids: &[String],
+    existing_tasks: &[TeamTask],
+    contracts: &[TeamContract],
+) -> String {
+    let selected: Vec<&TeamTask> = if ref_ids.is_empty() {
+        Vec::new()
+    } else {
+        existing_tasks
+            .iter()
+            .filter(|t| ref_ids.iter().any(|r| r == &t.id))
+            .collect()
+    };
+    if selected.is_empty() {
+        return String::new();
+    }
+    selected
+        .iter()
+        .map(|t| {
+            let prompt_body = if !t.custom_prompt.trim().is_empty() {
+                truncate_chars_safe(&t.custom_prompt, 900)
+            } else if !t.description.trim().is_empty() {
+                truncate_chars_safe(&t.description, 700)
+            } else {
+                "(无指令正文)".to_string()
+            };
+            let ctr = contracts
+                .iter()
+                .find(|c| c.from_task_id == t.id)
+                .map(|c| {
+                    format!(
+                        "\n  - 已发布契约《{}》: {}",
+                        c.title,
+                        truncate_chars_safe(&c.schema_or_api, 700)
+                    )
+                })
+                .unwrap_or_default();
+            let excerpt = if !t.last_output_excerpt.trim().is_empty() {
+                format!(
+                    "\n  - 交付摘录: {}",
+                    truncate_chars_safe(&t.last_output_excerpt, 500)
+                )
+            } else {
+                String::new()
+            };
+            let files = if !t.touched_files.is_empty() {
+                format!("\n  - 改动文件: {}", t.touched_files.join(", "))
+            } else {
+                String::new()
+            };
+            format!(
+                "#### 引用成员 [{}] {} (`{}`)\n  - 原提示词/任务指令:\n{}\n{}{}{}",
+                domain_badge_cn(&t.domain),
+                if t.project_name.is_empty() {
+                    &t.title
+                } else {
+                    &t.project_name
+                },
+                t.working_dir,
+                prompt_body,
+                ctr,
+                excerpt,
+                files
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// 针对途中/完成后新发现的涉及项目，结合既有计划、接口契约、引用成员提示词与上传图片，由经理生成专属分工与提示词（不改原有成员）。
+pub(crate) async fn plan_incremental_tasks(
+    run: &TeamRun,
+    existing_tasks: &[TeamTask],
+    contracts: &[TeamContract],
+    candidates: &[IncrementalCandidate],
+    user_note: &str,
+    current_working_dir: &Path,
+) -> IncrementalPlanResult {
+    let fallback_tasks: Vec<IncrementalTaskDraft> = candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, c)| {
+            let dom = normalize_domain(&c.domain);
+            let label = if c.name.trim().is_empty() {
+                domain_badge_cn(&dom).to_string()
+            } else {
+                c.name.trim().to_string()
+            };
+            let note_part = user_note.trim();
+            let desc = if !note_part.is_empty() {
+                if c.notes.trim().is_empty() {
+                    format!("结合项目「{label}」落地补充要求：{note_part}")
+                } else {
+                    format!("结合项目「{label}」（{}）落地补充要求：{note_part}", c.notes.trim())
+                }
+            } else if !c.notes.trim().is_empty() {
+                format!("围绕当前需求完成「{label}」改造（{}）。", c.notes.trim())
+            } else {
+                format!(
+                    "围绕目标「{}」完成「{label}」的对应改造与对齐。",
+                    truncate_chars_safe(&run.user_goal, 120)
+                )
+            };
+            let ref_ctx = build_referenced_member_context(&c.ref_task_ids, existing_tasks, contracts);
+            let mut prompt_lines = vec![
+                format!("你是负责「{label}」({}) 的跨仓协同工程师，代码目录：`{}`。", domain_badge_cn(&dom), c.working_dir),
+                format!("【整体需求目标】：{}", truncate_chars_safe(&run.user_goal, 400)),
+                format!("【本成员核心任务】：{desc}"),
+            ];
+            if !c.images.is_empty() {
+                prompt_lines.push(format!("【专属视觉参考图】：本成员附带了 {} 张样式/原型参考图，请严格以本成员附图样式完成页面布局、色彩与交互。", c.images.len()));
+            }
+            if !ref_ctx.is_empty() {
+                prompt_lines.push(format!("【引用既有成员的提示词与产出参考】：\n{ref_ctx}"));
+            }
+            prompt_lines.push("{{interface_spec_section}}\n\n{{upstream_section}}\n\n{{contract_publish_section}}".to_string());
+
+            IncrementalTaskDraft {
+                candidate_index: idx,
+                title: format!("{label} · 协同改造"),
+                description: desc,
+                custom_prompt: prompt_lines.join("\n\n"),
+                acceptance_criteria: default_acceptance_for_domain(&dom, &run.mode),
+            }
+        })
+        .collect();
+
+    let fallback = IncrementalPlanResult {
+        tasks: fallback_tasks.clone(),
+        interface_spec_addition: String::new(),
+    };
+
+    if candidates.is_empty() {
+        return fallback;
+    }
+    let Ok(config) = crate::host::load_config() else {
+        return fallback;
+    };
+
+    let prov_opt = (!run.lead_model.trim().is_empty()).then_some(run.lead_model.trim());
+    let mut rt = zap_coding::CodingRuntimeConfig::from_config(
+        &config,
+        current_working_dir,
+        prov_opt,
+        None,
+        false,
+        false,
+    );
+    rt.mcp = false;
+    rt.max_tokens = Some(6144);
+    let coding_cfg = rt.agent_config();
+    let options = ChatOptions {
+        max_tokens: Some(6144),
+        temperature: None,
+        tool_choice: ToolChoice::None,
+        reasoning_effort: Some(ReasoningEffort::Low),
+        ..coding_cfg.chat_options.clone()
+    };
+
+    let factory = crate::host::coding_provider_factory();
+    let sid = format!("team-inc-plan-{}", uuid::Uuid::new_v4());
+    let Ok(Ok(provider)) =
+        tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&sid))).await
+    else {
+        return fallback;
+    };
+
+    let existing_desc = if existing_tasks.is_empty() {
+        "(none)".to_string()
+    } else {
+        existing_tasks
+            .iter()
+            .map(|t| {
+                let desc_snip = if !t.custom_prompt.trim().is_empty() {
+                    truncate_chars_safe(&t.custom_prompt, 240)
+                } else {
+                    truncate_chars_safe(&t.description, 200)
+                };
+                format!(
+                    "- id=`{}` | [{} | {}] {} ({})\n  指令摘要: {}",
+                    t.id, t.domain, t.status, t.title, t.working_dir, desc_snip
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut all_images: Vec<TeamImage> = Vec::new();
+    let cand_desc =
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(idx, c)| {
+                let ref_ctx =
+                    build_referenced_member_context(&c.ref_task_ids, existing_tasks, contracts);
+                let mut img_tag = String::from("0 张");
+                if !c.images.is_empty() {
+                    let start = all_images.len() + 1;
+                    for im in &c.images {
+                        if all_images.len() >= 8 {
+                            break;
+                        }
+                        all_images.push(im.clone());
+                    }
+                    let end = all_images.len();
+                    if end >= start {
+                        img_tag = format!(
+                            "{} 张（对应消息附图第 {}~{} 张）",
+                            end - start + 1,
+                            start,
+                            end
+                        );
+                    }
+                }
+                format!(
+                "- index={idx} | name=`{}` | domain=`{}` | dir=`{}` | 附图={} | 补充要求={}\n{}",
+                c.name,
+                normalize_domain(&c.domain),
+                c.working_dir,
+                img_tag,
+                if c.notes.trim().is_empty() { "-" } else { c.notes.trim() },
+                if ref_ctx.is_empty() {
+                    "  (未显式指定引用成员)".to_string()
+                } else {
+                    format!("  重点引用的既有成员详情:\n{ref_ctx}")
+                }
+            )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+    let contracts_summary = if contracts.is_empty() {
+        "(none)".to_string()
+    } else {
+        contracts
+            .iter()
+            .take(6)
+            .map(|c| {
+                format!(
+                    "- [{}] {}: {}",
+                    c.domain,
+                    c.title,
+                    truncate_chars_safe(&c.schema_or_api, 400)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let prompt = format!(
+        "You are the Engineering Manager (Lead Planner) in an existing {} run.\n\
+Generate tailored task scopes AND complete ready-to-dispatch member prompts (`customPrompt`) for the candidate project(s).\n\
+If a candidate references existing members, synthesize the referenced members' prompt conventions, API endpoints, files, and contracts into the new member's `customPrompt`.\n\
+If a candidate has attached reference screenshot(s), analyze the visual layout/theme/components in those specific image(s) and spell them out concretely in `customPrompt` (do NOT confuse styles across different candidates).\n\
+Keep existing members untouched. Append `{{{{interface_spec_section}}}}\\n\\n{{{{upstream_section}}}}` near the end of `customPrompt` so runtime contracts inject cleanly.\n\
+Write text in the user's language. Output ONLY raw JSON (no markdown fences):\n\
+{{\"tasks\":[{{\"candidateIndex\":0,\"title\":\"<=28 chars\",\"description\":\"concise summary\",\"customPrompt\":\"complete detailed prompt ready for user editing\",\"acceptanceCriteria\":\"concise check\"}}],\"interfaceSpecAddition\":\"optional concise markdown addendum if new endpoints/fields/integrations are needed, else empty\"}}\n\n\
+Goal: {}\n\
+Plan: {}\n\
+Current Interface Spec: {}\n\
+Published Contracts:\n{}\n\
+Existing Members:\n{}\n\
+Candidate Project(s):\n{}\n\
+User Note: {}",
+        run.mode,
+        truncate_chars_safe(&run.user_goal, 500),
+        truncate_chars_safe(&run.execution_plan, 900),
+        if run.interface_spec.trim().is_empty() {
+            "(none yet)".to_string()
+        } else {
+            truncate_chars_safe(&run.interface_spec, 1400)
+        },
+        contracts_summary,
+        existing_desc,
+        cand_desc,
+        if user_note.trim().is_empty() { "(none)" } else { user_note.trim() }
+    );
+
+    let msgs = vec![build_user_message(&prompt, &all_images)];
+    let fut = async {
+        let mut stream = provider.chat_stream(&msgs, &[], &options).await.ok()?;
+        let mut raw = String::new();
+        while let Some(ev) = stream.next().await {
+            match ev {
+                StreamEvent::TextDelta(d) => raw.push_str(&d),
+                StreamEvent::Done { .. } | StreamEvent::Error(_) => break,
+                _ => {}
+            }
+        }
+        extract_json_object(&raw).and_then(|j| serde_json::from_str::<LlmIncrementalOutput>(j).ok())
+    };
+
+    match tokio::time::timeout(Duration::from_secs(55), fut).await {
+        Ok(Some(out)) if !out.tasks.is_empty() => {
+            let mut merged = Vec::with_capacity(candidates.len());
+            for (idx, fb) in fallback_tasks.into_iter().enumerate() {
+                if let Some(hit) = out
+                    .tasks
+                    .iter()
+                    .find(|t| t.candidate_index == idx)
+                    .or_else(|| out.tasks.get(idx))
+                {
+                    merged.push(IncrementalTaskDraft {
+                        candidate_index: idx,
+                        title: if hit.title.trim().is_empty() {
+                            fb.title
+                        } else {
+                            hit.title.trim().to_string()
+                        },
+                        description: if hit.description.trim().is_empty() {
+                            fb.description
+                        } else {
+                            hit.description.trim().to_string()
+                        },
+                        custom_prompt: if hit.custom_prompt.trim().is_empty() {
+                            fb.custom_prompt
+                        } else {
+                            hit.custom_prompt.trim().to_string()
+                        },
+                        acceptance_criteria: if hit.acceptance_criteria.trim().is_empty() {
+                            fb.acceptance_criteria
+                        } else {
+                            hit.acceptance_criteria.trim().to_string()
+                        },
+                    });
+                } else {
+                    merged.push(fb);
+                }
+            }
+            IncrementalPlanResult {
+                tasks: merged,
+                interface_spec_addition: out.interface_spec_addition.trim().to_string(),
+            }
+        }
+        _ => fallback,
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RevisionPlanMember {
+    pub(crate) task_id: String,
+    #[serde(default)]
+    pub(crate) selected: bool,
+    #[serde(default)]
+    pub(crate) role_in_change: String,
+    #[serde(default)]
+    pub(crate) wave_order: usize,
+    #[serde(default)]
+    pub(crate) instruction: String,
+    #[serde(default)]
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RevisionPlanResult {
+    pub(crate) cascading: bool,
+    pub(crate) summary: String,
+    #[serde(default)]
+    pub(crate) interface_spec_addition: String,
+    #[serde(default)]
+    pub(crate) members: Vec<RevisionPlanMember>,
+}
+
+fn heuristic_revision_plan(
+    existing_tasks: &[TeamTask],
+    primary_task_id: Option<&str>,
+    instruction: &str,
+) -> RevisionPlanResult {
+    let low = instruction.to_ascii_lowercase();
+    let mentions_contract_change = low.contains("接口")
+        || low.contains("路径")
+        || low.contains("路由")
+        || low.contains("url")
+        || low.contains("api")
+        || low.contains("route")
+        || low.contains("path")
+        || low.contains("字段")
+        || low.contains("参数")
+        || low.contains("返回值")
+        || low.contains("dto")
+        || low.contains("表")
+        || low.contains("联动")
+        || low.contains("同步");
+
+    let primary_opt = primary_task_id
+        .and_then(|pid| existing_tasks.iter().find(|t| t.id == pid))
+        .or_else(|| {
+            if low.contains("后端") || low.contains("backend") {
+                existing_tasks.iter().find(|t| t.domain == "backend")
+            } else if low.contains("前端") || low.contains("frontend") {
+                existing_tasks.iter().find(|t| t.domain == "frontend")
+            } else if low.contains("移动") || low.contains("mobile") {
+                existing_tasks.iter().find(|t| t.domain == "mobile")
+            } else {
+                existing_tasks.first()
+            }
+        });
+
+    let primary_id = primary_opt.map(|t| t.id.as_str()).unwrap_or("");
+    let primary_is_upstream =
+        primary_opt.is_some_and(|t| matches!(t.domain.as_str(), "backend" | "sql"));
+    let should_cascade =
+        mentions_contract_change && (primary_is_upstream || primary_task_id.is_none());
+
+    let mut members = Vec::new();
+    let mut cascade_count = 0usize;
+    for t in existing_tasks {
+        let is_primary = t.id == primary_id;
+        let is_downstream_candidate = !is_primary
+            && should_cascade
+            && (t.depends_on.iter().any(|d| d == primary_id)
+                || (primary_is_upstream
+                    && matches!(t.domain.as_str(), "frontend" | "mobile" | "qa"))
+                || (primary_task_id.is_none()
+                    && ((low.contains("前端") && t.domain == "frontend")
+                        || (low.contains("移动") && t.domain == "mobile")
+                        || (low.contains("后端") && t.domain == "backend"))));
+        if is_downstream_candidate {
+            cascade_count += 1;
+        }
+        let selected = is_primary || is_downstream_candidate;
+        let role_in_change = if is_primary {
+            "primary"
+        } else if is_downstream_candidate {
+            "cascade"
+        } else {
+            "unaffected"
+        };
+        let wave_order = if is_primary {
+            1
+        } else if is_downstream_candidate {
+            2
+        } else {
+            0
+        };
+        let inst = if is_primary {
+            instruction.trim().to_string()
+        } else if is_downstream_candidate {
+            format!(
+                "联动同步上游变更（原要求：{}）。请对照上游最新发布的接口契约与路径字段，同步修改本仓库中的请求调用、类型定义并校验构建。",
+                truncate_chars_safe(instruction, 240)
+            )
+        } else {
+            String::new()
+        };
+        let reason = if is_primary {
+            "主改成员（优先执行）".to_string()
+        } else if is_downstream_candidate {
+            "涉及接口/契约联动，需等上游改完后同步适配".to_string()
+        } else {
+            "当前改动暂不波及该成员".to_string()
+        };
+        members.push(RevisionPlanMember {
+            task_id: t.id.clone(),
+            selected,
+            role_in_change: role_in_change.to_string(),
+            wave_order,
+            instruction: inst,
+            reason,
+        });
+    }
+
+    RevisionPlanResult {
+        cascading: cascade_count > 0,
+        summary: if cascade_count > 0 {
+            format!(
+                "检测到变更可能影响接口/契约，建议先改「{}」，改完后自动联动 {} 位下游成员同步适配。",
+                primary_opt
+                    .map(|t| if t.project_name.is_empty() { t.title.as_str() } else { t.project_name.as_str() })
+                    .unwrap_or("主源成员"),
+                cascade_count
+            )
+        } else {
+            "评估为局部独立调整，仅执行所选单个成员改造，不影响其他成员。".to_string()
+        },
+        interface_spec_addition: String::new(),
+        members,
+    }
+}
+
+/// 由经理（Lead）评估用户提出的修改要求：判断是否会波及其他智能体、编排先后波次，并生成每个受影响成员的增量改造指令。
+pub(crate) async fn plan_revision_impact(
+    run: &TeamRun,
+    existing_tasks: &[TeamTask],
+    contracts: &[TeamContract],
+    primary_task_id: Option<&str>,
+    instruction: &str,
+    images: &[TeamImage],
+    current_working_dir: &Path,
+) -> RevisionPlanResult {
+    let clean_inst = instruction.trim();
+    let fallback = heuristic_revision_plan(existing_tasks, primary_task_id, clean_inst);
+    if existing_tasks.is_empty() || clean_inst.is_empty() {
+        return fallback;
+    }
+    let Ok(config) = crate::host::load_config() else {
+        return fallback;
+    };
+
+    let prov_opt = (!run.lead_model.trim().is_empty()).then_some(run.lead_model.trim());
+    let mut rt = zap_coding::CodingRuntimeConfig::from_config(
+        &config,
+        current_working_dir,
+        prov_opt,
+        None,
+        false,
+        false,
+    );
+    rt.mcp = false;
+    rt.max_tokens = Some(4096);
+    let coding_cfg = rt.agent_config();
+    let options = ChatOptions {
+        max_tokens: Some(4096),
+        temperature: None,
+        tool_choice: ToolChoice::None,
+        reasoning_effort: Some(ReasoningEffort::Low),
+        ..coding_cfg.chat_options.clone()
+    };
+
+    let factory = crate::host::coding_provider_factory();
+    let sid = format!("team-rev-plan-{}", uuid::Uuid::new_v4());
+    let Ok(Ok(provider)) =
+        tokio::task::spawn_blocking(move || factory.build(&coding_cfg, Some(&sid))).await
+    else {
+        return fallback;
+    };
+
+    let members_desc = existing_tasks
+        .iter()
+        .map(|t| {
+            let files = if t.touched_files.is_empty() {
+                "-".to_string()
+            } else {
+                t.touched_files.iter().take(6).cloned().collect::<Vec<_>>().join(", ")
+            };
+            format!(
+                "- taskId=`{}` | domain=`{}` | wave={} | status=`{}` | name=`{}` | title=`{}` | dir=`{}` | touchedFiles=[{}] | excerpt={}",
+                t.id,
+                t.domain,
+                t.wave,
+                t.status,
+                t.project_name,
+                t.title,
+                t.working_dir,
+                files,
+                truncate_chars_safe(&t.last_output_excerpt, 240)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let contracts_desc = if contracts.is_empty() {
+        "(none)".to_string()
+    } else {
+        contracts
+            .iter()
+            .take(5)
+            .map(|c| {
+                format!(
+                    "- [{}] {}: {}",
+                    c.domain,
+                    c.title,
+                    truncate_chars_safe(&c.schema_or_api, 350)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let anchor_hint = primary_task_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("(unspecified - determine from request)");
+
+    let prompt = format!(
+        "You are the Engineering Manager evaluating a revision/change request on an existing multi-agent team run.\n\
+Determine WHICH team members need to act and whether the change cascades across repositories.\n\
+Rules:\n\
+1. If the change is purely internal to one repo (e.g., frontend styling, internal refactor without API/schema/field changes), set `cascading: false` and select ONLY that single member.\n\
+2. If the change alters API paths, parameters, response fields, auth permissions, or DB schema, set `cascading: true`: assign the source member `roleInChange: \"primary\"`, `waveOrder: 1` (instructing it to call `team_publish_contract` with the updated contract), and assign affected consumer members (e.g. frontend/mobile) `roleInChange: \"cascade\"`, `waveOrder: 2`.\n\
+3. Include ALL existing taskId entries in `members` (with `selected: false` and `roleInChange: \"unaffected\"` for untouched ones).\n\
+Write text in Chinese. Output ONLY raw JSON (no markdown fences):\n\
+{{\"cascading\":true/false,\"summary\":\"1-2 sentence explanation\",\"interfaceSpecAddition\":\"optional addendum if shared spec changed, else empty\",\"members\":[{{\"taskId\":\"...\",\"selected\":true/false,\"roleInChange\":\"primary|cascade|unaffected\",\"waveOrder\":1,\"instruction\":\"specific revision instruction for this member\",\"reason\":\"why affected or unaffected\"}}]}}\n\n\
+Goal: {}\n\
+Current Interface Spec: {}\n\
+Published Contracts:\n{}\n\
+Team Members:\n{}\n\
+Primary Anchor TaskId: {}\n\
+User Change Request: {}",
+        truncate_chars_safe(&run.user_goal, 400),
+        truncate_chars_safe(&run.interface_spec, 1200),
+        contracts_desc,
+        members_desc,
+        anchor_hint,
+        clean_inst
+    );
+
+    let msgs = vec![build_user_message(&prompt, images)];
+    let fut = async {
+        let mut stream = provider.chat_stream(&msgs, &[], &options).await.ok()?;
+        let mut raw = String::new();
+        while let Some(ev) = stream.next().await {
+            match ev {
+                StreamEvent::TextDelta(d) => raw.push_str(&d),
+                StreamEvent::Done { .. } | StreamEvent::Error(_) => break,
+                _ => {}
+            }
+        }
+        extract_json_object(&raw).and_then(|j| serde_json::from_str::<RevisionPlanResult>(j).ok())
+    };
+
+    match tokio::time::timeout(Duration::from_secs(45), fut).await {
+        Ok(Some(out)) if !out.members.is_empty() => {
+            let mut merged_members = Vec::with_capacity(existing_tasks.len());
+            for t in existing_tasks {
+                if let Some(hit) = out.members.iter().find(|m| m.task_id == t.id) {
+                    merged_members.push(RevisionPlanMember {
+                        task_id: t.id.clone(),
+                        selected: hit.selected,
+                        role_in_change: if hit.role_in_change.trim().is_empty() {
+                            if hit.selected {
+                                "primary".to_string()
+                            } else {
+                                "unaffected".to_string()
+                            }
+                        } else {
+                            hit.role_in_change.clone()
+                        },
+                        wave_order: hit.wave_order,
+                        instruction: if hit.selected && hit.instruction.trim().is_empty() {
+                            clean_inst.to_string()
+                        } else {
+                            hit.instruction.clone()
+                        },
+                        reason: hit.reason.clone(),
+                    });
+                } else if let Some(fb) = fallback.members.iter().find(|m| m.task_id == t.id) {
+                    merged_members.push(fb.clone());
+                }
+            }
+            if !merged_members.iter().any(|m| m.selected) {
+                return fallback;
+            }
+            RevisionPlanResult {
+                cascading: out.cascading
+                    || merged_members.iter().filter(|m| m.selected).count() > 1,
+                summary: if out.summary.trim().is_empty() {
+                    fallback.summary
+                } else {
+                    out.summary
+                },
+                interface_spec_addition: out.interface_spec_addition.trim().to_string(),
+                members: merged_members,
+            }
+        }
+        _ => fallback,
     }
 }

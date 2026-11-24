@@ -164,7 +164,25 @@ export function App() {
   const [optimisticSessions, setOptimisticSessions] = useState<Record<string, SessionMetaWithProject>>({});
   const [serverSwitcherOpen, setServerSwitcherOpen] = useState(false);
   const [activeWorkbenchView, setActiveWorkbenchView] = useState<string>('chat');
+  const mountedWorkbenchViewsRef = useRef<Set<string>>(new Set());
   usePluginKernelVersion();
+
+  const workbenchViews = zapPluginKernel.getSlotEntries('workbench.view');
+  const activePluginView =
+    activeWorkbenchView !== 'chat'
+      ? workbenchViews.find((v) => v.id === activeWorkbenchView)
+      : undefined;
+  for (const id of Array.from(mountedWorkbenchViewsRef.current)) {
+    if (!workbenchViews.some((v) => v.id === id)) {
+      mountedWorkbenchViewsRef.current.delete(id);
+    }
+  }
+  if (activePluginView) {
+    mountedWorkbenchViewsRef.current.add(activePluginView.id);
+  }
+  const keptPluginViews = workbenchViews.filter((v) =>
+    mountedWorkbenchViewsRef.current.has(v.id),
+  );
 
   useEffect(() => {
     const handler = () => setServerSwitcherOpen(true);
@@ -1702,21 +1720,16 @@ export function App() {
                 </div>
               )}
             </div>
-          ) : activeWorkbenchView !== 'chat' &&
-            zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView) ? (
+          ) : activePluginView ? (
             /* 桌面端插件工作台标题：当前切到外部扩展工作台时，顶栏直接联动展示插件名称 */
             <button
               type="button"
               class="session-title-btn active"
-              title={
-                zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView)?.title ||
-                '扩展工作台'
-              }
+              title={activePluginView.title || '扩展工作台'}
               onClick={() => {}}
             >
               <span class="session-title-text">
-                {zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView)?.title ||
-                  '扩展工作台'}
+                {activePluginView.title || '扩展工作台'}
               </span>
             </button>
           ) : activeSession?.name && (activeSession.message_count ?? 0) > 0 ? (
@@ -2042,7 +2055,12 @@ export function App() {
             </div>
 
             {/* 模型选择控件插槽（核心操作，内含思考档位与模型胶囊，齿轮已内置） */}
-            <div ref={setTopModelSlot} class="top-nav-model-slot" id="top-nav-model-slot" />
+            <div
+              ref={setTopModelSlot}
+              class="top-nav-model-slot"
+              id="top-nav-model-slot"
+              style={activePluginView ? { display: 'none' } : undefined}
+            />
 
             {/* 更多收纳菜单（桌面宽屏隐藏；缩放窄屏或手机时动态显现并承载收纳项） */}
             <div class="top-nav-more-wrap" ref={topNavMoreRef}>
@@ -2196,30 +2214,44 @@ export function App() {
             } catch {}
           }}
         >
-          {activeWorkbenchView !== 'chat' &&
-          zapPluginKernel.getSlotEntries('workbench.view').find((v) => v.id === activeWorkbenchView) ? (
-            <div
-              class="workbench-plugin-container"
-              style="flex: 1; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-primary, transparent);"
-            >
-              {(() => {
-                const currentView = zapPluginKernel
-                  .getSlotEntries('workbench.view')
-                  .find((v) => v.id === activeWorkbenchView);
-                if (!currentView) return null;
-                if (currentView.render) return currentView.render();
-                return (
+          {keptPluginViews.map((view) => {
+            const isActiveView = activePluginView?.id === view.id;
+            return (
+              <div
+                key={view.id}
+                class="workbench-plugin-container"
+                aria-hidden={isActiveView ? undefined : true}
+                style={
+                  isActiveView
+                    ? 'flex: 1; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-primary, transparent);'
+                    : 'position: absolute; inset: 0; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; visibility: hidden; pointer-events: none; z-index: -1;'
+                }
+              >
+                {view.render ? (
+                  view.render()
+                ) : (
                   <iframe
-                    src={currentView.src}
-                    title={currentView.title}
+                    src={view.src}
+                    title={view.title}
                     class="workbench-plugin-iframe"
+                    tabIndex={isActiveView ? undefined : -1}
                     style="width: 100%; height: 100%; border: none; flex: 1; background: transparent;"
                     allow="clipboard-read; clipboard-write;"
                   />
-                );
-              })()}
-            </div>
-          ) : (
+                )}
+              </div>
+            );
+          })}
+          <div
+            key="chat-keepalive-wrap"
+            class="chat-keepalive-wrap"
+            aria-hidden={activePluginView ? true : undefined}
+            style={
+              activePluginView
+                ? 'position: absolute; inset: 0; width: 100%; height: 100%; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; visibility: hidden; pointer-events: none; z-index: -1;'
+                : 'flex: 1 1 0%; width: 100%; height: 100%; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;'
+            }
+          >
             <Chat
             sessionId={sessionId}
             onSessionId={handleSessionAssigned}
@@ -2275,7 +2307,7 @@ export function App() {
             onLiveReview={onLiveReview}
             onBindReviewDismiss={onBindReviewDismiss}
           />
-          )}
+          </div>
         </div>
       </div>
 

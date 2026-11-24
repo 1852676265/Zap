@@ -10,7 +10,7 @@
  */
 
 import { ComponentChildren } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { fetchFsRead } from '../api';
 
 // =============================================================================
@@ -343,6 +343,18 @@ function isLegacyMockPackage(pkg: Partial<ExternalPluginPackage> | null | undefi
 
 type Listener = () => void;
 
+const EMPTY_ACTIONS: ActionContribution<any>[] = [];
+const EMPTY_INSPECTORS: InspectorContribution<any>[] = [];
+
+function sameContributionList<T extends { id: string }>(a: readonly T[], b: readonly T[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export class ZapPluginKernel {
   private slots: { [K in SlotKey]: Map<string, SlotMap[K]> } = {
     'settings.section': new Map(),
@@ -485,12 +497,17 @@ export class ZapPluginKernel {
     context?: TContext,
   ): ActionContribution<TContext>[] {
     const registry = this.actionRegistries.get(scope);
-    if (!registry) return [];
+    if (!registry || registry.size === 0) return EMPTY_ACTIONS;
     const list = Array.from(registry.values()) as ActionContribution<TContext>[];
     const filtered = context !== undefined
       ? list.filter((act) => !act.when || act.when(context))
       : list;
-    return filtered.sort((a, b) => a.order - b.order);
+    return filtered.length === 0 ? EMPTY_ACTIONS : filtered.sort((a, b) => a.order - b.order);
+  }
+
+  public hasRegisteredActions(scope: ActionScope): boolean {
+    const registry = this.actionRegistries.get(scope);
+    return Boolean(registry && registry.size > 0);
   }
 
   // ---------------------------------------------------------------------------
@@ -525,12 +542,17 @@ export class ZapPluginKernel {
     target?: TTarget,
   ): InspectorContribution<TTarget>[] {
     const registry = this.inspectorRegistries.get(scope);
-    if (!registry) return [];
+    if (!registry || registry.size === 0) return EMPTY_INSPECTORS;
     const list = Array.from(registry.values()) as InspectorContribution<TTarget>[];
     const filtered = target !== undefined
       ? list.filter((ins) => !ins.supports || ins.supports(target))
       : list;
-    return filtered.sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+    return filtered.length === 0 ? EMPTY_INSPECTORS : filtered.sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+  }
+
+  public hasRegisteredInspectors(scope: InspectorScope): boolean {
+    const registry = this.inspectorRegistries.get(scope);
+    return Boolean(registry && registry.size > 0);
   }
 
   public openInspector(inspectorId: string, targetPayload: any, scope: InspectorScope = 'chat.turn:inspectors') {
@@ -1052,15 +1074,27 @@ export function usePluginActions<TContext = any>(
   scope: ActionScope,
   context?: TContext,
 ): ActionContribution<TContext>[] {
+  const contextRef = useRef(context);
+  contextRef.current = context;
   const [actions, setActions] = useState<ActionContribution<TContext>[]>(() =>
     zapPluginKernel.getActions(scope, context),
   );
 
+  // 订阅插件注册表变化只按 scope 绑定；无注册动作时直接跳过 context 变化带来的额外状态刷新，
+  // 避免调用方每次传入新对象引发逐气泡双倍重渲染。
   useEffect(() => {
-    setActions(zapPluginKernel.getActions(scope, context));
-    return zapPluginKernel.subscribe(() => {
-      setActions(zapPluginKernel.getActions(scope, context));
-    });
+    const sync = () => {
+      const next = zapPluginKernel.getActions(scope, contextRef.current);
+      setActions((prev) => (sameContributionList(prev, next) ? prev : next));
+    };
+    sync();
+    return zapPluginKernel.subscribe(sync);
+  }, [scope]);
+
+  useEffect(() => {
+    if (!zapPluginKernel.hasRegisteredActions(scope)) return;
+    const next = zapPluginKernel.getActions(scope, context);
+    setActions((prev) => (sameContributionList(prev, next) ? prev : next));
   }, [scope, context]);
 
   return actions;
@@ -1070,15 +1104,25 @@ export function usePluginInspectors<TTarget = any>(
   scope: InspectorScope,
   target?: TTarget,
 ): InspectorContribution<TTarget>[] {
+  const targetRef = useRef(target);
+  targetRef.current = target;
   const [inspectors, setInspectors] = useState<InspectorContribution<TTarget>[]>(() =>
     zapPluginKernel.getInspectors(scope, target),
   );
 
   useEffect(() => {
-    setInspectors(zapPluginKernel.getInspectors(scope, target));
-    return zapPluginKernel.subscribe(() => {
-      setInspectors(zapPluginKernel.getInspectors(scope, target));
-    });
+    const sync = () => {
+      const next = zapPluginKernel.getInspectors(scope, targetRef.current);
+      setInspectors((prev) => (sameContributionList(prev, next) ? prev : next));
+    };
+    sync();
+    return zapPluginKernel.subscribe(sync);
+  }, [scope]);
+
+  useEffect(() => {
+    if (!zapPluginKernel.hasRegisteredInspectors(scope)) return;
+    const next = zapPluginKernel.getInspectors(scope, target);
+    setInspectors((prev) => (sameContributionList(prev, next) ? prev : next));
   }, [scope, target]);
 
   return inspectors;

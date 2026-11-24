@@ -996,7 +996,7 @@ export const ko: Record<keyof typeof en, string> = {
   'sidebar.recent': '최근 세션',
   'sidebar.recentChat': '최근 대화',
   'sidebar.recentFiles': '파일 탐색기',
-  'sidebar.recents': 'Recents',
+  'sidebar.recents': '최근 세션',
   'sidebar.removeProjectBody': 'Remove "{name}" from the sidebar? Session history and files on disk are kept. If a session in this project is still running, the project comes back as new messages arrive.',
   'sidebar.removeProjectConfirm': 'Remove',
   'sidebar.removeProjectFromList': 'Remove from list (preserves sessions & files)',

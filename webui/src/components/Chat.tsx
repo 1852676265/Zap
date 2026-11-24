@@ -142,10 +142,10 @@ import {
 import { messageSearchableFullText as searchableMessageText, textMatchesSearch, toolMatchesSearch } from '../lib/canvasSearch';
 import { normalizeCanvas as normalizeCanvasRows, reduceCanvas, type CanvasAction } from '../lib/canvas/canvasStore';
 import { projectCanvas } from '../lib/canvas/project';
-import { isCanvasEventAction, reduceCanvasEvent, type CanvasEventAction } from '../lib/canvas/actions';
+import { isCanvasEventAction, reduceCanvasEvent, type CanvasEventAction, type StreamBatchItem } from '../lib/canvas/actions';
 import type { CanvasRecord as Message } from '../lib/canvas/records';
 import { beginModeSwitch, completeModeSwitch, failModeSwitch, initModeState, modeForSessionOrigin } from '../lib/modeSwitch';
-import { buildTurnNavItems, buildTurnNavItemsFromOutline, canLoadOlder, compactTurnNavText, computeEffectiveHasOlder, filterTurnNavItems, fullerOutline, hasOlderVisibleMessages, historyCursorFor, mergeServerWithLocalOutline, remainingUnloadedTurns, removeOutlineRowsById, resolveActiveTurnId, turnNavId, turnNavScrollTop, visibleOlderRemainingCount } from '../lib/turnNav';
+import { buildTurnNavItems, buildTurnNavItemsFromOutline, canLoadOlder, compactTurnNavText, computeEffectiveHasOlder, filterTurnNavItems, fullerOutline, hasOlderVisibleMessages, historyCursorFor, mergeServerWithLocalOutline, remainingUnloadedTurns, removeOutlineRowsById, resolveActiveTurnId, turnNavId, turnNavScrollTop, visibleOlderRemainingCount, type TurnNavItem } from '../lib/turnNav';
 import { randomUUID } from '../lib/randomId';
 import {
   dispatchSystemNotification,
@@ -181,14 +181,6 @@ import { dropEditorTabSnapshot, mainEditorStateKey } from '../lib/editorTabState
 import { dispatchOrQueueTerminalCommand, getSavedTerminalCount } from '../lib/terminalStorage';
 import { ensurePreviewOpenQueue, getSavedPreviewCount } from '../lib/previewStorage';
 import { RightInspector, isRightPanelTab, type RightPanelTab } from './RightInspectorPanel';
-import {
-  fetchGitFileDiff,
-  fetchGitWorkingDiff,
-  fetchGitRepos,
-  type GitCommitItem,
-  type GitCommitFile,
-  type GitStatusItem,
-} from '../api';
 import { useSettings } from '../settings';
 import type { MsgKey } from '../i18n';
 import {
@@ -259,7 +251,7 @@ import {
   type LiveTodoDocument,
   type TodoItem,
 } from '../lib/todos';
-import { displayPath, isUserHomeDir, pathBasename, getRelativePathToProject } from '../lib/displayPath';
+import { displayPath, isUserHomeDir, pathBasename } from '../lib/displayPath';
 import { toolTouchesWorktree } from '../lib/gitRefresh';
 import {
   getSessionCache,
@@ -271,7 +263,6 @@ import {
   stripUnbackedProvisionalTurns,
   updateSessionCacheMeta,
 } from '../lib/sessionCache';
-import { gitStore, type GitProjectState } from '../lib/gitStore';
 import { isInternalHistoryAssistantMessage } from '../lib/historyMessages';
 import { legacyUserTextsMatch as userTextsMatch, resolveEditable, resolveInternal, resolveUserDisplayText, stripInjectedRemindersForDisplay, stripSteerEnvelopeForDisplay, visibleUserText } from '../lib/wire/legacy';
 import {
@@ -1516,6 +1507,7 @@ export function Chat({
   };
 
   const resetTokenTelemetry = () => {
+    pendingTokenDeltaRef.current = { completion: 0, reasoning: 0 };
     tokenCacheRef.current = createTokenCacheState();
     tokensAuthoritativeRef.current = false;
     setTokens(null);
@@ -3922,29 +3914,27 @@ export function Chat({
       activeStoreRef.current!.replace(rows);
     },
   }).current;
-  /** Live text deltas batched into one render per animation frame (C3-lite). */
-  const pendingTextRef = useRef<Array<{
-    content: string;
-    messageId?: string;
-    partId?: string;
-    partRev?: number;
-    recordSeq?: number;
-    beforeMessageId?: string;
-  }>>([]);
-  const pendingTextSessionIdRef = useRef<string | null>(null);
-  const textRafRef = useRef<number | null>(null);
+  /** Live stream deltas (text / reasoning / tool_output + token estimate) batched into one render per animation frame. */
+  const pendingStreamRef = useRef<StreamBatchItem[]>([]);
+  const pendingStreamSessionIdRef = useRef<string | null>(null);
+  const pendingTokenDeltaRef = useRef<{ completion: number; reasoning: number }>({
+    completion: 0,
+    reasoning: 0,
+  });
+  const streamRafRef = useRef<number | null>(null);
   useEffect(() => {
     return () => {
       stopDetachedHistoryPoll();
       stopBackgroundFinishWatch();
       clearTrailingHandoverIdleVerify();
       runtimeAuthorityFetchRef.current.clear();
-      if (textRafRef.current != null) {
-        window.cancelAnimationFrame(textRafRef.current);
-        textRafRef.current = null;
-        pendingTextRef.current = [];
-        pendingTextSessionIdRef.current = null;
+      if (streamRafRef.current != null) {
+        window.cancelAnimationFrame(streamRafRef.current);
+        streamRafRef.current = null;
       }
+      pendingStreamRef.current = [];
+      pendingStreamSessionIdRef.current = null;
+      pendingTokenDeltaRef.current = { completion: 0, reasoning: 0 };
     };
   }, []);
   useEffect(() => {
@@ -4478,6 +4468,8 @@ export function Chat({
       sessionGenerationRef.current += 1;
       freshnessSigRef.current = '';
       const switchGeneration = sessionGenerationRef.current;
+      // 切走会话前先把在途缓冲写入即将离开的 prevId，确保快照完整且不串染目标会话。
+      flushPendingStream();
       if (prevId && tokensRef.current) {
         saveTokenSnapshot(prevId, tokensAuthoritativeRef.current);
       }
@@ -4494,13 +4486,6 @@ export function Chat({
       } else if (prevId) {
         pendingSelfEchoBySessionRef.current.delete(prevId);
       }
-      if (textRafRef.current != null) {
-        window.cancelAnimationFrame(textRafRef.current);
-        textRafRef.current = null;
-      }
-      flushPendingText();
-      pendingTextRef.current = [];
-      pendingTextSessionIdRef.current = null;
       activeIdRef.current = sessionId;
       canvasReadySessionIdRef.current = null;
       if (sessionId) {
@@ -6307,44 +6292,130 @@ export function Chat({
     return needsReplayDedupFromFrame(frame, attachNeedsDedup);
   }
 
-  function flushPendingText() {
-    if (textRafRef.current != null) {
-      window.cancelAnimationFrame(textRafRef.current);
-      textRafRef.current = null;
+  function flushPendingStream() {
+    if (streamRafRef.current != null) {
+      window.cancelAnimationFrame(streamRafRef.current);
+      streamRafRef.current = null;
     }
-    const textSid = pendingTextSessionIdRef.current;
-    const items = pendingTextRef.current;
-    if (items.length === 0) return;
-    pendingTextRef.current = [];
-    pendingTextSessionIdRef.current = null;
-    // 会话防串染守卫：若文字缓冲所属会话不属于当前可见画布，立即重定向到后台会话缓存，绝不污染新会话画布！
-    if (textSid && activeIdRef.current !== textSid) {
+    const streamSid = pendingStreamSessionIdRef.current;
+    const items = pendingStreamRef.current;
+    const tokDelta = pendingTokenDeltaRef.current;
+    pendingStreamRef.current = [];
+    pendingStreamSessionIdRef.current = null;
+    pendingTokenDeltaRef.current = { completion: 0, reasoning: 0 };
+    if (items.length === 0 && tokDelta.completion === 0 && tokDelta.reasoning === 0) return;
+
+    // 会话防串染守卫：若流式缓冲所属会话不属于当前可见画布，立即重定向到后台会话缓存，绝不污染新会话画布！
+    if (streamSid && activeIdRef.current !== streamSid) {
       for (const item of items) {
-        applyEventToSessionCache(textSid, {
-          type: 'text',
-          content: item.content,
-          message_id: item.messageId,
-          part_id: item.partId,
-          part_rev: item.partRev,
-          seq: item.recordSeq,
-          insert_before_message_id: item.beforeMessageId,
-        } as any);
+        if (item.kind === 'text') {
+          applyEventToSessionCache(streamSid, {
+            type: 'text',
+            content: item.content,
+            message_id: item.messageId,
+            part_id: item.partId,
+            part_rev: item.partRev,
+            seq: item.recordSeq,
+            insert_before_message_id: item.beforeMessageId,
+          } as any);
+        } else if (item.kind === 'reasoning') {
+          applyEventToSessionCache(streamSid, {
+            type: 'reasoning',
+            content: item.content,
+            message_id: item.messageId,
+            part_id: item.partId,
+            part_rev: item.partRev,
+            seq: item.recordSeq,
+            insert_before_message_id: item.beforeMessageId,
+          } as any);
+        } else {
+          applyEventToSessionCache(streamSid, {
+            type: 'tool_output',
+            id: item.id,
+            chunk: item.chunk,
+          } as any);
+        }
       }
       return;
     }
-    setMessages({ type: 'text_batch', items });
+
+    if (items.length > 0) {
+      setMessages({ type: 'stream_batch', items });
+    }
+    if (tokDelta.completion > 0 || tokDelta.reasoning > 0) {
+      setTokens((prev) => mergeLocalTokens(prev, {
+        prompt: prev?.prompt ?? 0,
+        completion: (prev?.completion ?? 0) + tokDelta.completion,
+        total: (prev?.total ?? 0) + tokDelta.completion,
+        ...(tokDelta.reasoning > 0
+          ? { reasoning: (prev?.reasoning ?? 0) + tokDelta.reasoning }
+          : {}),
+      }));
+    }
+  }
+
+  function queueStreamDelta(
+    item: StreamBatchItem,
+    targetSid?: string,
+    tokenDelta?: { completion?: number; reasoning?: number },
+  ) {
+    const resolvedSid = targetSid ?? activeIdRef.current;
+    if (
+      pendingStreamRef.current.length > 0 &&
+      pendingStreamSessionIdRef.current &&
+      resolvedSid &&
+      pendingStreamSessionIdRef.current !== resolvedSid
+    ) {
+      flushPendingStream();
+    }
+    pendingStreamSessionIdRef.current = resolvedSid;
+    const queue = pendingStreamRef.current;
+    const tail = queue[queue.length - 1];
+    if (
+      tail &&
+      tail.kind === item.kind &&
+      item.kind !== 'tool_output' &&
+      tail.kind !== 'tool_output' &&
+      tail.messageId === item.messageId &&
+      tail.partId === item.partId &&
+      tail.partRev === item.partRev &&
+      tail.beforeMessageId === item.beforeMessageId
+    ) {
+      tail.content += item.content;
+    } else if (tail && tail.kind === 'tool_output' && item.kind === 'tool_output' && tail.id === item.id) {
+      tail.chunk += item.chunk;
+    } else {
+      queue.push(item);
+    }
+    if (tokenDelta?.completion) {
+      pendingTokenDeltaRef.current.completion += tokenDelta.completion;
+    }
+    if (tokenDelta?.reasoning) {
+      pendingTokenDeltaRef.current.reasoning += tokenDelta.reasoning;
+    }
+    if (streamRafRef.current == null) {
+      streamRafRef.current = window.requestAnimationFrame(() => {
+        streamRafRef.current = null;
+        flushPendingStream();
+      });
+    }
   }
 
   function appendToLastAssistant(
     content: string,
-    opts?: { skipReplayDedup?: boolean; requireReplayDedup?: boolean },
+    opts?: {
+      skipReplayDedup?: boolean;
+      requireReplayDedup?: boolean;
+      immediate?: boolean;
+      tokenDelta?: { completion?: number; reasoning?: number };
+    },
     ids?: { messageId?: string; partId?: string; partRev?: number; seq?: number; beforeMessageId?: string },
     targetSid?: string,
   ) {
     const replay = opts?.requireReplayDedup === true && opts?.skipReplayDedup !== true;
-    if (replay) {
-      // Replay frames must keep their wire order: flush live deltas first.
-      flushPendingText();
+    if (replay || opts?.immediate) {
+      // Replay / terminal error frames must keep their wire order: flush live deltas first.
+      flushPendingStream();
       if (targetSid && activeIdRef.current !== targetSid) {
         applyEventToSessionCache(targetSid, {
           type: 'text',
@@ -6360,30 +6431,40 @@ export function Chat({
       setMessages({
         type: 'text',
         content,
-        replay: true,
+        replay,
         messageId: ids?.messageId,
         partId: ids?.partId,
         partRev: ids?.partRev,
         recordSeq: ids?.seq,
         beforeMessageId: ids?.beforeMessageId,
       });
+      if (opts?.tokenDelta?.completion) {
+        const completionDelta = opts.tokenDelta.completion;
+        const reasoningDelta = opts.tokenDelta.reasoning ?? 0;
+        setTokens((prev) => mergeLocalTokens(prev, {
+          prompt: prev?.prompt ?? 0,
+          completion: (prev?.completion ?? 0) + completionDelta,
+          total: (prev?.total ?? 0) + completionDelta,
+          ...(reasoningDelta > 0
+            ? { reasoning: (prev?.reasoning ?? 0) + reasoningDelta }
+            : {}),
+        }));
+      }
       return;
     }
-    pendingTextSessionIdRef.current = targetSid ?? activeIdRef.current;
-    pendingTextRef.current.push({
-      content,
-      messageId: ids?.messageId,
-      partId: ids?.partId,
-      partRev: ids?.partRev,
-      recordSeq: ids?.seq,
-      beforeMessageId: ids?.beforeMessageId,
-    });
-    if (textRafRef.current == null) {
-      textRafRef.current = window.requestAnimationFrame(() => {
-        textRafRef.current = null;
-        flushPendingText();
-      });
-    }
+    queueStreamDelta(
+      {
+        kind: 'text',
+        content,
+        messageId: ids?.messageId,
+        partId: ids?.partId,
+        partRev: ids?.partRev,
+        recordSeq: ids?.seq,
+        beforeMessageId: ids?.beforeMessageId,
+      },
+      targetSid,
+      opts?.tokenDelta,
+    );
   }
 
   // 命令输出以独立 system 消息追加进转录，与 assistant 消息分离。
@@ -6518,79 +6599,81 @@ export function Chat({
     () => filterTurnNavItems(turnNavItems, turnNavQuery),
     [turnNavItems, turnNavQuery],
   );
-  const [activeTurnId, setActiveTurnIdState] = useState<string | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
+  const activeTurnIdListenersRef = useRef<Set<(id: string | null) => void>>(new Set());
+  const getActiveTurnId = useCallback(() => activeTurnIdRef.current, []);
+  const subscribeActiveTurnId = useCallback((listener: (id: string | null) => void) => {
+    activeTurnIdListenersRef.current.add(listener);
+    return () => {
+      activeTurnIdListenersRef.current.delete(listener);
+    };
+  }, []);
   const turnNavItemsRef = useRef(turnNavItems);
   turnNavItemsRef.current = turnNavItems;
   const turnNavPinUntilRef = useRef(0);
   const turnNavScrollCleanupRef = useRef<(() => void) | null>(null);
+  const turnNavScrollRafRef = useRef<number | null>(null);
   /** Absolute turn offsets are scroll-invariant; only re-measure when the
    *  transcript height or the outline changes. Avoids O(turns) forced layout
    *  on every scroll event while the reader browses history. */
-  const turnNavOffsetCacheRef = useRef<{ key: string; tops: Map<string, number> }>({
+  const turnNavOffsetCacheRef = useRef<{ key: string; tops: Map<string, number | null> }>({
     key: '',
     tops: new Map(),
   });
 
-  // Track whether the current workspace has any git repositories (single repo or multi-repo)
-  const [hasGitRepos, setHasGitRepos] = useState<boolean>(false);
-  const hasGitReposRef = useRef<boolean>(false);
-
-  useEffect(() => {
-    let unmounted = false;
-    if (!effectiveWorkingDir) {
-      setHasGitRepos(false);
-      hasGitReposRef.current = false;
-      return;
-    }
-    fetchGitRepos(effectiveWorkingDir)
-      .then((res) => {
-        if (unmounted) return;
-        const hasGit = Array.isArray(res.repos) && res.repos.length > 0;
-        setHasGitRepos(hasGit);
-        hasGitReposRef.current = hasGit;
-      })
-      .catch(() => {
-        if (!unmounted) {
-          setHasGitRepos(false);
-          hasGitReposRef.current = false;
-        }
-      });
-    return () => {
-      unmounted = true;
-    };
-  }, [effectiveWorkingDir]);
-
-  // Right Inspector Panel: Multi-tab ('questions' | 'git' | 'terminal' | 'preview'), resizable, collapsible
+  // Right Inspector Panel: Multi-tab ('questions' | 'terminal' | 'preview'), resizable, collapsible
   const [rightPanelTab, setRightPanelTabState] = useState<RightPanelTab>(() => {
     try {
       const saved = localStorage.getItem('jeikcode:right-panel-tab');
       if (isRightPanelTab(saved)) return saved;
     } catch {}
-    return 'git';
+    return 'questions';
   });
-  const setRightPanelTab = (tab: RightPanelTab) => {
+  const setRightPanelTab = useCallback((tab: RightPanelTab) => {
     setRightPanelTabState(tab);
     try {
       localStorage.setItem('jeikcode:right-panel-tab', tab);
     } catch {}
-  };
+  }, []);
+  const [rightPanelCollapsed, setRightPanelCollapsedState] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('jeikcode:right-panel-collapsed');
+      if (saved === 'false') return false;
+      if (saved === 'true') return true;
+      // 宽屏桌面默认展开：大纲、终端、预览首屏可见；窄屏和手机先保证对话宽度。
+      return typeof window !== 'undefined' ? window.innerWidth < 1280 : true;
+    } catch {}
+    return true;
+  });
+  const setRightPanelCollapsed = useCallback((val: boolean) => {
+    setRightPanelCollapsedState(val);
+    try {
+      localStorage.setItem('jeikcode:right-panel-collapsed', String(val));
+    } catch {}
+  }, []);
+  const handleSelectRightTab = useCallback((next: RightPanelTab) => {
+    setRightPanelTab(next);
+    setRightPanelCollapsed(false);
+  }, [setRightPanelTab, setRightPanelCollapsed]);
+  const handleCollapseRightPanel = useCallback(() => {
+    setRightPanelCollapsed(true);
+  }, [setRightPanelCollapsed]);
 
   // 游标眼睛按钮悬停拖拽自动选中与打开
   const [eyeDragOver, setEyeDragOver] = useState(false);
   // 悬停只高亮、不展开：展开会立刻卸载浮动条并改变落点，真正的 drop 会落到别处
   //（甚至冒泡到主舞台打开主编辑区）。展开与打开统一放到 drop 里做。
-  const handleEyeDragOver = (e: DragEvent) => {
+  const handleEyeDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = 'copy';
     }
     setEyeDragOver(true);
-  };
-  const handleEyeDragLeave = () => {
+  }, []);
+  const handleEyeDragLeave = useCallback(() => {
     setEyeDragOver(false);
-  };
-  const handleEyeDrop = (e: DragEvent) => {
+  }, []);
+  const handleEyeDrop = useCallback((e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setEyeDragOver(false);
@@ -6622,7 +6705,7 @@ export function Chat({
         }
       }
     } catch {}
-  };
+  }, [setRightPanelTab, setRightPanelCollapsed]);
 
   // 拖拽在别处结束或被取消时，眼睛按钮可能已卸载收不到 dragleave：统一兜底清高亮。
   useEffect(() => {
@@ -6663,23 +6746,6 @@ export function Chat({
           }
         }
       }
-    } catch {}
-  };
-
-  const [rightPanelCollapsed, setRightPanelCollapsedState] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('jeikcode:right-panel-collapsed');
-      if (saved === 'false') return false;
-      if (saved === 'true') return true;
-      // 宽屏桌面默认展开：分支、改动、终端等参数首屏可见；窄屏和手机先保证对话宽度。
-      return typeof window !== 'undefined' ? window.innerWidth < 1280 : true;
-    } catch {}
-    return true;
-  });
-  const setRightPanelCollapsed = (val: boolean) => {
-    setRightPanelCollapsedState(val);
-    try {
-      localStorage.setItem('jeikcode:right-panel-collapsed', String(val));
     } catch {}
   };
 
@@ -6853,21 +6919,12 @@ export function Chat({
     };
   }, []);
 
-  const setRightPanelWidth = (w: number) => {
+  const setRightPanelWidth = useCallback((w: number) => {
     const clamped = Math.max(260, Math.min(1200, Math.round(w)));
     setRightPanelWidthState(clamped);
-  };
+  }, []);
 
-
-  // Git refresh trigger (incremented when turn finishes, branch switches,
-  // or a tool that can change the worktree / index has just finished).
   const isRightPanelVisible = !rightPanelCollapsed;
-  const [gitRefreshTrigger, setGitRefreshTrigger] = useState(0);
-  const scheduleGitRefresh = (immediate = false) => {
-    if (!isRightPanelVisible || rightPanelTab !== 'git') return;
-    gitStore.scheduleRefresh(effectiveWorkingDir, { immediate });
-    setGitRefreshTrigger((n) => n + 1);
-  };
 
   // 终端活跃标签页数量与预览/差异标签页数量（角标与提问历史对齐）
   const [terminalCount, setTerminalCount] = useState<number>(() =>
@@ -6889,31 +6946,6 @@ export function Chat({
       window.removeEventListener('jeikcode:terminal:remote_updated', handleRemoteUpdate);
     };
   }, [effectiveWorkingDir, cwd]);
-
-  // 订阅项目全局 Git 状态（仅在展开 Git 面板时触发冷启动主动刷新）
-  const [gitProjectState, setGitProjectState] = useState<GitProjectState>(() =>
-    gitStore.getState(effectiveWorkingDir),
-  );
-  useEffect(() => {
-    setGitProjectState(gitStore.getState(effectiveWorkingDir));
-    if (effectiveWorkingDir && isRightPanelVisible && rightPanelTab === 'git') {
-      gitStore.scheduleRefresh(effectiveWorkingDir, { immediate: true });
-    }
-    return gitStore.subscribe(effectiveWorkingDir, setGitProjectState);
-  }, [effectiveWorkingDir, isRightPanelVisible, rightPanelTab]);
-
-  const gitChangedCount = useMemo(() => {
-    if (!gitProjectState || !gitProjectState.gitStatus) return 0;
-    const staged = gitProjectState.gitStatus.staged?.length ?? 0;
-    const unstaged = gitProjectState.gitStatus.unstaged?.length ?? 0;
-    const untracked = gitProjectState.gitStatus.untracked?.length ?? 0;
-    return staged + unstaged + untracked;
-  }, [gitProjectState]);
-
-  // Auto-refresh Git state whenever turnNavItems length changes or turns complete
-  useEffect(() => {
-    setGitRefreshTrigger((n) => n + 1);
-  }, [turnNavItems.length]);
 
   useEffect(() => {
     zapPluginKernel.bindHostDriver({
@@ -6973,21 +7005,13 @@ export function Chat({
     });
   }, [sessionId, activeSession?.id]);
 
-  const prevLoadingRef = useRef(loading);
-  useEffect(() => {
-    if (prevLoadingRef.current && !loading) {
-      setGitRefreshTrigger((n) => n + 1);
-    }
-    prevLoadingRef.current = loading;
-  }, [loading]);
-
   const stageRef = useRef<HTMLDivElement>(null);
   const rightPanelRef = useRef<HTMLElement>(null);
   const isResizingRef = useRef(false);
 
   // 拖动期间只改面板宽度 CSS，不动 state：Chat 是巨型组件，若每个 pointermove
   // 都 setState，会把整条时间线重渲染几十次并反复强制布局。松手才提交一次。
-  const handleResizerPointerDown = (e: PointerEvent) => {
+  const handleResizerPointerDown = useCallback((e: PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     const targetEl = rightPanelRef.current || stageRef.current;
@@ -7036,17 +7060,9 @@ export function Chat({
     window.addEventListener('pointerup', finish);
     window.addEventListener('pointercancel', finish);
     window.addEventListener('blur', finish);
-  };
+  }, [setRightPanelWidth]);
 
-  // 面板宽度走 CSS 变量而不是 JSX style：拖动中即使因流式输出重渲染，
-  // 也不会把正在拖的宽度覆盖回旧值。
-  useEffect(() => {
-    if (isResizingRef.current) return;
-    rightPanelRef.current?.style.setProperty('--right-panel-width', `${rightPanelWidth}px`);
-    stageRef.current?.style.setProperty('--right-panel-width', `${rightPanelWidth}px`);
-  });
-
-  // Open Diff Tabs (VSCode style tabs for inspecting commit file diffs)
+  // Open Diff / Editor Tabs in the main stage
   const [internalDiffTabs, setInternalDiffTabs] = useState<OpenDiffTab[]>([]);
   const diffTabs = externalDiffTabs ?? internalDiffTabs;
   const setDiffTabs = externalSetDiffTabs ?? setInternalDiffTabs;
@@ -7056,87 +7072,13 @@ export function Chat({
   useEffect(() => { timelineFollow.changed(); }, [activeMainTabId, timelineFollow]);
   const setActiveMainTabId = externalSetActiveMainTabId ?? setInternalActiveMainTabId;
 
-  const handleOpenFileDiff = async (commit: GitCommitItem, file: GitCommitFile, repoRoot?: string) => {
-    const projectRoot = effectiveWorkingDir || cwd || '';
-    const fullRelativePath = getRelativePathToProject(file.path, repoRoot, projectRoot);
-    const tabId = `${commit.short_hash}:${fullRelativePath}`;
-    const targetCwd = repoRoot || cwd;
-    const existing = diffTabs.find((t) => t.id === tabId);
-    if (existing) {
-      setActiveMainTabId(tabId);
-      return;
-    }
-
-    const fileName = file.path.split('/').pop() || file.path;
-    const newTab: OpenDiffTab = {
-      id: tabId,
-      commitHash: commit.hash,
-      commitShortHash: commit.short_hash,
-      commitMessage: commit.message,
-      filePath: fullRelativePath,
-      fileName,
-      fileStatus: file.status,
-      diffText: '',
-      loading: true,
-    };
-
-    setDiffTabs((prev: OpenDiffTab[]) => [...prev, newTab]);
-    setActiveMainTabId(tabId);
-
-    try {
-      const res = await fetchGitFileDiff(commit.hash, file.path, targetCwd);
-      setDiffTabs((prev: OpenDiffTab[]) =>
-        prev.map((t: OpenDiffTab) => (t.id === tabId ? { ...t, diffText: res.diff, loading: false } : t))
-      );
-    } catch (err: any) {
-      setDiffTabs((prev: OpenDiffTab[]) =>
-        prev.map((t: OpenDiffTab) =>
-          t.id === tabId ? { ...t, diffText: `Error: ${err?.message || 'Failed to load diff'}`, loading: false } : t
-        )
-      );
-    }
-  };
-
-  const handleOpenWorkingDiff = async (file: GitStatusItem, staged: boolean, repoRoot?: string) => {
-    const projectRoot = effectiveWorkingDir || cwd || '';
-    const fullRelativePath = getRelativePathToProject(file.path, repoRoot, projectRoot);
-    const tabId = `working:${staged ? 'staged' : 'unstaged'}:${fullRelativePath}`;
-    const targetCwd = repoRoot || cwd;
-    const existing = diffTabs.find((t) => t.id === tabId);
-    if (existing) {
-      setActiveMainTabId(tabId);
-      return;
-    }
-
-    const fileName = file.path.split('/').pop() || file.path;
-    const newTab: OpenDiffTab = {
-      id: tabId,
-      commitHash: staged ? 'STAGED' : 'WORKING',
-      commitShortHash: staged ? 'Staged' : 'Working Tree',
-      commitMessage: staged ? t('git.stagedChanges') : t('git.workingTree'),
-      filePath: fullRelativePath,
-      fileName,
-      fileStatus: file.status === '?' ? 'U' : file.status,
-      diffText: '',
-      loading: true,
-    };
-
-    setDiffTabs((prev: OpenDiffTab[]) => [...prev, newTab]);
-    setActiveMainTabId(tabId);
-
-    try {
-      const res = await fetchGitWorkingDiff(file.path, staged, targetCwd);
-      setDiffTabs((prev: OpenDiffTab[]) =>
-        prev.map((t: OpenDiffTab) => (t.id === tabId ? { ...t, diffText: res.diff, loading: false } : t))
-      );
-    } catch (err: any) {
-      setDiffTabs((prev: OpenDiffTab[]) =>
-        prev.map((t: OpenDiffTab) =>
-          t.id === tabId ? { ...t, diffText: `Error: ${err?.message || 'Failed to load diff'}`, loading: false } : t
-        )
-      );
-    }
-  };
+  // 面板宽度走 CSS 变量而不是 JSX style：精确依赖宽度与着陆/画布切换边界，
+  // 避免流式输出每一帧把整页样式标脏引发滚轮碰撞回流。
+  useEffect(() => {
+    if (isResizingRef.current) return;
+    rightPanelRef.current?.style.setProperty('--right-panel-width', `${rightPanelWidth}px`);
+    stageRef.current?.style.setProperty('--right-panel-width', `${rightPanelWidth}px`);
+  }, [rightPanelWidth, messages.length === 0, activeMainTabId !== 'chat', historyHint, restoring, loading]);
 
   const handleCloseDiffTab = (tabId: string) => {
     const closing = diffTabs.find((t: OpenDiffTab) => t.id === tabId);
@@ -7156,34 +7098,53 @@ export function Chat({
     });
   };
   function setActiveTurnId(id: string | null) {
+    if (activeTurnIdRef.current === id) return;
     activeTurnIdRef.current = id;
-    setActiveTurnIdState(id);
+    activeTurnIdListenersRef.current.forEach((listener) => listener(id));
   }
   function syncTurnNavFromScroll() {
     if (Date.now() < turnNavPinUntilRef.current) return;
     const root = scrollRef.current;
     const items = turnNavItemsRef.current;
     if (!root || items.length === 0) return;
-    const rootRect = root.getBoundingClientRect();
     const cacheKey = `${root.scrollHeight}|${items.length}`;
     if (turnNavOffsetCacheRef.current.key !== cacheKey) {
       turnNavOffsetCacheRef.current = { key: cacheKey, tops: new Map() };
     }
     const tops = turnNavOffsetCacheRef.current.tops;
+    let rootRectTop: number | null = null;
+    const loadedItems = items.filter((item) => !item.pending);
+    const probeItems = loadedItems.length > 0 ? loadedItems : items;
     const next = resolveActiveTurnId(
-      items,
+      probeItems,
       (id) => {
-        const cached = tops.get(id);
-        if (cached !== undefined) return cached;
-        const el = root.querySelector(`[data-turn-nav="${id}"]`);
-        if (!el) return undefined;
-        const top = el.getBoundingClientRect().top - rootRect.top + root.scrollTop;
+        if (tops.has(id)) return tops.get(id) ?? undefined;
+        let el: HTMLElement | null =
+          typeof document !== 'undefined' ? document.getElementById(id) : null;
+        if (el && !root.contains(el)) el = null;
+        if (!el) {
+          const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id;
+          el = root.querySelector<HTMLElement>(`[data-turn-nav="${escaped}"]`);
+        }
+        if (!el) {
+          tops.set(id, null);
+          return undefined;
+        }
+        if (rootRectTop === null) rootRectTop = root.getBoundingClientRect().top;
+        const top = el.getBoundingClientRect().top - rootRectTop + root.scrollTop;
         tops.set(id, top);
         return top;
       },
       { scrollTop: root.scrollTop, clientHeight: root.clientHeight, scrollHeight: root.scrollHeight },
     );
     if (next && next !== activeTurnIdRef.current) setActiveTurnId(next);
+  }
+  function scheduleTurnNavSync() {
+    if (turnNavScrollRafRef.current != null) return;
+    turnNavScrollRafRef.current = requestAnimationFrame(() => {
+      turnNavScrollRafRef.current = null;
+      syncTurnNavFromScroll();
+    });
   }
   function rememberTurnOutline(
     text: string,
@@ -7709,6 +7670,10 @@ export function Chat({
   }, [messages]);
 
   function cancelTurnNavScroll() {
+    if (turnNavScrollRafRef.current != null) {
+      cancelAnimationFrame(turnNavScrollRafRef.current);
+      turnNavScrollRafRef.current = null;
+    }
     const cleanup = turnNavScrollCleanupRef.current;
     turnNavScrollCleanupRef.current = null;
     cleanup?.();
@@ -7957,6 +7922,49 @@ export function Chat({
     const id = requestAnimationFrame(() => syncTurnNavFromScroll());
     return () => cancelAnimationFrame(id);
   }, [turnNavItems]);
+
+  const jumpToTurnRef = useRef(jumpToTurn);
+  jumpToTurnRef.current = jumpToTurn;
+  const handleTurnNavJump = useCallback((id: string) => {
+    void jumpToTurnRef.current(id);
+  }, []);
+  const handleTurnNavigate = useCallback((item: TurnNavItem) => {
+    void jumpToTurnRef.current(item.id);
+  }, []);
+  const handleWidgetMouseDownRef = useRef(handleWidgetMouseDown);
+  handleWidgetMouseDownRef.current = handleWidgetMouseDown;
+  const handleRailDragStart = useCallback((e: MouseEvent | TouchEvent) => {
+    handleWidgetMouseDownRef.current(e);
+  }, []);
+  const rightInspectorCounts = useMemo(
+    () => ({
+      questions: turnNavItems.length,
+      terminal: terminalCount,
+      preview: previewCount,
+    }),
+    [turnNavItems.length, terminalCount, previewCount],
+  );
+  const rightInspectorTurnNav = useMemo(
+    () => ({
+      items: turnNavItems,
+      filtered: filteredTurnNavItems,
+      getActiveId: getActiveTurnId,
+      subscribeActiveId: subscribeActiveTurnId,
+      query: turnNavQuery,
+      onQueryChange: setTurnNavQuery,
+      onJump: handleTurnNavJump,
+    }),
+    [turnNavItems, filteredTurnNavItems, getActiveTurnId, subscribeActiveTurnId, turnNavQuery, handleTurnNavJump],
+  );
+  const rightInspectorRail = useMemo(
+    () => ({
+      top: widgetPos.top,
+      edge: widgetPos.edge,
+      offset: widgetPos.offset,
+      onDragStart: handleRailDragStart,
+    }),
+    [widgetPos.top, widgetPos.edge, widgetPos.offset, handleRailDragStart],
+  );
 
   // After older messages load (or any messages change), scroll to the pending
   // turn-jump target that couldn't be resolved immediately.
@@ -9579,8 +9587,12 @@ export function Chat({
     }
     const observerOnly = opts?.observerOnly === true;
     const requireReplayDedup = opts?.requireReplayDedup === true;
-    if (event.type !== 'text') {
-      flushPendingText();
+    if (
+      event.type !== 'text' &&
+      event.type !== 'reasoning' &&
+      event.type !== 'tool_output'
+    ) {
+      flushPendingStream();
     }
     noteRunningProofFrame(event, opts);
     switch (event.type) {
@@ -9821,9 +9833,13 @@ export function Chat({
       }
 
       case 'text': {
+        const textDelta = estimateTextTokens(event.content);
         appendToLastAssistant(
           event.content,
-          { requireReplayDedup },
+          {
+            requireReplayDedup,
+            ...(textDelta > 0 ? { tokenDelta: { completion: textDelta } } : {}),
+          },
           {
             messageId: event.message_id,
             partId: event.part_id,
@@ -9833,37 +9849,45 @@ export function Chat({
           },
           opts?.targetSid,
         );
-        const textDelta = estimateTextTokens(event.content);
-        if (textDelta > 0) {
-          setTokens((prev) => mergeLocalTokens(prev, {
-            prompt: prev?.prompt ?? 0,
-            completion: (prev?.completion ?? 0) + textDelta,
-            total: (prev?.total ?? 0) + textDelta,
-          }));
-        }
         break;
       }
 
       case 'reasoning': {
-        // Thinking / chain-of-thought stream — collapsible block in the UI.
-        setMessages({
-          type: 'reasoning',
-          content: event.content,
-          replay: requireReplayDedup,
-          messageId: event.message_id,
-          partId: event.part_id,
-          partRev: event.part_rev,
-          recordSeq: (event as { seq?: number }).seq,
-          beforeMessageId: opts?.insertBeforeMessageId,
-        });
         const rDelta = estimateTextTokens(event.content);
-        if (rDelta > 0) {
-          setTokens((prev) => mergeLocalTokens(prev, {
-            prompt: prev?.prompt ?? 0,
-            completion: (prev?.completion ?? 0) + rDelta,
-            total: (prev?.total ?? 0) + rDelta,
-            reasoning: (prev?.reasoning ?? 0) + rDelta,
-          }));
+        if (requireReplayDedup) {
+          flushPendingStream();
+          setMessages({
+            type: 'reasoning',
+            content: event.content,
+            replay: true,
+            messageId: event.message_id,
+            partId: event.part_id,
+            partRev: event.part_rev,
+            recordSeq: (event as { seq?: number }).seq,
+            beforeMessageId: opts?.insertBeforeMessageId,
+          });
+          if (rDelta > 0) {
+            setTokens((prev) => mergeLocalTokens(prev, {
+              prompt: prev?.prompt ?? 0,
+              completion: (prev?.completion ?? 0) + rDelta,
+              total: (prev?.total ?? 0) + rDelta,
+              reasoning: (prev?.reasoning ?? 0) + rDelta,
+            }));
+          }
+        } else {
+          queueStreamDelta(
+            {
+              kind: 'reasoning',
+              content: event.content,
+              messageId: event.message_id,
+              partId: event.part_id,
+              partRev: event.part_rev,
+              recordSeq: (event as { seq?: number }).seq,
+              beforeMessageId: opts?.insertBeforeMessageId,
+            },
+            opts?.targetSid,
+            rDelta > 0 ? { completion: rDelta, reasoning: rDelta } : undefined,
+          );
         }
         break;
       }
@@ -9924,13 +9948,25 @@ export function Chat({
         const legacyReplay = !structuredReplay
           && (event as { replay?: boolean }).replay === undefined
           && requireReplayDedup;
-        setMessages({
-          type: 'tool_output',
-          id: event.id,
-          chunk: event.chunk ?? '',
-          replay: structuredReplay,
-          legacyReplay,
-        });
+        if (structuredReplay || legacyReplay) {
+          flushPendingStream();
+          setMessages({
+            type: 'tool_output',
+            id: event.id,
+            chunk: event.chunk ?? '',
+            replay: structuredReplay,
+            legacyReplay,
+          });
+        } else {
+          queueStreamDelta(
+            {
+              kind: 'tool_output',
+              id: event.id,
+              chunk: event.chunk ?? '',
+            },
+            opts?.targetSid,
+          );
+        }
         break;
       }
 
@@ -10055,10 +10091,8 @@ export function Chat({
             }
           }
         }
-        // 改文件或跑 shell（含 git add / commit）结束后立刻刷新 Git 面板与资源管理器，
-        // 不等整轮对话结束。连续工具合并成一次请求。
+        // 改文件或跑 shell 结束后通知资源管理器刷新文件树。
         if (toolTouchesWorktree(event.name)) {
-          scheduleGitRefresh();
           try {
             window.dispatchEvent(new CustomEvent('jeikcode:worktree_touch'));
           } catch {}
@@ -11153,7 +11187,7 @@ export function Chat({
     },
   ): Promise<'ok' | 'busy' | 'error'> {
     // A new send must see the painted streaming tail before it changes the canvas.
-    flushPendingText();
+    flushPendingStream();
     if (!chatRecoveryPolicy(chatRecoveryRef.current).allowSend) {
       // 输入态反馈是瞬时的，不能落成画布系统消息（否则会永久粘在最新回答下面）。
       showToast(
@@ -11170,20 +11204,6 @@ export function Chat({
     // it. Queue cards drained in the background must NOT yank a reader who is
     // scrolled up; the explicit jump fires only for real sends.
     if (opts?.jumpToBottom !== false) timelineFollow.jump();
-
-    // 后台静默检测 Git 仓库支持情况（更新 hasGitRepos 标识，严格保留用户当前选择的右侧面板游标/Tab，禁止重置）
-    if (effectiveWorkingDir) {
-      fetchGitRepos(effectiveWorkingDir)
-        .then((res) => {
-          const hasGit = Array.isArray(res.repos) && res.repos.length > 0;
-          hasGitReposRef.current = hasGit;
-          setHasGitRepos(hasGit);
-        })
-        .catch(() => {
-          hasGitReposRef.current = false;
-          setHasGitRepos(false);
-        });
-    }
     // 本会话首条消息：用消息前 10 字做临时标题，立刻通知 App 乐观插入侧栏，
     // 让会话「一发送就出现在左侧」。回合 done 后列表刷新会换成后端自动命名。
     if (!optimisticFiredRef.current && messages.length === 0) {
@@ -12433,7 +12453,7 @@ export function Chat({
     // 4. 0ms 瞬间在画布绘制新用户气泡（带上 isSteer 标记，确保计时器向后穿透继承）。
     //    在落笔前先冲刷未上屏的文本缓冲并断开旧回合的观察流，防止 `stopRunningTurn`
     //    等待期间旧回合的残余尾流写到新用户气泡上方或下方。
-    flushPendingText();
+    flushPendingStream();
     if (currentSid) {
       sessionWatchersRef.current.get(currentSid)?.abort();
       sessionWatchersRef.current.delete(currentSid);
@@ -14575,40 +14595,14 @@ export function Chat({
           <RightInspector
             tab={rightPanelTab}
             onTabChange={setRightPanelTab}
-            onSelectTab={(next) => {
-              setRightPanelTab(next);
-              setRightPanelCollapsed(false);
-            }}
+            onSelectTab={handleSelectRightTab}
             collapsed={rightPanelCollapsed}
-            onCollapse={() => setRightPanelCollapsed(true)}
+            onCollapse={handleCollapseRightPanel}
             panelWidth={rightPanelWidth}
             panelRef={rightPanelRef}
-            counts={{
-              questions: turnNavItems.length,
-              git: gitChangedCount,
-              terminal: terminalCount,
-              preview: previewCount,
-            }}
+            counts={rightInspectorCounts}
             onResizeStart={handleResizerPointerDown}
-            turnNav={{
-              items: turnNavItems,
-              filtered: filteredTurnNavItems,
-              activeId: activeTurnId,
-              query: turnNavQuery,
-              onQueryChange: setTurnNavQuery,
-              onJump: jumpToTurn,
-            }}
-            git={{
-              cwd: effectiveWorkingDir,
-              sessionId: activeSession?.id || sessionId || undefined,
-              refreshTrigger: gitRefreshTrigger,
-              onBranchChanged: () => {
-                setGitRefreshTrigger((n) => n + 1);
-                onCwdChanged?.(effectiveWorkingDir || '');
-              },
-              onOpenFileDiff: handleOpenFileDiff,
-              onOpenWorkingDiff: handleOpenWorkingDiff,
-            }}
+            turnNav={rightInspectorTurnNav}
             workingDir={effectiveWorkingDir || cwd}
             onTerminalCountChange={setTerminalCount}
             onPreviewCountChange={setPreviewCount}
@@ -14616,12 +14610,7 @@ export function Chat({
             onEyeDragOver={handleEyeDragOver}
             onEyeDragLeave={handleEyeDragLeave}
             onEyeDrop={handleEyeDrop}
-            rail={{
-              top: widgetPos.top,
-              edge: widgetPos.edge,
-              offset: widgetPos.offset,
-              onDragStart: handleWidgetMouseDown,
-            }}
+            rail={rightInspectorRail}
           />
         </div>
 
@@ -14772,7 +14761,7 @@ export function Chat({
           tabIndex={-1}
           ref={attachTimeline}
           style={activeMainTabId !== 'chat' ? { display: 'none' } : undefined}
-          onScroll={syncTurnNavFromScroll}
+          onScroll={scheduleTurnNavSync}
         >
         <div class="timeline-inner">
         {messages.length === 0 && !historyHint && !restoring && (loading || isExecuting) && (
@@ -15061,9 +15050,10 @@ export function Chat({
 
       <TurnNavigator
         items={turnNavItems}
-        activeId={activeTurnId}
-        busyId={busy ? activeTurnId : undefined}
-        onNavigate={(item) => void jumpToTurn(item.id)}
+        getActiveId={getActiveTurnId}
+        subscribeActiveId={subscribeActiveTurnId}
+        busy={busy}
+        onNavigate={handleTurnNavigate}
       />
 
       {/* Jump-to-bottom: anchored inside the chat column (never over the
@@ -15088,40 +15078,14 @@ export function Chat({
       <RightInspector
         tab={rightPanelTab}
         onTabChange={setRightPanelTab}
-        onSelectTab={(next) => {
-          setRightPanelTab(next);
-          setRightPanelCollapsed(false);
-        }}
+        onSelectTab={handleSelectRightTab}
         collapsed={rightPanelCollapsed}
-        onCollapse={() => setRightPanelCollapsed(true)}
+        onCollapse={handleCollapseRightPanel}
         panelWidth={rightPanelWidth}
         panelRef={rightPanelRef}
-        counts={{
-          questions: turnNavItems.length,
-          git: gitChangedCount,
-          terminal: terminalCount,
-          preview: previewCount,
-        }}
+        counts={rightInspectorCounts}
         onResizeStart={handleResizerPointerDown}
-        turnNav={{
-          items: turnNavItems,
-          filtered: filteredTurnNavItems,
-          activeId: activeTurnId,
-          query: turnNavQuery,
-          onQueryChange: setTurnNavQuery,
-          onJump: jumpToTurn,
-        }}
-        git={{
-          cwd: effectiveWorkingDir,
-          sessionId: activeSession?.id || sessionId || undefined,
-          refreshTrigger: gitRefreshTrigger,
-          onBranchChanged: () => {
-            setGitRefreshTrigger((n) => n + 1);
-            onCwdChanged?.(effectiveWorkingDir || '');
-          },
-          onOpenFileDiff: handleOpenFileDiff,
-          onOpenWorkingDiff: handleOpenWorkingDiff,
-        }}
+        turnNav={rightInspectorTurnNav}
         workingDir={effectiveWorkingDir || cwd}
         onTerminalCountChange={setTerminalCount}
         onPreviewCountChange={setPreviewCount}
@@ -15129,12 +15093,7 @@ export function Chat({
         onEyeDragOver={handleEyeDragOver}
         onEyeDragLeave={handleEyeDragLeave}
         onEyeDrop={handleEyeDrop}
-        rail={{
-          top: widgetPos.top,
-          edge: widgetPos.edge,
-          offset: widgetPos.offset,
-          onDragStart: handleWidgetMouseDown,
-        }}
+        rail={rightInspectorRail}
       />
 
       {/* 浮动搜索框:默认隐藏,Cmd/Ctrl+F 呼出,Esc/× 关闭。仿浏览器 Find-in-page 样式:

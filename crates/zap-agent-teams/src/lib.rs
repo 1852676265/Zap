@@ -32,11 +32,12 @@ pub use types::{
 #[cfg(test)]
 mod tests {
     use super::store::{
-        append_task_note_conn, claim_task_attempt_conn, create_run_with_tasks_conn,
-        finish_task_fenced_conn, load_run_detail_conn, load_task_statuses_by_run_conn,
-        setup_mem_team_db, update_run_draft_cas_conn, upsert_contract_conn, RunDraftExtras,
+        append_task_note_conn, append_tasks_to_run_conn, claim_task_attempt_conn,
+        create_run_with_tasks_conn, finish_task_fenced_conn, load_run_detail_conn,
+        load_task_statuses_by_run_conn, schedule_revision_conn, setup_mem_team_db,
+        update_run_draft_cas_conn, upsert_contract_conn, RevisionTaskTarget, RunDraftExtras,
     };
-    use super::types::{compute_and_assign_waves, TeamRun, TeamTask};
+    use super::types::{compute_and_assign_waves, TeamImage, TeamRun, TeamTask};
 
     fn dummy_task(id: &str, domain: &str, deps: Vec<&str>) -> TeamTask {
         TeamTask {
@@ -59,6 +60,8 @@ mod tests {
             model: String::new(),
             session_id: String::new(),
             custom_prompt: String::new(),
+            images: Vec::new(),
+            revision_note: String::new(),
             status: "pending".to_string(),
             attempt: 0,
             attempt_id: String::new(),
@@ -171,6 +174,7 @@ mod tests {
                 sql_working_dir: Some("/team/new"),
                 sql_agent_id: Some(""),
                 sql_model: Some(""),
+                interface_spec: None,
                 prompt_overrides: Some(&empty),
             },
         )
@@ -385,5 +389,146 @@ mod tests {
         assert!(detail_after_note.tasks[0]
             .description
             .contains("请确保补充索引注释"));
+    }
+
+    #[test]
+    fn append_tasks_mid_run_preserves_existing_progress_and_updates_spec() {
+        let mut conn = setup_mem_team_db();
+        let mut run = persistence_run();
+        run.status = "running".into();
+        run.stage = "executing".into();
+        let mut t1 = dummy_task("t1", "backend", vec![]);
+        t1.status = "completed".into();
+        t1.session_id = "sess-be".into();
+        t1.attempt = 1;
+        t1.attempt_id = "att-be".into();
+        t1.last_output_excerpt = "done api".into();
+        let mut t2 = dummy_task("t2", "frontend", vec![]);
+        t2.status = "running".into();
+        t2.session_id = "sess-fe".into();
+        t2.attempt = 1;
+        t2.attempt_id = "att-fe".into();
+
+        create_run_with_tasks_conn(&mut conn, &run, &[t1, t2]).unwrap();
+
+        let mut t3 = dummy_task("t3", "mobile", vec!["t1"]);
+        t3.project_name = "App".into();
+        append_tasks_to_run_conn(
+            &mut conn,
+            "r1",
+            &[t3],
+            Some("## App Sync\nGET /api/app/badge"),
+            None,
+        )
+        .unwrap();
+
+        let detail = load_run_detail_conn(&conn, "r1", 0).unwrap().unwrap();
+        assert_eq!(detail.run.status, "running");
+        assert!(detail.run.interface_spec.contains("GET /api/app/badge"));
+        assert_eq!(detail.tasks.len(), 3);
+        let kept1 = detail.tasks.iter().find(|t| t.id == "t1").unwrap();
+        let kept2 = detail.tasks.iter().find(|t| t.id == "t2").unwrap();
+        let added = detail.tasks.iter().find(|t| t.id == "t3").unwrap();
+        assert_eq!(kept1.status, "completed");
+        assert_eq!(kept1.session_id, "sess-be");
+        assert_eq!(kept2.status, "running");
+        assert_eq!(kept2.attempt_id, "att-fe");
+        assert_eq!(added.status, "pending");
+        assert_eq!(added.wave, 2);
+    }
+
+    #[test]
+    fn schedule_revision_supports_single_and_cascading_updates_with_images_and_archives_on_complete(
+    ) {
+        let mut conn = setup_mem_team_db();
+        let mut run = persistence_run();
+        run.status = "completed".into();
+        run.stage = "completed".into();
+
+        let mut be = dummy_task("t-be", "backend", vec![]);
+        be.status = "completed".into();
+        be.session_id = "sess-be".into();
+        be.attempt = 1;
+
+        let mut fe_a = dummy_task("t-fe-a", "frontend", vec![]);
+        fe_a.status = "completed".into();
+        fe_a.session_id = "sess-fea".into();
+        fe_a.attempt = 1;
+
+        let mut mob = dummy_task("t-mob", "mobile", vec![]);
+        mob.status = "completed".into();
+        mob.session_id = "sess-mob".into();
+        mob.attempt = 1;
+
+        create_run_with_tasks_conn(&mut conn, &run, &[be, fe_a, mob]).unwrap();
+
+        // Cascading revision: backend changes API route -> frontend A syncs in Wave 2, mobile stays untouched
+        let rev_img = TeamImage {
+            media_type: "image/png".into(),
+            data: "BASE64IMG".into(),
+        };
+        schedule_revision_conn(
+            &mut conn,
+            "r1",
+            &[
+                RevisionTaskTarget {
+                    task_id: "t-be".into(),
+                    note: "把路径改为 /api/system/announcements".into(),
+                    images: vec![rev_img.clone()],
+                    replace_images: true,
+                    extra_depends_on: vec![],
+                },
+                RevisionTaskTarget {
+                    task_id: "t-fe-a".into(),
+                    note: "同步修改前端请求路径".into(),
+                    images: vec![],
+                    replace_images: false,
+                    extra_depends_on: vec!["t-be".into()],
+                },
+            ],
+            Some("Updated route: /api/system/announcements"),
+            None,
+            true,
+        )
+        .unwrap();
+
+        let detail = load_run_detail_conn(&conn, "r1", 0).unwrap().unwrap();
+        assert_eq!(detail.run.status, "running");
+        assert!(detail
+            .run
+            .interface_spec
+            .contains("/api/system/announcements"));
+        let be2 = detail.tasks.iter().find(|t| t.id == "t-be").unwrap();
+        let fea2 = detail.tasks.iter().find(|t| t.id == "t-fe-a").unwrap();
+        let mob2 = detail.tasks.iter().find(|t| t.id == "t-mob").unwrap();
+        assert_eq!(be2.status, "pending");
+        assert_eq!(be2.wave, 1);
+        assert_eq!(be2.images.len(), 1);
+        assert_eq!(be2.revision_note, "把路径改为 /api/system/announcements");
+        assert_eq!(fea2.status, "pending");
+        assert_eq!(fea2.wave, 2);
+        assert!(fea2.depends_on.contains(&"t-be".to_string()));
+        assert_eq!(mob2.status, "completed");
+
+        // Completing the revised backend task clears revision_note and archives it into description
+        let (_, att) = claim_task_attempt_conn(&conn, "t-be", "sess-be", "abc", "running").unwrap();
+        assert!(finish_task_fenced_conn(
+            &conn,
+            "t-be",
+            &att,
+            "completed",
+            "Updated routes",
+            None,
+            "passed",
+            "ok",
+            0,
+            &["AnnouncementController.java".into()],
+        )
+        .unwrap());
+        let after = load_run_detail_conn(&conn, "r1", 0).unwrap().unwrap();
+        let be_done = after.tasks.iter().find(|t| t.id == "t-be").unwrap();
+        assert!(be_done.revision_note.is_empty());
+        assert!(be_done.description.contains("已完成改造"));
+        assert!(be_done.description.contains("/api/system/announcements"));
     }
 }

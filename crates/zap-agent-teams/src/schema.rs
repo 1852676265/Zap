@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 fn format_sqlite_err(err: &rusqlite::Error) -> String {
     if let rusqlite::Error::SqliteFailure(ffi_err, msg) = err {
@@ -279,6 +279,18 @@ pub(crate) fn init_schema(conn: &Connection) -> Result<(), String> {
         conn,
         "team_tasks",
         "custom_prompt",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "team_tasks",
+        "images_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    ensure_column(
+        conn,
+        "team_tasks",
+        "revision_note",
         "TEXT NOT NULL DEFAULT ''",
     )?;
 

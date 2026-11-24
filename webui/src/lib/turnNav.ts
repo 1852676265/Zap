@@ -466,6 +466,29 @@ export function resolveActiveTurnId(
     return items[items.length - 1].id;
   }
   const marker = scrollTop + markerOffsetPx;
+  if (items.length > 16) {
+    let lo = 0;
+    let hi = items.length - 1;
+    let best = -1;
+    let sawMissing = false;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const top = contentTopById(items[mid]!.id);
+      if (top == null || !Number.isFinite(top)) {
+        sawMissing = true;
+        break;
+      }
+      if (top <= marker) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (!sawMissing) {
+      return best >= 0 ? items[best]!.id : items[0]!.id;
+    }
+  }
   let active = items[0].id;
   for (const item of items) {
     const top = contentTopById(item.id);

@@ -9,6 +9,7 @@ export interface TurnNavigatorProps {
   readonly activeId?: string | null;
   readonly getActiveId?: () => string | null;
   readonly subscribeActiveId?: (listener: (id: string | null) => void) => () => void;
+  readonly busy?: boolean;
   readonly busyId?: string | null;
   readonly onNavigate: (item: TurnNavItem) => void;
 }
@@ -23,6 +24,7 @@ export const TurnNavigator = memo(function TurnNavigator({
   activeId,
   getActiveId,
   subscribeActiveId,
+  busy: isTurnBusy,
   busyId,
   onNavigate,
 }: TurnNavigatorProps) {
@@ -134,7 +136,7 @@ export const TurnNavigator = memo(function TurnNavigator({
           >
             {items.map((item, index) => {
               const active = item.id === resolvedActiveId || index === activeIndex;
-              const busy = item.id === busyId;
+              const busy = busyId ? item.id === busyId : Boolean(isTurnBusy && active);
               const isPreview = index === previewIndex;
 
               const markClasses = ['turn-navigator-mark'];

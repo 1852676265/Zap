@@ -1657,7 +1657,7 @@ export const en: Record<MsgKey, string> = {
   'sidebar.removeProjectConfirm': 'Remove',
   'sidebar.removeProjectFromList': 'Remove from list (preserves sessions & files)',
   'sidebar.revealInExplorer': 'Open project folder in File Explorer',
-  'sidebar.recents': 'Recents',
+  'sidebar.recents': 'Recent sessions',
   'sidebar.openOtherDir': 'Open another directory…',
   'sidebar.dateToday': 'Today',
   'sidebar.dateYesterday': 'Yesterday',

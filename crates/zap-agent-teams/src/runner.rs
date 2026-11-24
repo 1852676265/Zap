@@ -7,12 +7,14 @@
 use super::prompts::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt;
 use serde::Deserialize;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use zap_kernel::message::Message;
 use zap_kernel::provider::{ChatOptions, ReasoningEffort, ToolChoice};
@@ -24,13 +26,14 @@ use super::planner::{
     build_pipeline_plan_for_run, extract_json_object, generate_unified_interface_spec,
 };
 use super::store::{
-    append_event_conn, append_task_note_conn, claim_task_attempt_conn, finish_task_fenced_conn,
-    load_config_conn, load_contracts_for_run_conn, load_custom_projects_conn,
-    load_role_presets_conn, load_run_conn, load_task_conn, load_tasks_for_run_conn,
-    set_run_status_conn, set_task_status_fenced_conn, update_run_delivery_conn,
-    update_run_design_conn, update_run_interface_spec_conn, update_run_sql_binding_conn,
-    update_run_stage_conn, update_task_followup_result_conn, upsert_contract_conn,
-    upsert_role_preset_conn, with_team_store,
+    append_event_conn, append_task_note_conn, append_tasks_to_run_conn, claim_task_attempt_conn,
+    finish_task_fenced_conn, load_config_conn, load_contracts_for_run_conn,
+    load_custom_projects_conn, load_role_presets_conn, load_run_conn, load_run_detail_conn,
+    load_task_conn, load_tasks_for_run_conn, schedule_revision_conn, set_run_status_conn,
+    set_task_status_fenced_conn, update_run_delivery_conn, update_run_design_conn,
+    update_run_interface_spec_conn, update_run_sql_binding_conn, update_run_stage_conn,
+    update_task_followup_result_conn, upsert_contract_conn, upsert_role_preset_conn,
+    with_team_store, RevisionTaskTarget,
 };
 use super::tools::{register_team_session_ctx, unregister_team_session_ctx, ActiveTeamSessionCtx};
 use super::types::{
@@ -62,6 +65,8 @@ pub(crate) async fn execution_prompt(
 struct ActiveRunHandle {
     cancel: CancellationToken,
     child_cancels: Mutex<Vec<CancellationToken>>,
+    wake: Notify,
+    append_epoch: AtomicU64,
 }
 
 impl ActiveRunHandle {
@@ -69,6 +74,8 @@ impl ActiveRunHandle {
         Arc::new(Self {
             cancel: CancellationToken::new(),
             child_cancels: Mutex::new(Vec::new()),
+            wake: Notify::new(),
+            append_epoch: AtomicU64::new(0),
         })
     }
 
@@ -98,6 +105,17 @@ fn active_runs() -> &'static Mutex<HashMap<String, Arc<ActiveRunHandle>>> {
 pub fn is_run_executing(run_id: &str) -> bool {
     let guard = active_runs().lock().unwrap_or_else(|e| e.into_inner());
     guard.contains_key(run_id.trim())
+}
+
+pub(crate) fn wake_active_run(run_id: &str) -> bool {
+    let guard = active_runs().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(handle) = guard.get(run_id.trim()) {
+        handle.append_epoch.fetch_add(1, Ordering::SeqCst);
+        handle.wake.notify_one();
+        true
+    } else {
+        false
+    }
 }
 
 /// 异步启动阶段 1（主控制定《执行计划》并自动拆解生成对应智能体），完成后停在 `team_binding` 等待用户增删智能体并绑定各自项目目录。
@@ -668,7 +686,7 @@ pub async fn start_or_resume_run(host: Arc<dyn TeamHost>, run_id: &str) -> Resul
                 .map_err(|e| e.to_string())?;
             let next_stage = if run.mode == "triage" {
                 "triage"
-            } else if run.interface_spec.trim().is_empty() {
+            } else if run.interface_spec.trim().is_empty() && tasks.iter().all(|t| t.attempt == 0) {
                 "contracting"
             } else {
                 "executing"
@@ -752,7 +770,15 @@ pub async fn start_or_resume_run(host: Arc<dyn TeamHost>, run_id: &str) -> Resul
                 let ddl = run_snap.sql_schema_draft.clone();
                 move || {
                     with_team_store(|s| {
-                        update_run_interface_spec_conn(&s.conn, &rid_s, "executing", &sp)?;
+                        let extra_spec = load_run_conn(&s.conn, &rid_s)?
+                            .map(|r| r.interface_spec)
+                            .unwrap_or_default();
+                        let merged_sp = if extra_spec.trim().is_empty() {
+                            sp
+                        } else {
+                            format!("{}\n\n{}", sp.trim_end(), extra_spec.trim())
+                        };
+                        update_run_interface_spec_conn(&s.conn, &rid_s, "executing", &merged_sp)?;
                         if !ddl.trim().is_empty() {
                             let _ = upsert_contract_conn(
                                 &s.conn,
@@ -770,7 +796,7 @@ pub async fn start_or_resume_run(host: Arc<dyn TeamHost>, run_id: &str) -> Resul
                             "lead_contract",
                             "backend",
                             "主控统一约定的前后端接口、字典与权限方案",
-                            &sp,
+                            &merged_sp,
                             "后端与各前端必须严格遵守同一份接口与字段契约并发开发",
                         );
                         let _ = append_event_conn(
@@ -780,7 +806,7 @@ pub async fn start_or_resume_run(host: Arc<dyn TeamHost>, run_id: &str) -> Resul
                             "",
                             "lead_planner",
                             "前后端统一接口方案已锁定！后端与所有前端立即同时并发开工。",
-                            &sp,
+                            &merged_sp,
                         );
                         Ok(())
                     })
@@ -789,12 +815,214 @@ pub async fn start_or_resume_run(host: Arc<dyn TeamHost>, run_id: &str) -> Resul
             .await;
         }
 
-        orchestrate_run_loop(host, rid_bg.clone(), handle, max_parallel.clamp(1, 6)).await;
+        orchestrate_run_loop(
+            host,
+            rid_bg.clone(),
+            Arc::clone(&handle),
+            max_parallel.clamp(1, 6),
+        )
+        .await;
         let mut guard = active_runs().lock().unwrap_or_else(|e| e.into_inner());
-        guard.remove(&rid_bg);
+        if guard
+            .get(&rid_bg)
+            .is_some_and(|cur| Arc::ptr_eq(cur, &handle))
+        {
+            guard.remove(&rid_bg);
+        }
     });
 
     Ok(())
+}
+
+/// 在全流程任意阶段（含运行中途不中断、暂停、已完成）安全追加新成员并按需调度执行。
+pub(crate) async fn append_tasks_and_dispatch(
+    host: Arc<dyn TeamHost>,
+    run_id: &str,
+    mut new_tasks: Vec<TeamTask>,
+    interface_spec_addition: Option<String>,
+    replace_interface_spec: Option<String>,
+    auto_start: bool,
+) -> Result<(super::types::TeamRunDetail, bool), String> {
+    let rid = run_id.trim().to_string();
+    if rid.is_empty() {
+        return Err("缺少 runId".to_string());
+    }
+
+    let currently_executing = is_run_executing(&rid);
+    let agents =
+        tokio::task::spawn_blocking(|| zap_neural_memory::list_neural_agents().unwrap_or_default())
+            .await
+            .unwrap_or_default();
+
+    for t in &mut new_tasks {
+        t.run_id = rid.clone();
+        t.domain = normalize_domain(&t.domain);
+        t.working_dir = clean_path_str(&t.working_dir);
+        if currently_executing || auto_start {
+            if t.working_dir.is_empty() {
+                return Err(format!("新增成员「{}」尚未选择项目代码目录", t.title));
+            }
+            let p = Path::new(&t.working_dir);
+            if !p.exists() || !p.is_dir() {
+                return Err(format!(
+                    "新增成员「{}」的项目目录不存在或不可访问：{}",
+                    t.title, t.working_dir
+                ));
+            }
+        }
+        t.project_hash = if t.working_dir.is_empty() {
+            String::new()
+        } else {
+            host.hash_path(Path::new(&t.working_dir))
+        };
+        t.agent_label = agents
+            .iter()
+            .find(|a| a.id == t.agent_id)
+            .map(|a| a.label.clone())
+            .unwrap_or_default();
+    }
+
+    let rid_db = rid.clone();
+    let tasks_for_db = new_tasks.clone();
+    let spec_add = interface_spec_addition.clone();
+    let spec_rep = replace_interface_spec.clone();
+    let (was_running, has_new_tasks) = tokio::task::spawn_blocking(move || {
+        with_team_store(|s| {
+            let cur =
+                load_run_conn(&s.conn, &rid_db)?.ok_or_else(|| format!("未找到任务: {rid_db}"))?;
+            let was_running = cur.status == "running";
+            let _ = append_tasks_to_run_conn(
+                &mut s.conn,
+                &rid_db,
+                &tasks_for_db,
+                spec_add.as_deref(),
+                spec_rep.as_deref(),
+            )?;
+            for t in &tasks_for_db {
+                if !t.working_dir.is_empty() && Path::new(&t.working_dir).is_dir() {
+                    let _ = upsert_role_preset_conn(
+                        &s.conn,
+                        &RoleBindingPreset {
+                            domain: t.domain.clone(),
+                            working_dir: t.working_dir.clone(),
+                            agent_id: t.agent_id.clone(),
+                            model: t.model.clone(),
+                            updated_at: String::new(),
+                        },
+                    );
+                }
+            }
+            Ok::<_, String>((was_running, !tasks_for_db.is_empty()))
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if has_new_tasks {
+        let woken = wake_active_run(&rid);
+        if !woken && (auto_start || was_running) {
+            start_or_resume_run(host, &rid).await?;
+        }
+    }
+
+    let rid_q = rid.clone();
+    let detail = tokio::task::spawn_blocking(move || {
+        with_team_store(|s| load_run_detail_conn(&s.conn, &rid_q, 0))
+    })
+    .await
+    .map_err(|e| e.to_string())??
+    .ok_or_else(|| format!("未找到任务: {rid}"))?;
+    let live = is_run_executing(&rid);
+    Ok((detail, live))
+}
+
+/// 发起单成员定向改造或跨成员联动变更（可选更新统一契约，自动按 DAG 波次先后唤醒既有会话执行）。
+pub(crate) async fn dispatch_member_revision(
+    host: Arc<dyn TeamHost>,
+    run_id: &str,
+    mut targets: Vec<RevisionTaskTarget>,
+    interface_spec_addition: Option<String>,
+    replace_interface_spec: Option<String>,
+    auto_start: bool,
+) -> Result<(super::types::TeamRunDetail, bool), String> {
+    let rid = run_id.trim().to_string();
+    if rid.is_empty() {
+        return Err("缺少 runId".to_string());
+    }
+    if targets.is_empty() {
+        return Err("请至少选择一位需要修改或联动的成员".to_string());
+    }
+
+    let rid_check = rid.clone();
+    let target_ids: Vec<String> = targets.iter().map(|t| t.task_id.clone()).collect();
+    let tasks_in_db = tokio::task::spawn_blocking(move || {
+        with_team_store(|s| {
+            let _ = load_run_conn(&s.conn, &rid_check)?
+                .ok_or_else(|| format!("未找到任务: {rid_check}"))?;
+            load_tasks_for_run_conn(&s.conn, &rid_check)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    for tid in &target_ids {
+        let task = tasks_in_db
+            .iter()
+            .find(|t| t.id == *tid)
+            .ok_or_else(|| format!("未找到子任务: {tid}"))?;
+        if auto_start {
+            let wd = task.working_dir.trim();
+            if wd.is_empty() {
+                return Err(format!("成员「{}」尚未绑定项目代码目录", task.title));
+            }
+            let p = Path::new(wd);
+            if !p.exists() || !p.is_dir() {
+                return Err(format!("成员「{}」的项目目录不可访问：{wd}", task.title));
+            }
+        }
+    }
+
+    for t in &mut targets {
+        if let Some(note_clean) = Some(t.note.trim().to_string()).filter(|s| !s.is_empty()) {
+            t.note = note_clean;
+        }
+        t.images.truncate(4);
+    }
+
+    let rid_db = rid.clone();
+    let spec_add = interface_spec_addition.clone();
+    let spec_rep = replace_interface_spec.clone();
+    tokio::task::spawn_blocking(move || {
+        with_team_store(|s| {
+            schedule_revision_conn(
+                &mut s.conn,
+                &rid_db,
+                &targets,
+                spec_add.as_deref(),
+                spec_rep.as_deref(),
+                auto_start,
+            )
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if auto_start {
+        let woken = wake_active_run(&rid);
+        if !woken {
+            start_or_resume_run(host, &rid).await?;
+        }
+    }
+
+    let rid_q = rid.clone();
+    let detail = tokio::task::spawn_blocking(move || {
+        with_team_store(|s| load_run_detail_conn(&s.conn, &rid_q, 0))
+    })
+    .await
+    .map_err(|e| e.to_string())??
+    .ok_or_else(|| format!("未找到任务: {rid}"))?;
+    let live = is_run_executing(&rid);
+    Ok((detail, live))
 }
 
 /// 暂停正在执行的派工单（立即取消在途子回合，保留已完成进度以便随时续跑）。
@@ -917,6 +1145,7 @@ pub async fn send_member_note(
     run_id: &str,
     task_id: &str,
     note: &str,
+    images: &[TeamImage],
 ) -> Result<(String, bool), String> {
     let rid = run_id.trim().to_string();
     let tid = task_id.trim().to_string();
@@ -1079,6 +1308,7 @@ pub async fn send_member_note(
     let rid_bg = rid.clone();
     let tid_bg = tid.clone();
 
+    let images_owned: Vec<TeamImage> = images.iter().take(4).cloned().collect();
     tokio::spawn(async move {
         register_team_session_ctx(
             &session_id,
@@ -1102,7 +1332,7 @@ pub async fn send_member_note(
             (!effective_model.is_empty()).then_some(effective_model.as_str()),
             &prompt,
             read_only,
-            &[],
+            &images_owned,
         )
         .await;
 
@@ -1175,125 +1405,203 @@ async fn orchestrate_run_loop(
     handle: Arc<ActiveRunHandle>,
     max_parallel: usize,
 ) {
-    let snapshot = tokio::task::spawn_blocking({
-        let rid = run_id.clone();
-        move || {
-            with_team_store(|store| {
-                let run = load_run_conn(&store.conn, &rid)?;
-                let mut tasks = load_tasks_for_run_conn(&store.conn, &rid)?;
-                let waves = compute_and_assign_waves(&mut tasks)?;
-                Ok::<_, String>((run, waves))
-            })
-        }
-    })
-    .await;
-
-    let (Some(run), waves) = (match snapshot {
-        Ok(Ok((r, w))) => (r, w),
-        Ok(Err(e)) => {
-            mark_run_failed(&run_id, &format!("拓扑校验失败：{e}")).await;
-            return;
-        }
-        Err(e) => {
-            mark_run_failed(&run_id, &format!("任务读取异常：{e}")).await;
-            return;
-        }
-    }) else {
-        return;
-    };
-
     let sem = Arc::new(Semaphore::new(max_parallel));
+    let mut join_set: JoinSet<(String, usize, bool)> = JoinSet::new();
+    let mut in_flight: HashSet<String> = HashSet::new();
+    let mut logged_waves: HashSet<usize> = HashSet::new();
+    let mut failed_wave: Option<usize> = None;
 
-    for (wave_num, wave_task_ids) in waves {
-        if handle.cancel.is_cancelled() {
-            return;
-        }
-
-        // 筛选本波次尚未完成的子任务
-        let pending_ids: Vec<String> = tokio::task::spawn_blocking({
-            let rid = run_id.clone();
-            let ids = wave_task_ids.clone();
-            move || {
-                with_team_store(|store| {
-                    let all = load_tasks_for_run_conn(&store.conn, &rid)?;
-                    let set: HashSet<String> = ids.into_iter().collect();
-                    let ready: Vec<String> = all
-                        .into_iter()
-                        .filter(|t| set.contains(&t.id) && t.status != "completed")
-                        .map(|t| t.id)
-                        .collect();
-                    if !ready.is_empty() {
-                        let _ = append_event_conn(
-                            &store.conn,
-                            &rid,
-                            "wave_started",
-                            "",
-                            "orchestrator",
-                            &format!(
-                                "进入第 {} 波次（并发执行 {} 个领域子任务）",
-                                wave_num,
-                                ready.len()
-                            ),
-                            "",
-                        );
-                    }
-                    Ok::<_, String>(ready)
-                })
+    'outer: loop {
+        loop {
+            if handle.cancel.is_cancelled() {
+                return;
             }
-        })
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
 
-        if pending_ids.is_empty() {
-            continue;
-        }
-
-        let mut joins = Vec::with_capacity(pending_ids.len());
-        for tid in pending_ids {
-            let h = Arc::clone(&host);
-            let rid = run_id.clone();
-            let run_cfg = run.clone();
-            let hdl = Arc::clone(&handle);
-            let sem_clone = Arc::clone(&sem);
-            joins.push(tokio::spawn(async move {
-                let Ok(_permit) = sem_clone.acquire_owned().await else {
-                    return false;
-                };
-                if hdl.cancel.is_cancelled() {
-                    return false;
+            let snap = tokio::task::spawn_blocking({
+                let rid = run_id.clone();
+                move || {
+                    with_team_store(|store| {
+                        let run = load_run_conn(&store.conn, &rid)?;
+                        let mut tasks = load_tasks_for_run_conn(&store.conn, &rid)?;
+                        let _ = compute_and_assign_waves(&mut tasks)?;
+                        Ok::<_, String>((run, tasks))
+                    })
                 }
-                execute_single_task_lifecycle(h, rid, tid, run_cfg, hdl).await
-            }));
-        }
+            })
+            .await;
 
-        let mut wave_all_ok = true;
-        for j in joins {
-            if !j.await.unwrap_or(false) {
-                wave_all_ok = false;
+            let (Some(run), tasks) = (match snap {
+                Ok(Ok((r, t))) => (r, t),
+                Ok(Err(e)) => {
+                    mark_run_failed(&run_id, &format!("拓扑校验失败：{e}")).await;
+                    return;
+                }
+                Err(e) => {
+                    mark_run_failed(&run_id, &format!("任务读取异常：{e}")).await;
+                    return;
+                }
+            }) else {
+                return;
+            };
+
+            let status_by_id: HashMap<String, String> = tasks
+                .iter()
+                .map(|t| (t.id.clone(), t.status.clone()))
+                .collect();
+
+            if failed_wave.is_none() {
+                let mut eligible: Vec<TeamTask> = tasks
+                    .iter()
+                    .filter(|t| {
+                        t.status != "completed"
+                            && !in_flight.contains(&t.id)
+                            && t.depends_on.iter().all(|dep| {
+                                status_by_id
+                                    .get(dep)
+                                    .map(|s| s == "completed")
+                                    .unwrap_or(true)
+                            })
+                    })
+                    .cloned()
+                    .collect();
+
+                // 按波次分批通知并派发（同波及可并行任务立即并发）
+                if !eligible.is_empty() {
+                    let min_wave = eligible.iter().map(|t| t.wave).min().unwrap_or(1);
+                    eligible.retain(|t| t.wave == min_wave || in_flight.is_empty());
+
+                    let waves_to_log: Vec<(usize, usize)> = {
+                        let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
+                        for t in &eligible {
+                            if !logged_waves.contains(&t.wave) {
+                                *counts.entry(t.wave).or_default() += 1;
+                            }
+                        }
+                        counts.into_iter().collect()
+                    };
+                    if !waves_to_log.is_empty() {
+                        for (w, _) in &waves_to_log {
+                            logged_waves.insert(*w);
+                        }
+                        let rid_ev = run_id.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            with_team_store(|store| {
+                                for (w, cnt) in waves_to_log {
+                                    let _ = append_event_conn(
+                                        &store.conn,
+                                        &rid_ev,
+                                        "wave_started",
+                                        "",
+                                        "orchestrator",
+                                        &format!(
+                                            "进入第 {} 波次（并发执行 {} 个领域子任务）",
+                                            w, cnt
+                                        ),
+                                        "",
+                                    );
+                                }
+                                Ok(())
+                            })
+                        })
+                        .await;
+                    }
+
+                    for task_item in eligible {
+                        let tid = task_item.id.clone();
+                        let twave = task_item.wave;
+                        in_flight.insert(tid.clone());
+                        let h = Arc::clone(&host);
+                        let rid = run_id.clone();
+                        let run_cfg = run.clone();
+                        let hdl = Arc::clone(&handle);
+                        let sem_clone = Arc::clone(&sem);
+                        join_set.spawn(async move {
+                            let Ok(_permit) = sem_clone.acquire_owned().await else {
+                                return (tid, twave, false);
+                            };
+                            if hdl.cancel.is_cancelled() {
+                                return (tid, twave, false);
+                            }
+                            let ok =
+                                execute_single_task_lifecycle(h, rid, tid.clone(), run_cfg, hdl)
+                                    .await;
+                            (tid, twave, ok)
+                        });
+                    }
+                }
+            }
+
+            if in_flight.is_empty() {
+                if let Some(fw) = failed_wave {
+                    mark_run_failed(
+                        &run_id,
+                        &format!("第 {fw} 波次存在未通过验收或执行失败的子任务，流水线已熔断保护现场，可查看原因后一键重试。"),
+                    )
+                    .await;
+                    return;
+                }
+                let blocked_count = tasks.iter().filter(|t| t.status != "completed").count();
+                if blocked_count > 0 {
+                    mark_run_failed(
+                        &run_id,
+                        "存在依赖未就绪或状态异常的阻塞子任务，流水线已暂停保护现场。",
+                    )
+                    .await;
+                    return;
+                }
+                let finish_epoch = handle.append_epoch.load(Ordering::SeqCst);
+                let finalized = finalize_successful_run(&run_id, &run).await;
+                let mut guard = active_runs().lock().unwrap_or_else(|e| e.into_inner());
+                if finalized && handle.append_epoch.load(Ordering::SeqCst) == finish_epoch {
+                    if guard
+                        .get(&run_id)
+                        .is_some_and(|cur| Arc::ptr_eq(cur, &handle))
+                    {
+                        guard.remove(&run_id);
+                    }
+                    break 'outer;
+                }
+                drop(guard);
+                let rid_resume = run_id.clone();
+                let next_stage = if run.mode == "triage" {
+                    "triage"
+                } else {
+                    "executing"
+                };
+                let _ = tokio::task::spawn_blocking(move || {
+                    with_team_store(|s| {
+                        update_run_stage_conn(&s.conn, &rid_resume, Some("running"), next_stage)
+                    })
+                })
+                .await;
+                continue 'outer;
+            }
+
+            tokio::select! {
+                _ = handle.cancel.cancelled() => {
+                    return;
+                }
+                Some(joined) = join_set.join_next() => {
+                    match joined {
+                        Ok((tid, twave, ok)) => {
+                            in_flight.remove(&tid);
+                            if !ok && failed_wave.is_none() {
+                                failed_wave = Some(twave);
+                            }
+                        }
+                        Err(_) => {
+                            if failed_wave.is_none() {
+                                failed_wave = Some(1);
+                            }
+                        }
+                    }
+                }
+                _ = handle.wake.notified() => {
+                    // 新插入成员唤醒调度器，立即检查并加入可执行波次
+                }
             }
         }
-
-        if handle.cancel.is_cancelled() {
-            return;
-        }
-        if !wave_all_ok {
-            mark_run_failed(
-                &run_id,
-                &format!("第 {wave_num} 波次存在未通过验收或执行失败的子任务，流水线已熔断保护现场，可查看原因后一键重试。"),
-            )
-            .await;
-            return;
-        }
     }
-
-    if handle.cancel.is_cancelled() {
-        return;
-    }
-
-    // 全部波次顺利收官：生成跨仓库汇总结论（尤其是联合排障会诊模式）
-    finalize_successful_run(&run_id, &run).await;
 }
 
 async fn execute_single_task_lifecycle(
@@ -1313,7 +1621,9 @@ async fn execute_single_task_lifecycle(
                     .ok_or_else(|| format!("未找到子任务 {tid}"))?;
                 let all_tasks = load_tasks_for_run_conn(&store.conn, &rid)?;
                 let all_contracts = load_contracts_for_run_conn(&store.conn, &rid)?;
-                let globals = load_config_conn(&store.conn).prompt_templates;
+                let cfg = load_config_conn(&store.conn);
+                let globals = cfg.prompt_templates;
+                let compact_prompts = cfg.compact_prompts;
 
                 let session_id = super::sessions::session_id_for_binding(
                     &task.session_id,
@@ -1340,11 +1650,19 @@ async fn execute_single_task_lifecycle(
                     .into_iter()
                     .filter(|t| dep_set.contains(&t.id))
                     .map(|t| {
-                        let summary = if !t.contract_summary.trim().is_empty() {
+                        let mut summary = if !t.contract_summary.trim().is_empty() {
                             t.contract_summary
                         } else {
                             t.last_output_excerpt
                         };
+                        if !t.touched_files.is_empty() {
+                            let files = t.touched_files.join(", ");
+                            summary = if summary.trim().is_empty() {
+                                format!("Files: {files}")
+                            } else {
+                                format!("{summary}\nFiles: {files}")
+                            };
+                        }
                         (
                             format!("{} - {}", domain_badge_cn(&t.domain), t.title),
                             summary,
@@ -1377,6 +1695,7 @@ async fn execute_single_task_lifecycle(
                     upstream_contracts,
                     upstream_excerpts,
                     globals,
+                    compact_prompts,
                 ))
             })
         }
@@ -1392,6 +1711,7 @@ async fn execute_single_task_lifecycle(
         upstream_contracts,
         upstream_excerpts,
         globals,
+        compact_prompts,
     ) = match prep {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
@@ -1446,6 +1766,7 @@ async fn execute_single_task_lifecycle(
         &upstream_excerpts,
         &globals,
         None,
+        compact_prompts,
     );
     let session_title = format!("🤝 [{}] {}", domain_badge_cn(&task.domain), task.title);
     let working_dir = PathBuf::from(task.working_dir.trim());
@@ -1458,12 +1779,37 @@ async fn execute_single_task_lifecycle(
         0
     };
 
+    let effective_images: Vec<TeamImage> = if !task.images.is_empty() {
+        task.images.clone()
+    } else {
+        run.goal_images.clone()
+    };
+    let is_revision_round = !task.revision_note.trim().is_empty();
     let mut next_prompt = initial_prompt;
 
     let final_ok = loop {
         if handle.cancel.is_cancelled() {
             break false;
         }
+
+        let pre_contract_sig: Option<(String, String, String)> = if is_revision_round {
+            let rid_c = run_id.clone();
+            let tid_c = task_id.clone();
+            tokio::task::spawn_blocking(move || {
+                with_team_store(|store| {
+                    Ok(load_contracts_for_run_conn(&store.conn, &rid_c)?
+                        .into_iter()
+                        .find(|c| c.from_task_id == tid_c)
+                        .map(|c| (c.title, c.schema_or_api, c.created_at)))
+                })
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+        } else {
+            None
+        };
 
         let turn_res = run_native_session_turn(
             &host,
@@ -1475,7 +1821,7 @@ async fn execute_single_task_lifecycle(
             (!effective_model.is_empty()).then_some(effective_model.as_str()),
             &next_prompt,
             run.mode == "triage",
-            &run.goal_images,
+            &effective_images,
         )
         .await;
 
@@ -1522,10 +1868,31 @@ async fn execute_single_task_lifecycle(
         }
 
         // 若是流水线编码模式且存在下游依赖，但智能体未主动调用 team_publish_contract，自动兜底提炼契约摘要
+        // 若为定向/联动改造回合且成员未调用 team_publish_contract 更新既有契约，则强制用本轮输出覆盖更新契约，防止下游读到 v1 旧路径
         if run.mode == "pipeline"
             && (has_dependents || matches!(task.domain.as_str(), "sql" | "backend"))
         {
-            ensure_fallback_contract(&run_id, &task, &assistant_output).await;
+            let force_update = if is_revision_round {
+                let rid_c = run_id.clone();
+                let tid_c = task_id.clone();
+                let post_contract_sig: Option<(String, String, String)> =
+                    tokio::task::spawn_blocking(move || {
+                        with_team_store(|store| {
+                            Ok(load_contracts_for_run_conn(&store.conn, &rid_c)?
+                                .into_iter()
+                                .find(|c| c.from_task_id == tid_c)
+                                .map(|c| (c.title, c.schema_or_api, c.created_at)))
+                        })
+                    })
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten();
+                post_contract_sig == pre_contract_sig
+            } else {
+                false
+            };
+            ensure_fallback_contract(&run_id, &task, &assistant_output, force_update).await;
         }
 
         // 无需独立验收（排障会诊模式或用户关闭了自动验收）→ 直接标记完成
@@ -1777,9 +2144,13 @@ async fn verify_task_delivery(
     let files_owned = touched_files.to_vec();
     let tid_owned = task.id.clone();
     let rid_owned = task.run_id.clone();
-    let (disk_snippets, published_ctr) = tokio::task::spawn_blocking(move || {
+    let (disk_snippets, published_ctr, compact_prompts) = tokio::task::spawn_blocking(move || {
+        let compact =
+            with_team_store(|s| Ok(load_config_conn(&s.conn).compact_prompts)).unwrap_or(true);
+        let max_files = if compact { 3 } else { 5 };
+        let max_file_chars = if compact { 600 } else { 1200 };
         let mut snippets = Vec::new();
-        for f in files_owned.iter().take(5) {
+        for f in files_owned.iter().take(max_files) {
             let p = Path::new(f);
             let full = if p.is_absolute() {
                 p.to_path_buf()
@@ -1790,7 +2161,7 @@ async fn verify_task_delivery(
                 snippets.push(format!(
                     "File `{f}` ({} bytes):\n{}",
                     content.len(),
-                    truncate_chars_safe(&content, 1200)
+                    truncate_chars_safe(&content, max_file_chars)
                 ));
             }
         }
@@ -1801,7 +2172,7 @@ async fn verify_task_delivery(
         })
         .ok()
         .flatten();
-        (snippets.join("\n\n"), ctr)
+        (snippets.join("\n\n"), ctr, compact)
     })
     .await
     .unwrap_or_default();
@@ -1841,6 +2212,7 @@ async fn verify_task_delivery(
     let upstream_str = if upstream_contracts.is_empty() {
         "(none)".to_string()
     } else {
+        let max_ctr = if compact_prompts { 500 } else { 800 };
         upstream_contracts
             .iter()
             .map(|c| {
@@ -1848,7 +2220,7 @@ async fn verify_task_delivery(
                     "[{}] {}: {}",
                     c.domain,
                     c.title,
-                    truncate_chars_safe(&c.schema_or_api, 800)
+                    truncate_chars_safe(&c.schema_or_api, max_ctr)
                 )
             })
             .collect::<Vec<_>>()
@@ -1856,19 +2228,51 @@ async fn verify_task_delivery(
     };
 
     let ctr_str = published_ctr
-        .map(|c| format!("{}\n{}", c.title, c.schema_or_api))
+        .map(|c| {
+            let body = if compact_prompts {
+                truncate_chars_safe(&c.schema_or_api, 700)
+            } else {
+                c.schema_or_api
+            };
+            format!("{}\n{}", c.title, body)
+        })
         .unwrap_or_else(|| "(none published)".to_string());
 
     let approved_sql_str = if run.sql_schema_draft.trim().is_empty() {
         "(none)".to_string()
+    } else if compact_prompts {
+        truncate_chars_safe(&extract_compact_sql_ddl(&run.sql_schema_draft), 900)
     } else {
         truncate_chars_safe(&run.sql_schema_draft, 1400)
     };
-    let locked_spec_str = if run.interface_spec.trim().is_empty() {
+    let locked_spec_str = if !task.revision_note.trim().is_empty() {
+        format!(
+            "[增量改造准绳，以本要求与最新上游契约为准]: {}\n\n[早期基准约定仅供参考]: {}",
+            truncate_chars_safe(&task.revision_note, 700),
+            if run.interface_spec.trim().is_empty() {
+                "(none)".to_string()
+            } else {
+                truncate_chars_safe(&run.interface_spec, 800)
+            }
+        )
+    } else if run.interface_spec.trim().is_empty() {
         "(none)".to_string()
+    } else if compact_prompts {
+        truncate_chars_safe(&run.interface_spec, 1000)
     } else {
         truncate_chars_safe(&run.interface_spec, 1600)
     };
+    let verifier_desc_str = if !task.revision_note.trim().is_empty() {
+        format!(
+            "【本次增量改造要求】：{}\n【原任务背景】：{}",
+            truncate_chars_safe(&task.revision_note, 600),
+            truncate_chars_safe(&task.description, 400)
+        )
+    } else {
+        task.description.clone()
+    };
+    let worker_out_str =
+        truncate_chars_safe(worker_output, if compact_prompts { 1200 } else { 2200 });
 
     let prompt = match execution_prompt(
         run,
@@ -1877,14 +2281,14 @@ async fn verify_task_delivery(
         &[
             ("task_title", &task.title),
             ("domain", &task.domain),
-            ("task_description", &task.description),
+            ("task_description", &verifier_desc_str),
             ("acceptance_criteria", &task.acceptance_criteria),
             ("approved_sql", &approved_sql_str),
             ("locked_interface_spec", &locked_spec_str),
             ("upstream_contracts", &upstream_str),
             ("published_contract", &ctr_str),
             ("touched_files_snippets", &disk_snippets),
-            ("worker_output", &truncate_chars_safe(worker_output, 2200)),
+            ("worker_output", &worker_out_str),
         ],
     )
     .await
@@ -1934,19 +2338,28 @@ async fn verify_task_delivery(
     }
 }
 
-async fn ensure_fallback_contract(run_id: &str, task: &TeamTask, assistant_output: &str) {
+async fn ensure_fallback_contract(
+    run_id: &str,
+    task: &TeamTask,
+    assistant_output: &str,
+    force_update: bool,
+) {
     if assistant_output.trim().is_empty() {
         return;
     }
     let rid = run_id.to_string();
     let tid = task.id.clone();
     let dom = task.domain.clone();
-    let title = format!("{} 交付摘要", task.title);
+    let title = if !task.revision_note.trim().is_empty() {
+        format!("{} · 最新改造契约摘要", task.title)
+    } else {
+        format!("{} 交付摘要", task.title)
+    };
     let excerpt = truncate_chars_safe(assistant_output, 2000);
     let _ = tokio::task::spawn_blocking(move || {
         with_team_store(|store| {
             let existing = load_contracts_for_run_conn(&store.conn, &rid)?;
-            if !existing.iter().any(|c| c.from_task_id == tid) {
+            if force_update || !existing.iter().any(|c| c.from_task_id == tid) {
                 let _ = upsert_contract_conn(
                     &store.conn,
                     &rid,
@@ -1954,7 +2367,11 @@ async fn ensure_fallback_contract(run_id: &str, task: &TeamTask, assistant_outpu
                     &dom,
                     &title,
                     &excerpt,
-                    "自动提取自上游子任务最终回复",
+                    if force_update {
+                        "自动提取自本轮改造输出（覆盖早期契约）"
+                    } else {
+                        "自动提取自上游子任务最终回复"
+                    },
                 );
             }
             Ok(())
@@ -1963,7 +2380,7 @@ async fn ensure_fallback_contract(run_id: &str, task: &TeamTask, assistant_outpu
     .await;
 }
 
-async fn finalize_successful_run(run_id: &str, run: &TeamRun) {
+async fn finalize_successful_run(run_id: &str, run: &TeamRun) -> bool {
     let rid = run_id.to_string();
     let data = tokio::task::spawn_blocking({
         let rid = rid.clone();
@@ -2037,8 +2454,12 @@ async fn finalize_successful_run(run_id: &str, run: &TeamRun) {
     let sql_save = delivery_sql.clone();
     let is_triage = latest_run.mode == "triage";
     let final_stage = if is_triage { "triage" } else { "completed" };
-    let _ = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         with_team_store(|store| {
+            let current_tasks = load_tasks_for_run_conn(&store.conn, &rid_save)?;
+            if current_tasks.iter().any(|t| t.status != "completed") {
+                return Ok(false);
+            }
             update_run_delivery_conn(
                 &store.conn,
                 &rid_save,
@@ -2061,10 +2482,13 @@ async fn finalize_successful_run(run_id: &str, run: &TeamRun) {
                 msg,
                 &syn_save,
             );
-            Ok(())
+            Ok(true)
         })
     })
-    .await;
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or(false)
 }
 
 fn extract_delivery_sql(run: &TeamRun, contracts: &[TeamContract]) -> String {

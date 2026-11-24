@@ -29,13 +29,6 @@ export function emitGlobalEvent(event: GlobalWireEvent): void {
       window.dispatchEvent(new CustomEvent('jeikcode:config-reloaded'));
     } catch {}
   }
-  if (event.type === 'git_updated') {
-    try {
-      import('./gitStore').then((m) => {
-        m.gitStore.handleRemoteUpdate({ cwd: event.cwd, force: true, fetch: event.fetch });
-      });
-    } catch {}
-  }
   if (event.type === 'terminal_updated') {
     try {
       window.dispatchEvent(new CustomEvent('jeikcode:terminal:remote_updated', { detail: { cwd: event.cwd } }));

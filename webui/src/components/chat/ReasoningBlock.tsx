@@ -122,7 +122,6 @@ export function ReasoningBlock({
   if (!hasReasoningText && !live) return null;
 
   const previewText = live ? liveDisplay : (!open ? firstLine : '');
-  const tickerKey = live ? `${idleTick}:${previewText.slice(0, 48)}` : 'settled';
 
   return (
     <div class={'reasoning-block' + (open && hasReasoningText ? ' is-open' : '') + (live ? ' is-live' : '')}>
@@ -142,7 +141,7 @@ export function ReasoningBlock({
           <>
             <span class="reasoning-separator" aria-hidden="true">·</span>
             <span class="reasoning-summary" title={previewText} aria-live={live ? 'polite' : undefined}>
-              <span key={tickerKey} class={'reasoning-summary-inner' + (live ? ' is-live' : '')}>
+              <span class={'reasoning-summary-inner' + (live ? ' is-live' : '')}>
                 {previewText}
               </span>
               {live && (

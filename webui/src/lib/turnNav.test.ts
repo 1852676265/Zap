@@ -473,3 +473,28 @@ test('画布已到会开头：offset 仍声称有更早时也不得留下“向�
   assert.equal(canvasAtVeryBeginning({ offset: 658, canvasHeadSeq: 651, pageHeadSeq: 602 }), false);
   assert.equal(canvasAtVeryBeginning({ offset: 658 }), false, '没有身份时不做猜测');
 });
+
+test('resolveActiveTurnId uses binary search when items exceed 16 and handles unloaded gaps safely', () => {
+  const items = Array.from({ length: 64 }, (_, i) => ({ id: `t-${i}` }));
+  const tops = new Map(items.map((it, i) => [it.id, i * 200]));
+  let probes = 0;
+  const active = resolveActiveTurnId(
+    items,
+    (id) => {
+      probes += 1;
+      return tops.get(id);
+    },
+    { scrollTop: 3100, clientHeight: 600, scrollHeight: 14000 },
+  );
+  assert.equal(active, 't-15');
+  assert.ok(probes <= 8, `expected <= 8 binary search probes, got ${probes}`);
+
+  // When earlier items are unloaded (undefined), fallback still finds the visible turn.
+  const partialTops = new Map(items.slice(20).map((it, i) => [it.id, 4000 + i * 200]));
+  const partialActive = resolveActiveTurnId(
+    items,
+    (id) => partialTops.get(id),
+    { scrollTop: 4500, clientHeight: 600, scrollHeight: 14000 },
+  );
+  assert.equal(partialActive, 't-22');
+});

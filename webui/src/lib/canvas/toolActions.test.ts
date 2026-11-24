@@ -61,3 +61,25 @@ test('tool_result rebuilds a missing tool card from the authoritative result', (
   assert.equal(tool?.status, 'done');
   assert.equal(tool?.output, 'ok');
 });
+
+test('stream_batch applies reasoning, text, and tool_output deltas in order within one dispatch', () => {
+  let rows: any[] = [
+    { role: 'user', parts: [{ kind: 'text', text: 'hi' }], seq: 1 },
+    { role: 'assistant', id: 'a1', parts: [{ kind: 'tool', tool: { id: 't1', name: 'bash', args: '{}', status: 'pending' } }], seq: 2 },
+  ];
+  rows = reduceCanvasEvent(rows, {
+    type: 'stream_batch',
+    items: [
+      { kind: 'reasoning', content: 'step 1 ', messageId: 'a1', partId: 'r1', recordSeq: 2 },
+      { kind: 'reasoning', content: 'step 2', messageId: 'a1', partId: 'r1', recordSeq: 2 },
+      { kind: 'tool_output', id: 't1', chunk: 'line1\n' },
+      { kind: 'tool_output', id: 't1', chunk: 'line2' },
+      { kind: 'text', content: 'hello ', messageId: 'a1', partId: 'p1', recordSeq: 2 },
+      { kind: 'text', content: 'world', messageId: 'a1', partId: 'p1', recordSeq: 2 },
+    ],
+  });
+  const assistant = rows[1];
+  assert.equal(assistant?.parts.find((p: any) => p.kind === 'reasoning')?.text, 'step 1 step 2');
+  assert.equal(assistant?.parts.find((p: any) => p.kind === 'text')?.text, 'hello world');
+  assert.equal(toolOf(rows, 't1')?.output, 'line1\nline2');
+});

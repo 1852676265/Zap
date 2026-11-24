@@ -52,12 +52,11 @@ const MAX_TITLE_CHARS: usize = 40;
 /// for Anthropic (which always sends `max_tokens` and streams `text_delta`) but
 /// truncated the other two protocols.
 pub const TITLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-/// Cap covering hidden reasoning plus a ≤6-word title. Anthropic always injects
-/// `max_tokens` from config; Chat Completions / Responses omit it when unset, so
-/// reasoning models can consume the whole implicit budget and emit no
-/// `TextDelta` — which left WebUI stuck on the provisional first-line title.
-/// Keep this above a typical low-effort think budget so a short title still fits.
-const TITLE_MAX_TOKENS: u32 = 768;
+/// Cap covering hidden reasoning plus a concise title. Reasoning models and
+/// gateways can emit hidden reasoning tokens even with low effort; 768 could
+/// exhaust the budget mid-thought before emitting visible title text.
+/// `max_tokens` is a ceiling only (non-thinking models stop right after the title).
+const TITLE_MAX_TOKENS: u32 = 4096;
 
 /// First-line provisional title from the user's raw (unwrapped) input.
 /// Used at first Submit so the session is catalog-visible before the turn ends.
@@ -103,8 +102,9 @@ fn strip_leading_image_markers(mut text: &str) -> &str {
 pub fn session_title_prompt(conversation: &str) -> String {
     format!(
         "Generate a short, specific title for this conversation. \
-         Rules: at most 6 words, same language as the user, no surrounding \
-         quotes, no trailing punctuation, no leading label like \"Title:\". \
+         Rules: concise (at most 6 words in English or ~15 characters in CJK), \
+         same language as the user, no surrounding quotes, no trailing \
+         punctuation, no leading label like \"Title:\". \
          Reply with only the title.\n\n{conversation}"
     )
 }

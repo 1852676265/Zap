@@ -626,3 +626,31 @@ test('canvas swap keeps the reader pinned when the viewport was at the bottom', 
     assert.equal(s.element.scrollTop, 1800);
   } finally { s.cleanup(); }
 });
+
+test('reading state short-circuits wheel style inspection', () => {
+  const s = setup();
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'getComputedStyle');
+  let styleCalls = 0;
+  try {
+    s.attach(); s.flush();
+    s.follow.pause();
+    Object.defineProperty(globalThis, 'getComputedStyle', {
+      configurable: true,
+      value: () => {
+        styleCalls += 1;
+        return { overflowY: 'auto' };
+      },
+    });
+    const child = { scrollHeight: 500, clientHeight: 100, scrollTop: 30, parentElement: s.element };
+    const wheel = new Event('wheel');
+    Object.assign(wheel, { deltaY: -20 });
+    Object.defineProperty(wheel, 'target', { value: child });
+    s.element.dispatchEvent(wheel);
+    assert.equal(styleCalls, 0);
+    assert.equal(s.following.current, false);
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'getComputedStyle', saved);
+    else Reflect.deleteProperty(globalThis, 'getComputedStyle');
+    s.cleanup();
+  }
+});

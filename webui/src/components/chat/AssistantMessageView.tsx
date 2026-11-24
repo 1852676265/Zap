@@ -1,5 +1,5 @@
 import { memo } from 'preact/compat';
-import { useState } from 'preact/hooks';
+import { useMemo, useState } from 'preact/hooks';
 import type { VNode } from 'preact';
 import { useT } from '../../settings';
 import { formatTurnElapsed } from '../../lib/turnTimer';
@@ -56,9 +56,11 @@ function isIgnoredChatNotice(text?: string | null): boolean {
 }
 
 function assistantMessagePropsEqual(prev: any, next: any): boolean {
+  const affectsActiveTurn = prev.isLast || prev.isLastInTurn || next.isLast || next.isLastInTurn;
+  const affectsTurnTail = prev.isLastInTurn || next.isLastInTurn;
   return prev.msg === next.msg
     && prev.isLast === next.isLast
-    && prev.busy === next.busy
+    && (!affectsActiveTurn || prev.busy === next.busy)
     && prev.isLastInTurn === next.isLastInTurn
     && prev.isCompacting === next.isCompacting
     && prev.isActiveSearchMatch === next.isActiveSearchMatch
@@ -68,9 +70,9 @@ function assistantMessagePropsEqual(prev: any, next: any): boolean {
     && prev.liveElapsedMs === next.liveElapsedMs
     && prev.turnTotalMs === next.turnTotalMs
     && prev.search === next.search
-    && prev.turnLastText === next.turnLastText
-    && prev.turnAllText === next.turnAllText
-    && prev.turnReasoning === next.turnReasoning
+    && (!affectsTurnTail || prev.turnLastText === next.turnLastText)
+    && (!affectsTurnTail || prev.turnAllText === next.turnAllText)
+    && (!affectsTurnTail || prev.turnReasoning === next.turnReasoning)
     && prev.cwd === next.cwd;
 }
 
@@ -123,12 +125,17 @@ export const AssistantMessageView = memo(function AssistantMessageView({
 }) {
   const t = useT();
   const text = messageText(msg);
-  const pluginActions = usePluginActions('chat.message:actions', {
-    message: msg,
-    isLast,
-    isLastInTurn,
-    text: turnLastText || turnAllText || text,
-  });
+  const resolvedActionText = turnLastText || turnAllText || text;
+  const pluginContext = useMemo(
+    () => ({
+      message: msg,
+      isLast,
+      isLastInTurn,
+      text: resolvedActionText,
+    }),
+    [msg, isLast, isLastInTurn, resolvedActionText],
+  );
+  const pluginActions = usePluginActions('chat.message:actions', pluginContext);
   const trimmed = text.trim();
   const isError =
     !messageHasTools(msg) &&

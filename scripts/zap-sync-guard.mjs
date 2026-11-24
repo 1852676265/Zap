@@ -106,6 +106,8 @@ check('WebUI critical entry points, context menus, and right panel resizer stay 
   assert.match(sidebar, /setScheduleDialogOpen\(true\)/);
   assert.match(sidebar, /sidebar-brand-version-clickable/);
   assert.match(sidebar, /onClick=\{onOpenUpdate\}/);
+  assert.match(sidebar, /session-group-header[\s\S]*sidebar\.recents[\s\S]*sidebar-recents-section[\s\S]*sidebar\.projects[\s\S]*sidebar-projects-list/);
+  assert.ok(sidebar.indexOf('sidebar-recents-section') < sidebar.indexOf('sidebar-projects-list'));
   assert.match(appCss, /\.right-inspector-panel\s*\{[^}]*overflow:\s*visible;/s);
   assert.doesNotMatch(appCss, /\.right-inspector-panel\s*\{\s*--right-panel-width:\s*300px\s*!important;/);
   assert.doesNotMatch(pluginRegistry + pluginKernel, /agent-teams|neural-memory|teams:|neural:/);

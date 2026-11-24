@@ -292,7 +292,7 @@ export const vi: Record<keyof typeof en, string> = {
   'sidebar.removeProjectConfirm': 'Bỏ',
   'sidebar.removeProjectFromList': 'Bỏ khỏi danh sách (giữ lại phiên và tệp)',
   'sidebar.revealInExplorer': 'Mở thư mục dự án trong trình quản lý tệp',
-  'sidebar.recents': 'Mục gần đây',
+  'sidebar.recents': 'Phiên gần đây',
   'sidebar.openOtherDir': 'Mở thư mục khác…',
   'sidebar.dateToday': 'Hôm nay',
   'sidebar.dateYesterday': 'Hôm qua',

@@ -190,6 +190,10 @@ export function createTimelineFollow(
       return;
     }
     const top = element.scrollTop;
+    if (visible && state === 'reading' && writtenTop === null && top < lastTop) {
+      lastTop = top;
+      return;
+    }
     const height = element.scrollHeight;
     const viewport = element.clientHeight;
     // A growing scrollport clamps a bottom-pinned scroll position *down*; the
@@ -256,15 +260,19 @@ export function createTimelineFollow(
     // is never reader intent.
     if (event.ctrlKey || event.metaKey) return;
     if (event.defaultPrevented) return;
-    const consumed = consumeScroll(event.target, event.deltaY);
     gestureUntil = now() + GESTURE_WINDOW_MS;
     writtenTop = null;
+    // 已处于阅读浏览态时直接短路，避免每次滚轮在 DOM 上触发 getComputedStyle / 回流。
+    if (state === 'reading') return;
+    if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+    const consumed = consumeScroll(event.target, event.deltaY);
     if (consumed === 'inside') {
       release();
       return;
     }
-    if (consumed === 'edge') return;
-    if (state === 'reading') return;
+    // 内部容器已到顶/底边缘时，若方向与容器可滚一致且外层将向上滚动，立刻放行跟底，
+    // 防止下一帧 rAF 把 scrollTop 拉回底部打断滚轮平滑动画。
+    if (consumed === 'edge' && event.deltaY > 0) return;
     // Only explicit upward intent suspends. Downward intent alone does not
     // resume: the position must actually reach the bottom afterwards.
     if (element && element.scrollTop > 0 && event.deltaY < 0) release();
@@ -472,10 +480,9 @@ export function createTimelineFollow(
       ? new ResizeObserver(onResize) : null;
     observer?.observe(next);
     observer?.observe(next.querySelector('.timeline-inner') ?? next);
-    const mutations = typeof MutationObserver !== 'undefined'
+    // 仅在缺失 ResizeObserver 的环境回退 MutationObserver，避免计时器/微调节点频繁触发无高度变化的 changed() 检查。
+    const mutations = !observer && typeof MutationObserver !== 'undefined'
       ? new MutationObserver(changed) : null;
-    // Attributes are intentionally excluded: class/aria churn does not change
-    // height, and the whole transcript is observed.
     mutations?.observe(next, { subtree: true, childList: true, characterData: true });
     disconnect = () => {
       observer?.disconnect();

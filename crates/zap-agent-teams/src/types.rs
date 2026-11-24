@@ -26,6 +26,9 @@ pub struct TeamGlobalConfig {
     /// 全局全角色提示词模板自定义覆写（template_id -> 自定义模板；缺失或空值表示使用内置默认模板）
     #[serde(default)]
     pub prompt_templates: BTreeMap<String, String>,
+    /// 启用精简提示词模式（去除重复说教与交叉冗余，SQL 仅提取 DDL 块；默认开启）
+    #[serde(default = "default_true")]
+    pub compact_prompts: bool,
 }
 
 fn default_true() -> bool {
@@ -49,6 +52,7 @@ impl Default for TeamGlobalConfig {
             show_input_capsule: true,
             max_parallel_per_wave: 3,
             prompt_templates: BTreeMap::new(),
+            compact_prompts: true,
         }
     }
 }
@@ -222,6 +226,12 @@ pub struct TeamTask {
     /// 单成员级完整提示词覆写（非空时完全替换派发给该成员的主提示词）
     #[serde(default)]
     pub custom_prompt: String,
+    /// 该成员专属参考图（例如不同前端各自的样式图；非空时优先于 run.goal_images 下发给该成员）
+    #[serde(default)]
+    pub images: Vec<TeamImage>,
+    /// 本次定向改造/联动变更指令（非空时以增量改造模式唤醒既有会话执行）
+    #[serde(default)]
+    pub revision_note: String,
     /// `"pending"` | `"ready"` | `"running"` | `"verifying"` | `"repairing"` | `"completed"` | `"failed"` | `"cancelled"`
     #[serde(default = "default_task_pending")]
     pub status: String,

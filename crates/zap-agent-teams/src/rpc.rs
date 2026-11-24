@@ -13,18 +13,23 @@ use serde_json::{json, Value};
 
 use crate::host::{HostProjectInfo, TeamHost};
 
-use super::planner::{convert_triage_to_pipeline, create_pending_pipeline_run, plan_team_run};
+use super::planner::{
+    convert_triage_to_pipeline, create_pending_pipeline_run, plan_incremental_tasks,
+    plan_revision_impact, plan_team_run, IncrementalCandidate,
+};
 use super::runner::{
-    cancel_team_run, is_run_executing, pause_team_run, retry_single_task, revise_design_phase,
-    send_member_note, start_design_phase, start_or_resume_run, start_sql_design_phase,
+    append_tasks_and_dispatch, cancel_team_run, dispatch_member_revision, is_run_executing,
+    pause_team_run, retry_single_task, revise_design_phase, send_member_note, start_design_phase,
+    start_or_resume_run, start_sql_design_phase,
 };
 use super::store::{
     append_event_conn, confirm_sql_to_team_binding_conn, delete_custom_project_conn,
     delete_role_preset_conn, delete_run_conn, list_runs_conn, load_config_conn,
-    load_custom_projects_conn, load_role_presets_conn, load_run_conn, load_run_detail_conn,
-    load_task_statuses_by_run_conn, reset_run_to_team_binding_conn, save_config_conn,
-    transition_run_stage_conn, update_run_design_texts_conn, update_run_draft_cas_conn,
-    upsert_custom_project_conn, upsert_role_preset_conn, with_team_store,
+    load_contracts_for_run_conn, load_custom_projects_conn, load_role_presets_conn, load_run_conn,
+    load_run_detail_conn, load_task_statuses_by_run_conn, load_tasks_for_run_conn,
+    reset_run_to_team_binding_conn, save_config_conn, transition_run_stage_conn,
+    update_run_design_texts_conn, update_run_draft_cas_conn, upsert_custom_project_conn,
+    upsert_role_preset_conn, with_team_store, RevisionTaskTarget,
 };
 use super::types::{
     clean_path_str, compute_and_assign_waves, new_team_id, normalize_domain, now_ts,
@@ -52,6 +57,8 @@ struct SaveDraftPayload {
     #[serde(default)]
     sql_schema_draft: Option<String>,
     #[serde(default)]
+    interface_spec: Option<String>,
+    #[serde(default)]
     tasks: Vec<TeamTask>,
     #[serde(default)]
     sql_working_dir: Option<String>,
@@ -69,6 +76,19 @@ fn default_true() -> bool {
 
 fn default_two() -> u32 {
     2
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviseMemberTargetPayload {
+    task_id: String,
+    note: String,
+    #[serde(default)]
+    images: Vec<TeamImage>,
+    #[serde(default)]
+    replace_images: bool,
+    #[serde(default)]
+    extra_depends_on: Vec<String>,
 }
 
 pub async fn handle_rpc(
@@ -737,7 +757,8 @@ async fn dispatch_rpc(
                         .split_once(':')
                         .map(|(a, b)| (a, Some(b)))
                         .unwrap_or((template_id.as_str(), None));
-                    let globals = load_config_conn(&s.conn).prompt_templates;
+                    let cfg = load_config_conn(&s.conn);
+                    let globals = cfg.prompt_templates;
                     preview_role_prompt(
                         base_id,
                         domain,
@@ -754,6 +775,7 @@ async fn dispatch_rpc(
                         working_dir.as_deref(),
                         feedback.as_deref(),
                         &wd,
+                        cfg.compact_prompts,
                     )
                 })
             })
@@ -767,6 +789,8 @@ async fn dispatch_rpc(
             if action == "teams:save_prompt_templates" && templates.is_none() {
                 return Err("缺少 promptTemplates".to_string());
             }
+            let has_compact = payload.get("compactPrompts").is_some();
+            let has_default_model = payload.get("defaultModel").is_some();
             let mut cfg: TeamGlobalConfig =
                 serde_json::from_value(payload).map_err(|e| format!("配置格式错误: {e}"))?;
             let templates_only = action == "teams:save_prompt_templates";
@@ -775,8 +799,16 @@ async fn dispatch_rpc(
                     let old = load_config_conn(&s.conn);
                     if templates_only {
                         cfg = old;
-                    } else if templates.is_none() {
-                        cfg.prompt_templates = old.prompt_templates;
+                    } else {
+                        if templates.is_none() {
+                            cfg.prompt_templates = old.prompt_templates;
+                        }
+                        if !has_compact {
+                            cfg.compact_prompts = old.compact_prompts;
+                        }
+                        if !has_default_model {
+                            cfg.default_model = old.default_model;
+                        }
                     }
                     if let Some(templates) = templates {
                         cfg.prompt_templates = templates;
@@ -909,7 +941,12 @@ async fn dispatch_rpc(
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let (mode, live) = send_member_note(host, &run_id, &task_id, &note).await?;
+            let images: Vec<TeamImage> = payload
+                .get("images")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            let (mode, live) = send_member_note(host, &run_id, &task_id, &note, &images).await?;
             let detail = tokio::task::spawn_blocking(move || {
                 with_team_store(|s| load_run_detail_conn(&s.conn, &run_id, 0))
             })
@@ -918,6 +955,181 @@ async fn dispatch_rpc(
             Ok(json!({
                 "success": true,
                 "mode": mode,
+                "detail": detail,
+                "isExecuting": live,
+            }))
+        }
+
+        "teams:append_tasks" => {
+            let run_id = payload
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let tasks: Vec<TeamTask> = payload
+                .get("tasks")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("新增成员格式无效: {e}"))?
+                .unwrap_or_default();
+            let spec_add = optional_string(&payload, "interfaceSpecAddition")?;
+            let spec_rep = optional_string(&payload, "replaceInterfaceSpec")?;
+            let auto_start = payload
+                .get("autoStart")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let (detail, live) =
+                append_tasks_and_dispatch(host, &run_id, tasks, spec_add, spec_rep, auto_start)
+                    .await?;
+            Ok(json!({
+                "success": true,
+                "detail": detail,
+                "isExecuting": live,
+            }))
+        }
+
+        "teams:plan_incremental" => {
+            let run_id = payload
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if run_id.is_empty() {
+                return Err("缺少 runId".to_string());
+            }
+            let candidates: Vec<IncrementalCandidate> = payload
+                .get("candidates")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("项目候选参数无效: {e}"))?
+                .unwrap_or_default();
+            let user_note = optional_string(&payload, "userNote")?.unwrap_or_default();
+
+            let rid_q = run_id.clone();
+            let (run, existing_tasks, contracts) = tokio::task::spawn_blocking(move || {
+                with_team_store(|s| {
+                    let run = load_run_conn(&s.conn, &rid_q)?
+                        .ok_or_else(|| format!("未找到任务: {rid_q}"))?;
+                    let tasks = load_tasks_for_run_conn(&s.conn, &rid_q)?;
+                    let contracts = load_contracts_for_run_conn(&s.conn, &rid_q)?;
+                    Ok::<_, String>((run, tasks, contracts))
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+
+            let plan = plan_incremental_tasks(
+                &run,
+                &existing_tasks,
+                &contracts,
+                &candidates,
+                &user_note,
+                &current_wd,
+            )
+            .await;
+            Ok(json!({
+                "success": true,
+                "plan": plan,
+            }))
+        }
+
+        "teams:plan_revision" => {
+            let run_id = payload
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if run_id.is_empty() {
+                return Err("缺少 runId".to_string());
+            }
+            let primary_task_id = optional_string(&payload, "primaryTaskId")?
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let instruction = payload
+                .get("instruction")
+                .or_else(|| payload.get("note"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let images: Vec<TeamImage> = payload
+                .get("images")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+
+            let rid_q = run_id.clone();
+            let (run, existing_tasks, contracts) = tokio::task::spawn_blocking(move || {
+                with_team_store(|s| {
+                    let run = load_run_conn(&s.conn, &rid_q)?
+                        .ok_or_else(|| format!("未找到任务: {rid_q}"))?;
+                    let tasks = load_tasks_for_run_conn(&s.conn, &rid_q)?;
+                    let contracts = load_contracts_for_run_conn(&s.conn, &rid_q)?;
+                    Ok::<_, String>((run, tasks, contracts))
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+
+            let plan = plan_revision_impact(
+                &run,
+                &existing_tasks,
+                &contracts,
+                primary_task_id.as_deref(),
+                &instruction,
+                &images,
+                &current_wd,
+            )
+            .await;
+            Ok(json!({
+                "success": true,
+                "plan": plan,
+            }))
+        }
+
+        "teams:revise_members" => {
+            let run_id = payload
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if run_id.is_empty() {
+                return Err("缺少 runId".to_string());
+            }
+            let raw_targets: Vec<ReviseMemberTargetPayload> = payload
+                .get("targets")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("改造目标格式无效: {e}"))?
+                .unwrap_or_default();
+            let targets: Vec<RevisionTaskTarget> = raw_targets
+                .into_iter()
+                .map(|t| RevisionTaskTarget {
+                    task_id: t.task_id,
+                    note: t.note,
+                    images: t.images,
+                    replace_images: t.replace_images,
+                    extra_depends_on: t.extra_depends_on,
+                })
+                .collect();
+            let spec_add = optional_string(&payload, "interfaceSpecAddition")?;
+            let spec_rep = optional_string(&payload, "replaceInterfaceSpec")?;
+            let auto_start = payload
+                .get("autoStart")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let (detail, live) =
+                dispatch_member_revision(host, &run_id, targets, spec_add, spec_rep, auto_start)
+                    .await?;
+            Ok(json!({
+                "success": true,
                 "detail": detail,
                 "isExecuting": live,
             }))
@@ -1012,6 +1224,7 @@ async fn save_draft_internal(
                     sql_working_dir: parsed.sql_working_dir.as_deref(),
                     sql_agent_id: parsed.sql_agent_id.as_deref(),
                     sql_model: parsed.sql_model.as_deref(),
+                    interface_spec: parsed.interface_spec.as_deref(),
                     prompt_overrides: parsed.prompt_overrides.as_ref(),
                 },
             )?;

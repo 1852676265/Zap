@@ -22,6 +22,7 @@ pub const TPL_SYS_GUARD_READONLY: &str = "sys_guard_readonly";
 pub const TPL_SYS_GUARD_COLLAB: &str = "sys_guard_collab";
 pub const TPL_WORKER_PIPELINE: &str = "worker_pipeline";
 pub const TPL_WORKER_TRIAGE: &str = "worker_triage";
+pub const TPL_WORKER_REVISION: &str = "worker_revision";
 pub const TPL_MEMBER_NOTE: &str = "member_note";
 pub const TPL_VERIFIER_GATE: &str = "verifier_gate";
 pub const TPL_WORKER_REPAIR: &str = "worker_repair";
@@ -92,19 +93,104 @@ impl DirProfile {
         } else {
             &self.working_dir
         };
-        let status = match self.kind {
-            DirProfileKind::Missing => "Directory is unspecified, unavailable, or not a regular directory. Do not assume any existing source structure.",
-            DirProfileKind::Empty if self.scanned_files == 0 && !self.truncated => "No regular files observed in the scanned scope; excluded entries are not inspected.",
-            DirProfileKind::Empty => "No SQL or recognized source files observed in the scanned sample. This does not establish that the entire directory is empty or has no source code.",
-            DirProfileKind::SqlOnly => "Only SQL (and possibly other non-source files) observed in the scanned sample. Reference existing scripts read-only for dialect, naming, keys, and audit conventions; do not assume or search for entity/Mapper implementations.",
-            DirProfileKind::Codebase => "Recognized source files observed. Inspect relevant existing source, schemas, migrations, and conventions read-only; do not assume a particular framework.",
-        };
-        format!(
-            "Directory profile for `{dir_label}`: {status}\nScanned files: {}; directories: {}; truncated/incomplete: {}; observed SQL: {}; recognized source: {}. SQL samples: [{}]. Source samples: [{}]. Use requirements, the execution plan, and available memory when references are absent.",
-            self.scanned_files, self.scanned_dirs, self.truncated, self.sql_count, self.code_count,
-            self.sample_sql_files.join(", "), self.sample_code_files.join(", ")
-        )
+        match self.kind {
+            DirProfileKind::Missing => {
+                format!("Dir `{dir_label}`: unavailable/missing; do not assume repo structure.")
+            }
+            DirProfileKind::Empty if self.scanned_files == 0 && !self.truncated => {
+                format!("Dir `{dir_label}`: empty (0 files); design from requirements & memory.")
+            }
+            DirProfileKind::Empty => format!(
+                "Dir `{dir_label}`: no SQL/source in sample (scanned {}, does not establish entire dir is empty).",
+                self.scanned_files
+            ),
+            DirProfileKind::SqlOnly => format!(
+                "Dir `{dir_label}`: SQL-only (observed SQL: {}; samples: [{}]). Read SQL scripts only; do not assume app source.",
+                self.sql_count,
+                self.sample_sql_files.join(", ")
+            ),
+            DirProfileKind::Codebase => {
+                let samples: Vec<String> = self
+                    .sample_code_files
+                    .iter()
+                    .chain(self.sample_sql_files.iter())
+                    .take(6)
+                    .cloned()
+                    .collect();
+                format!(
+                    "Dir `{dir_label}`: codebase (observed SQL: {}, source: {}; samples: [{}]).",
+                    self.sql_count,
+                    self.code_count,
+                    samples.join(", ")
+                )
+            }
+        }
     }
+}
+
+pub(crate) fn extract_compact_sql_ddl(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut blocks = Vec::new();
+    let lower = trimmed.to_ascii_lowercase();
+    let mut offset = 0usize;
+    while let Some(rel_start) = lower[offset..].find("```sql") {
+        let fence_start = offset + rel_start + 6;
+        if let Some(rel_end) = trimmed[fence_start..].find("```") {
+            let block = trimmed[fence_start..fence_start + rel_end].trim();
+            if !block.is_empty() {
+                blocks.push(block.to_string());
+            }
+            offset = fence_start + rel_end + 3;
+        } else {
+            break;
+        }
+    }
+    if !blocks.is_empty() {
+        return blocks.join("\n\n");
+    }
+    let sql_lines: Vec<&str> = trimmed
+        .lines()
+        .filter(|line| {
+            let t = line.trim();
+            let u = t.to_ascii_uppercase();
+            u.starts_with("CREATE ")
+                || u.starts_with("ALTER ")
+                || u.starts_with("COMMENT ON ")
+                || u.starts_with("INSERT INTO ")
+                || u.starts_with("DROP ")
+                || (!t.starts_with('#')
+                    && !t.starts_with('|')
+                    && (t.ends_with(',') || t.ends_with(';') || t == ");"))
+        })
+        .collect();
+    if sql_lines.len() >= 3 {
+        sql_lines.join("\n")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn collapse_blank_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut blank_run = 0usize;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            blank_run += 1;
+            if blank_run <= 1 && !out.is_empty() {
+                out.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(line.trim_end());
+        }
+    }
+    out.trim().to_string()
 }
 
 /// Bounded read-only sample: depth 3, 400 files, 100 directories, 1000 entries per directory.
@@ -368,133 +454,72 @@ pub fn resolve_effective_template(
     (def.to_string(), "default")
 }
 
-const DEFAULT_LEAD_PLANNER_PIPELINE: &str = r#"You are an expert multi-repository engineering lead planner.
-Mode is `pipeline` (Cross-Repository Feature/Bugfix Delivery):
-Right now is Stage 1 (Requirement Analysis & Layer Decomposition). Output `requires_db` (true if database table/column creation or alteration is needed), `execution_plan`, and `tasks` (the code-writing specialist agents such as `backend`, `frontend`, `mobile`, `qa`).
-IMPORTANT: Database schema DDL design is handled in a dedicated Stage 2 SQL phase before coding (and delivered for one-click copy), so do NOT create a separate `domain: "sql"` coding task card in `tasks` unless the user explicitly asks ONLY for SQL scripts!
-Even when `User Configured Projects` is `(none configured yet)`, NEVER collapse a full-stack/feature requirement into a single vague `general` task! Always decompose into concrete code-writing specialist cards (for example: one `backend` agent for server/API/mapper/entity + one `frontend` agent for web UI + one `mobile` agent if mobile/app/mini-program is mentioned, unless the user explicitly asks for only one layer).
-Keep `depends_on: []` between `backend`, `frontend`, and `mobile` so they run concurrently after the unified interface contract is locked (only use `depends_on` for a trailing `qa` task if needed).
-Write `title`, `execution_plan`, `description`, and `acceptance_criteria` in the SAME language used by the user.
-Output ONLY a valid JSON object (no markdown fences wrapping the JSON, no extra prose) matching this exact schema:
-{
-  "title": "Concise overall task title (<= 36 chars)",
-  "requires_db": true,
-  "execution_plan": "Clear Markdown execution plan summarizing: (1) overall approach, (2) whether DB table creation/alteration is needed, (3) concrete changes per project",
-  "tasks": [
-    {
-      "key": "t1",
-      "project_id": "matching id from User Configured Projects, or empty string",
-      "domain": "sql | backend | frontend | mobile | qa | general",
-      "title": "Clear task title",
-      "description": "Detailed implementation or investigation instructions for this specific project",
-      "acceptance_criteria": "Concrete verifiable checklist",
-      "depends_on": []
-    }
-  ]
-}
+const DEFAULT_LEAD_PLANNER_PIPELINE: &str = r#"Decompose the requirement into a multi-repo plan.
+Rules:
+- `requires_db`: true only if DB schema/table/column changes are needed (Stage 2 handles DDL, so omit `sql` tasks unless the request is SQL-only).
+- Split concrete specialist tasks (`backend`, `frontend`, `mobile`, `qa`); keep `depends_on: []` between coding tasks so they run concurrently (only `qa` may depend on them).
+- Write `title`, `execution_plan`, `description`, `acceptance_criteria` in the user's language, keeping descriptions crisp and actionable.
+Output ONLY raw JSON (no markdown fences):
+{"title":"<=36 chars","requires_db":true,"execution_plan":"Concise markdown: approach, DB need, per-project scope","tasks":[{"key":"t1","project_id":"id from Projects or empty","domain":"backend|frontend|mobile|qa|general|sql","title":"","description":"","acceptance_criteria":"","depends_on":[]}]}
 
-User Configured Projects (assign `project_id` from these for every applicable project):
+Projects:
 {{user_projects}}
 
-Known Local Projects (for additional context):
+Repos:
 {{known_repos}}
 
-User Goal:
+Goal:
 {{user_goal}}"#;
 
-const DEFAULT_LEAD_PLANNER_TRIAGE: &str = r#"You are an expert multi-repository engineering lead planner.
-Mode is `triage` (Cross-Repository Joint Troubleshooting). Decompose the incident/bug into parallel read-only investigation tasks across relevant projects/domains (`sql`, `backend`, `frontend`, `mobile`, `qa`, `general`) with `depends_on: []` so all specialists inspect their own codebases concurrently.
-Write `title`, `execution_plan`, `description`, and `acceptance_criteria` in the SAME language used by the user.
-Output ONLY a valid JSON object (no markdown fences wrapping the JSON, no extra prose) matching this exact schema:
-{
-  "title": "Concise overall task title (<= 36 chars)",
-  "requires_db": false,
-  "execution_plan": "Clear Markdown investigation plan summarizing which repositories/layers to inspect",
-  "tasks": [
-    {
-      "key": "t1",
-      "project_id": "matching id from User Configured Projects, or empty string",
-      "domain": "sql | backend | frontend | mobile | qa | general",
-      "title": "Clear investigation title",
-      "description": "Detailed read-only investigation instructions for this specific project",
-      "acceptance_criteria": "Concrete verifiable checklist",
-      "depends_on": []
-    }
-  ]
-}
+const DEFAULT_LEAD_PLANNER_TRIAGE: &str = r#"Decompose this incident into parallel read-only investigation tasks (`depends_on: []`) across relevant domains (`sql`, `backend`, `frontend`, `mobile`, `qa`, `general`).
+Write text values in the user's language, keeping instructions concise.
+Output ONLY raw JSON (no markdown fences):
+{"title":"<=36 chars","requires_db":false,"execution_plan":"Concise investigation plan","tasks":[{"key":"t1","project_id":"id from Projects or empty","domain":"sql|backend|frontend|mobile|qa|general","title":"","description":"","acceptance_criteria":"","depends_on":[]}]}
 
-User Configured Projects (assign `project_id` from these for every applicable project):
+Projects:
 {{user_projects}}
 
-Known Local Projects (for additional context):
+Repos:
 {{known_repos}}
 
-User Goal:
+Incident:
 {{user_goal}}"#;
 
-const DEFAULT_LEAD_INTERFACE_SPEC: &str = r#"You are the cross-project lead architect. The user has approved the execution plan and database DDL.
-Lock an unambiguous shared API, dictionary-code, and permission specification for concurrent backend and frontend development.
-Output clear Chinese Markdown covering:
-1. REST contracts: HTTP methods, full URL paths (path variables last, e.g. `/info/{id}`), Query/Body names and types, response JSON and camelCase fields matching the approved schema.
-2. Shared `dict_type` identifiers and enum codes (e.g. `'0'`/`'1'`), identical across clients and servers.
-3. Menu/button permissions, e.g. `system:notice:list` / `add` / `edit` / `remove`.
-4. Backend and per-client implementation responsibilities, including pages, dialogs, and integrations.
+const DEFAULT_LEAD_INTERFACE_SPEC: &str = r#"Lock a concise, unambiguous shared API, dict, and permission spec in Chinese Markdown for concurrent development:
+1. REST routes (method + full path, query/body/response fields in camelCase matching schema).
+2. Shared `dict_type` / enum codes.
+3. Menu/button permission strings.
+4. Brief per-repo responsibilities.
+Omit long prose.
 
-Original requirements:
-{{user_goal}}
-
-Approved execution plan:
-{{execution_plan}}
-
-Approved database schema:
+Goal: {{user_goal}}
+Plan: {{execution_plan}}
+Schema:
 {{sql_schema_draft}}
-
-Concurrent project responsibilities:
+Members:
 {{task_summary}}"#;
 
-const DEFAULT_SQL_DESIGN_INITIAL: &str = r#"You are the SQL/database architect in the pre-coding schema approval phase.
-Working directory: `{{working_dir}}`
-{{dir_profile_hint}}
+const DEFAULT_SQL_DESIGN_INITIAL: &str = r#"SQL Architect (read-only). {{dir_profile_hint}}
+Design the schema for user approval without creating/modifying files.
+Goal: {{user_goal}}
+Plan: {{execution_plan}}
+Output concise Chinese Markdown: (1) tables summary, (2) complete executable DDL in ```sql``` (keys, types, defaults, comments, dict SQL), (3) brief key-field table."#;
 
-Read only references that actually exist and available memory conventions. Design the complete schema for user approval. Do not create, modify, or write SQL or business source files.
-
-Requirements:
-{{user_goal}}
-
-Lead execution plan:
-{{execution_plan}}
-
-Output Chinese Markdown containing:
-1. Tables to create/change and their purposes.
-2. Complete executable DDL in a ```sql``` block, including primary keys, types/lengths, defaults, nullability, table/column comments, and necessary dictionary SQL.
-3. A concise Chinese explanation table of key field names, types, and business meanings."#;
-
-const DEFAULT_SQL_DESIGN_REVISE: &str = r#"Revise the previous schema according to user feedback, using existing scripts/conventions and memory read-only.
-Working directory: `{{working_dir}}`
-{{dir_profile_hint}}
-
-User feedback:
-{{feedback}}
-
+const DEFAULT_SQL_DESIGN_REVISE: &str = r#"Revise the SQL schema per feedback (read-only; do not write files). {{dir_profile_hint}}
+Feedback: {{feedback}}
 Previous schema:
 {{sql_schema_draft}}
+Output concise Chinese Markdown with a brief change note, updated ```sql``` DDL (respecting existing project dialect/audit conventions), and updated key-field summary."#;
 
-Do not create, modify, or write any code or SQL files. Output complete Chinese Markdown with a change summary, complete executable DDL in a ```sql``` block (table/column comments, indexes, logical deletion and audit fields; uppercase if required by the project's Dameng conventions), and a Chinese explanation table of key fields."#;
+const DEFAULT_SYS_GUARD_READONLY: &str = r#"TEAM READ-ONLY ({{working_dir}}): Inspect existing files and memory read-only; NEVER create, modify, or delete any file."#;
 
-const DEFAULT_SYS_GUARD_READONLY: &str = r#"TEAM READ-ONLY RULE: You are operating inside `{{working_dir}}` in strict read-only mode (SQL design or cross-repo diagnostics). Inspect only the SQL scripts, source files, configs, schemas, or logs that actually exist in the workspace using read-only tools (`code_explore`, `grep`, `read`, `glob`, `team_ask_peer`, `memory_recall`). If the workspace is a dedicated SQL-only directory or empty, do NOT search for non-existent backend source code. Cite exact paths/conventions when present, and DO NOT modify, write, or delete any files."#;
+const DEFAULT_SYS_GUARD_COLLAB: &str = r#"TEAM COLLABORATION ({{working_dir}}): Focus strictly on your repo/domain. Follow locked SQL/API names verbatim. Use `team_ask_peer` for peer details and `team_publish_contract` when finalizing API/schema changes."#;
 
-const DEFAULT_SYS_GUARD_COLLAB: &str = r#"TEAM COLLABORATION PROTOCOL: Focus strictly on your assigned repository (`{{working_dir}}`) and domain responsibility. Obey the approved SQL schema and locked interface specification verbatim (exact URLs, JSON field names, dict codes, and permissions). Use `team_ask_peer` if you need to confirm peer repository details, and call `team_publish_contract` when finalizing interfaces."#;
-
-const DEFAULT_WORKER_PIPELINE: &str = r#"Cross-project engineering task
-Overall goal:
-{{user_goal}}
-
-Assigned task (wave {{wave}} · {{domain_label}}):
-- Project: {{project_name}}
-- Directory: {{working_dir}}
-- Title: {{task_title}}
-- Description: {{task_description}}
-- Acceptance criteria: {{acceptance_criteria}}
+const DEFAULT_WORKER_PIPELINE: &str = r#"Task [{{domain_label}} | Wave {{wave}} | {{project_name}}]: {{task_title}}
+Dir: {{working_dir}}
+Goal: {{user_goal}}
+Scope: {{task_description}}
+Done when: {{acceptance_criteria}}
 
 {{sql_schema_section}}
 
@@ -506,99 +531,71 @@ Assigned task (wave {{wave}} · {{domain_label}}):
 
 {{contract_publish_section}}"#;
 
-const DEFAULT_WORKER_TRIAGE: &str = r#"Cross-repository incident investigation
-Overall incident:
-{{user_goal}}
+const DEFAULT_WORKER_TRIAGE: &str = r#"Incident Investigation [{{domain_label}}]: {{task_title}}
+Dir: {{working_dir}}
+Incident: {{user_goal}}
+Focus: {{task_description}}
+Done when: {{acceptance_criteria}}
+Inspect read-only; cite exact paths, lines, SQL, and API fields (use `team_ask_peer` if needed). Output structured root-cause evidence."#;
 
-Your domain: [{{domain_label}}]
-Working directory: {{working_dir}}
-Investigation focus: {{task_title}}
-Details: {{task_description}}
-Acceptance criteria: {{acceptance_criteria}}
+const DEFAULT_WORKER_REVISION: &str = r#"Incremental Revision [{{domain_label}} | Wave {{wave}} | {{project_name}}]: {{task_title}}
+Dir: {{working_dir}}
+Revision Instruction (HIGHEST PRIORITY):
+{{revision_note}}
+{{member_images_hint}}
 
-Investigate this repository read-only. Identify exact paths, line numbers, functions, SQL, and API fields. Use `team_ask_peer` to confirm upstream/downstream details when needed. Deliver structured evidence and a root-cause conclusion for your layer."#;
+Previously Touched Files: {{touched_files}}
+Original Scope Context: {{task_description}}
+Done when: {{acceptance_criteria}}
 
-const DEFAULT_MEMBER_NOTE: &str = r#"Direct user instruction from the team workbench
-Target member: {{domain_label}} · {{task_title}} (directory: {{working_dir}})
+{{upstream_section}}
 
+{{interface_spec_section}}
+
+{{sql_schema_section}}
+
+{{contract_publish_section}}
+
+Rule: Apply ONLY the requested revision on top of your existing code in this session. If upstream contracts above update API routes, parameters, or fields, strictly follow the latest upstream contracts over any older baseline spec."#;
+
+const DEFAULT_MEMBER_NOTE: &str = r#"Follow-up [{{domain_label}} · {{task_title}} | {{working_dir}}]:
 {{note}}
+Execute using existing session context and report changes concisely."#;
 
-Respond and carry out this instruction using the existing session context, then briefly report changes or conclusions."#;
+const DEFAULT_VERIFIER_GATE: &str = r#"Independent QA Verifier. Pass (`"passed": true`) if core requirements, contract names/routes, and changes are sound; reject ONLY for missing requirements, mismatched contract fields/routes, or clear syntax/logic bugs.
+Output ONLY JSON: {"passed":true/false,"summary":"One-sentence Chinese conclusion","repair_instructions":"Exact fixes if rejected, else empty"}
 
-const DEFAULT_VERIFIER_GATE: &str = r#"You are an independent QA & Architecture Gate Verifier (strictly separated from the coding worker).
-Audit whether the worker genuinely fulfilled the task requirements and respected upstream contracts.
-Be pragmatic: pass (`"passed": true`) when core requirements, upstream field/route alignment, and code changes are sound; reject (`"passed": false`) ONLY when key requirements are missing, upstream contract field/route names are mismatched, files were left broken/unmodified despite coding requirements, or obvious syntax/logic bugs exist.
-Write `summary` and `repair_instructions` in concise Chinese.
-Output ONLY valid JSON:
-{
-  "passed": true/false,
-  "summary": "One-sentence acceptance conclusion",
-  "repair_instructions": "If rejected, identify exact files, fields, or logic to fix; otherwise leave empty"
-}
-
-Task Title: {{task_title}}
-Domain: {{domain}}
-Task Description: {{task_description}}
-Acceptance Criteria: {{acceptance_criteria}}
-
-Approved SQL Schema (if any):
-{{approved_sql}}
-
-Locked Unified Interface / Dict / Permission Spec:
-{{locked_interface_spec}}
-
-Upstream Contracts to Respect:
-{{upstream_contracts}}
-
-Worker Published Contract:
-{{published_contract}}
-
-Touched Files on Disk:
+Task [{{domain}}]: {{task_title}}
+Scope: {{task_description}}
+Done when: {{acceptance_criteria}}
+SQL: {{approved_sql}}
+Spec: {{locked_interface_spec}}
+Upstream: {{upstream_contracts}}
+Published: {{published_contract}}
+Files:
 {{touched_files_snippets}}
-
-Worker Final Output:
+Output:
 {{worker_output}}"#;
 
-const DEFAULT_WORKER_REPAIR: &str = r#"[Independent Verifier Rejection — Auto-Repair Attempt {{repair_attempt}}/{{max_repairs}}]
-Your previous delivery did NOT pass the acceptance gate.
+const DEFAULT_WORKER_REPAIR: &str = r#"[Repair {{repair_attempt}}/{{max_repairs}} | {{working_dir}}]
+Rejected: {{verifier_summary}}
+Fixes required: {{repair_instructions}}
+Done when: {{acceptance_criteria}}
+Fix directly, re-check syntax/build, and update `team_publish_contract` if signatures changed."#;
 
-Verifier Summary:
-{{verifier_summary}}
-
-Required Fixes:
-{{repair_instructions}}
-
-Original Acceptance Criteria:
-{{acceptance_criteria}}
-
-Fix all issues directly in `{{working_dir}}` now, verify syntax/build if applicable, and update `team_publish_contract` if any schema/API signature changed."#;
-
-const DEFAULT_TRIAGE_SYNTHESIS: &str = r#"You are the Lead Incident Commander synthesizing findings from parallel SQL, Backend, and Frontend repository specialists.
-Write a clear, actionable Chinese Markdown Root-Cause Report containing:
-1. **Root cause**: identify the failing layer(s) or contract mismatches, citing exact paths and fields.
-2. **Cross-layer evidence**: connect frontend parameters/response handling, backend routes/logic, and database schemas/SQL.
-3. **Per-repository repair actions**: list specific changes in execution order.
-
-Original Incident:
-{{user_goal}}
-
-Domain Specialist Findings:
+const DEFAULT_TRIAGE_SYNTHESIS: &str = r#"Synthesize parallel repository findings into an actionable Chinese Markdown Root-Cause Report:
+1. Root cause (failing layer(s), exact paths/fields).
+2. Cross-layer evidence chain (UI -> API -> DB).
+3. Ordered per-repo fixes.
+Incident: {{user_goal}}
+Findings:
 {{findings}}"#;
 
-const DEFAULT_PEER_CONSULTATION: &str = r#"You are answering a cross-repository consultation on behalf of peer team role [{{target_badge}}].
-Answer concisely, accurately, and cite exact file paths, column names, or API fields found in the evidence.
-If something is not yet defined in the contracts or codebase, state that explicitly.
-
-Question:
-{{question}}
-
-Published Contracts:
-{{contracts_text}}
-
-Recent Peer Output:
-{{peer_excerpt}}
-
-Codebase Evidence:
+const DEFAULT_PEER_CONSULTATION: &str = r#"Answer on behalf of peer [{{target_badge}}] concisely using exact paths, columns, or API fields from evidence (state explicitly if undefined).
+Question: {{question}}
+Contracts: {{contracts_text}}
+Peer excerpt: {{peer_excerpt}}
+Code evidence:
 {{code_evidence}}"#;
 
 pub const PROMPT_REGISTRY: &[PromptTemplateMeta] = &[
@@ -717,6 +714,33 @@ pub const PROMPT_REGISTRY: &[PromptTemplateMeta] = &[
         default_template: DEFAULT_WORKER_TRIAGE,
     },
     PromptTemplateMeta {
+        id: TPL_WORKER_REVISION,
+        domain_scope: PromptDomainScope::Member,
+        group: "worker",
+        group_label: "执行成员与系统规则",
+        title: "研发成员 · 定向改造与联动变更提示词",
+        description: "对已完成或已有代码的成员发起局部微调或上游变更联动同步时，在原会话上下文中执行的增量改造模板",
+        placeholders: &[
+            "user_goal",
+            "wave",
+            "domain",
+            "domain_label",
+            "project_name",
+            "working_dir",
+            "task_title",
+            "task_description",
+            "revision_note",
+            "member_images_hint",
+            "touched_files",
+            "acceptance_criteria",
+            "sql_schema_section",
+            "interface_spec_section",
+            "upstream_section",
+            "contract_publish_section",
+        ],
+        default_template: DEFAULT_WORKER_REVISION,
+    },
+    PromptTemplateMeta {
         id: TPL_MEMBER_NOTE,
         domain_scope: PromptDomainScope::Member,
         group: "worker",
@@ -786,15 +810,49 @@ pub const PROMPT_REGISTRY: &[PromptTemplateMeta] = &[
     },
 ];
 
+pub(crate) fn compact_interface_spec(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // 兼容旧版 stage3 fallback 产物：剥离与 sql_schema_section 重复的“参考执行计划 / 已确认数据库表结构”长文段
+    let mut cleaned = trimmed.to_string();
+    if let Some(s2) = cleaned.find("#### 2. 已确认数据库表结构") {
+        let end = cleaned[s2..]
+            .find("\n#### 3.")
+            .or_else(|| cleaned[s2..].find("\n#### 4."))
+            .map(|off| s2 + off)
+            .unwrap_or(cleaned.len());
+        cleaned = format!("{}{}", cleaned[..s2].trim_end(), &cleaned[end..]);
+    }
+    if let (Some(s1), Some(s4)) = (
+        cleaned.find("#### 1. 参考执行计划"),
+        cleaned.find("\n#### 4."),
+    ) {
+        if s1 < s4 {
+            cleaned = format!("{}{}", cleaned[..s1].trim_end(), &cleaned[s4..]);
+        }
+    }
+    cleaned.trim().to_string()
+}
+
 pub(crate) fn build_worker_sections(
     run: &TeamRun,
     task: &TeamTask,
     has_dependents: bool,
     upstream_contracts: &[TeamContract],
     upstream_excerpts: &[(String, String)],
+    compact: bool,
 ) -> (String, String, String, String, String) {
-    let sql_schema_section = if run.sql_schema_draft.trim().is_empty() {
+    let is_revision = !task.revision_note.trim().is_empty();
+    let has_spec = !run.interface_spec.trim().is_empty();
+    let skip_sql_for_client =
+        compact && has_spec && matches!(task.domain.as_str(), "frontend" | "mobile" | "qa");
+    let sql_schema_section = if run.sql_schema_draft.trim().is_empty() || skip_sql_for_client {
         String::new()
+    } else if compact {
+        let ddl = extract_compact_sql_ddl(&run.sql_schema_draft);
+        format!("Approved DDL:\n{}", truncate_chars_safe(&ddl, 1600))
     } else {
         format!(
             "Approved database schema (match table and column names exactly):\n{}",
@@ -802,8 +860,25 @@ pub(crate) fn build_worker_sections(
         )
     };
 
-    let interface_spec_section = if run.interface_spec.trim().is_empty() {
+    let interface_spec_section = if !has_spec {
         String::new()
+    } else if is_revision {
+        let spec_clean = compact_interface_spec(&run.interface_spec);
+        format!(
+            "Historical Baseline Spec (reference only; latest revision/upstream contracts win):\n{}",
+            truncate_chars_safe(&spec_clean, if compact { 1000 } else { 2200 })
+        )
+    } else if compact {
+        let spec_clean = compact_interface_spec(&run.interface_spec);
+        let max_len = if upstream_contracts.is_empty() {
+            1600
+        } else {
+            1100
+        };
+        format!(
+            "Locked API & permissions:\n{}",
+            truncate_chars_safe(&spec_clean, max_len)
+        )
     } else {
         format!(
             "Locked API, dictionary codes, and permissions (follow exactly; do not rename fields or URLs):\n{}",
@@ -812,38 +887,39 @@ pub(crate) fn build_worker_sections(
     };
 
     let upstream_section = if !upstream_contracts.is_empty() {
+        let max_ctr = if compact { 1200 } else { 3600 };
         let ctr_block = upstream_contracts
             .iter()
             .map(|c| {
-                format!(
-                    "### Locked upstream contract: {} (from {})\n{}\n{}",
-                    c.title,
-                    domain_label(&c.domain),
-                    c.schema_or_api,
-                    if c.notes.is_empty() {
-                        String::new()
-                    } else {
-                        format!("Notes: {}", c.notes)
-                    }
-                )
+                let body = truncate_chars_safe(&c.schema_or_api, max_ctr);
+                if c.notes.trim().is_empty() || (compact && c.notes.chars().count() > 240) {
+                    format!(
+                        "### Upstream [{}]: {}\n{}",
+                        domain_label(&c.domain),
+                        c.title,
+                        body
+                    )
+                } else {
+                    format!(
+                        "### Upstream [{}]: {}\n{}\nNotes: {}",
+                        domain_label(&c.domain),
+                        c.title,
+                        body,
+                        c.notes.trim()
+                    )
+                }
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        format!(
-            "Required upstream contracts (match field names, types, and paths exactly):\n{ctr_block}"
-        )
+        format!("Upstream contracts:\n{ctr_block}")
     } else if !upstream_excerpts.is_empty() {
+        let max_ex = if compact { 700 } else { 1500 };
         let ex_block = upstream_excerpts
             .iter()
-            .map(|(k, v)| {
-                format!(
-                    "### Upstream task output ({k})\n{}",
-                    truncate_chars_safe(v, 1500)
-                )
-            })
+            .map(|(k, v)| format!("### Upstream ({k})\n{}", truncate_chars_safe(v, max_ex)))
             .collect::<Vec<_>>()
             .join("\n\n");
-        format!("Upstream delivery summaries:\n{ex_block}")
+        format!("Upstream summaries:\n{ex_block}")
     } else {
         String::new()
     };
@@ -851,20 +927,37 @@ pub(crate) fn build_worker_sections(
     let domain_boundary_section = if task.domain == "backend"
         && !run.sql_schema_draft.trim().is_empty()
     {
-        "Schema delivery boundary: the user approved the DDL/dictionary SQL and will copy and execute it from the delivery workbench. Implement backend business code matching the approved names and types and existing project architecture. Do not connect to a database to execute DDL."
-            .to_string()
+        if compact {
+            "Rule: User executes DDL manually; implement backend code matching approved schema."
+                .to_string()
+        } else {
+            "Schema delivery boundary: the user approved the DDL/dictionary SQL and will copy and execute it from the delivery workbench. Implement backend business code matching the approved names and types and existing project architecture. Do not connect to a database to execute DDL."
+                .to_string()
+        }
     } else if task.domain == "sql" && !run.sql_schema_draft.trim().is_empty() {
-        "SQL agent boundary: the schema is approved. Only prepare/write `.sql` scripts and publish the final SQL contract with `team_publish_contract`; do not modify backend or frontend business source."
-            .to_string()
+        if compact {
+            "Rule: Edit only .sql scripts and publish final SQL via `team_publish_contract`."
+                .to_string()
+        } else {
+            "SQL agent boundary: the schema is approved. Only prepare/write `.sql` scripts and publish the final SQL contract with `team_publish_contract`; do not modify backend or frontend business source."
+                .to_string()
+        }
     } else {
         String::new()
     };
 
-    let contract_publish_section = if has_dependents
-        || matches!(task.domain.as_str(), "sql" | "backend")
+    let contract_publish_section = if is_revision
+        && (has_dependents || matches!(task.domain.as_str(), "sql" | "backend"))
     {
-        "Contract delivery: after implementation and checks, call `team_publish_contract` to publish the actual SQL DDL or backend API paths, request parameters, and response JSON fields to the shared ledger for downstream integration."
+        "IMPORTANT: After modifying APIs, routes, parameters, or schemas, call `team_publish_contract` with the COMPLETE updated specification (explicitly noting old -> new changes) so downstream members sync accurately.".to_string()
+    } else if has_dependents || matches!(task.domain.as_str(), "sql" | "backend") {
+        if compact {
+            "Publish actual API/schema changes via `team_publish_contract` upon completion."
                 .to_string()
+        } else {
+            "Contract delivery: after implementation and checks, call `team_publish_contract` to publish the actual SQL DDL or backend API paths, request parameters, and response JSON fields to the shared ledger for downstream integration."
+                .to_string()
+        }
     } else {
         String::new()
     };
@@ -878,6 +971,7 @@ pub(crate) fn build_worker_sections(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_worker_prompt_with_source(
     run: &TeamRun,
     task: &TeamTask,
@@ -886,8 +980,11 @@ pub(crate) fn render_worker_prompt_with_source(
     upstream_excerpts: &[(String, String)],
     global_templates: &BTreeMap<String, String>,
     draft_template_override: Option<&str>,
+    compact: bool,
 ) -> (String, &'static str, String) {
-    let template_id = if run.mode == "triage" {
+    let template_id = if !task.revision_note.trim().is_empty() && run.mode != "triage" {
+        TPL_WORKER_REVISION
+    } else if run.mode == "triage" {
         TPL_WORKER_TRIAGE
     } else {
         TPL_WORKER_PIPELINE
@@ -901,6 +998,7 @@ pub(crate) fn render_worker_prompt_with_source(
         upstream_excerpts,
         global_templates,
         draft_template_override,
+        compact,
     )
 }
 
@@ -914,6 +1012,7 @@ fn render_worker_template(
     upstream_excerpts: &[(String, String)],
     global_templates: &BTreeMap<String, String>,
     draft_template_override: Option<&str>,
+    compact: bool,
 ) -> (String, &'static str, String) {
     let domain_label = domain_label(&task.domain);
     let project_name = if task.project_name.trim().is_empty() {
@@ -928,10 +1027,41 @@ fn render_worker_template(
         has_dependents,
         upstream_contracts,
         upstream_excerpts,
+        compact,
     );
 
+    let use_compact_goal = compact
+        && draft_template_override
+            .filter(|s| !s.trim().is_empty())
+            .is_none()
+        && task.custom_prompt.trim().is_empty()
+        && !task.description.trim().is_empty();
+    let compact_goal_owned = if use_compact_goal {
+        truncate_chars_safe(&run.user_goal, 140)
+    } else {
+        String::new()
+    };
+    let effective_goal = if use_compact_goal {
+        compact_goal_owned.as_str()
+    } else {
+        run.user_goal.as_str()
+    };
+    let member_images_hint = if !task.images.is_empty() {
+        format!(
+            "Member-specific reference image(s) attached ({} image(s)): strictly follow the attached screenshot(s) for THIS member's UI layout/style.",
+            task.images.len()
+        )
+    } else {
+        String::new()
+    };
+    let touched_files_str = if task.touched_files.is_empty() {
+        "(none recorded yet)".to_string()
+    } else {
+        task.touched_files.join(", ")
+    };
+
     let vars = [
-        ("user_goal", run.user_goal.as_str()),
+        ("user_goal", effective_goal),
         ("wave", wave_str.as_str()),
         ("domain", task.domain.as_str()),
         ("domain_label", domain_label),
@@ -939,6 +1069,9 @@ fn render_worker_template(
         ("working_dir", task.working_dir.as_str()),
         ("task_title", task.title.as_str()),
         ("task_description", task.description.as_str()),
+        ("revision_note", task.revision_note.as_str()),
+        ("member_images_hint", member_images_hint.as_str()),
+        ("touched_files", touched_files_str.as_str()),
         ("acceptance_criteria", task.acceptance_criteria.as_str()),
         ("sql_schema_section", sql_sec.as_str()),
         ("interface_spec_section", spec_sec.as_str()),
@@ -955,13 +1088,13 @@ fn render_worker_template(
         );
     }
 
-    if !task.custom_prompt.trim().is_empty() {
+    if template_id != TPL_WORKER_REVISION && !task.custom_prompt.trim().is_empty() {
         let raw = task.custom_prompt.as_str();
-        return (
-            render_template_single_pass(raw, &vars),
-            "task_custom",
-            raw.to_string(),
-        );
+        let mut rendered_custom = render_template_single_pass(raw, &vars);
+        if !member_images_hint.is_empty() && !raw.contains("{{member_images_hint}}") {
+            rendered_custom = format!("{}\n\n{member_images_hint}", rendered_custom.trim_end());
+        }
+        return (rendered_custom, "task_custom", raw.to_string());
     }
 
     let (tpl, src) = resolve_effective_template(
@@ -970,8 +1103,19 @@ fn render_worker_template(
         Some(&run.prompt_overrides),
         global_templates,
     );
-    let rendered = render_template_single_pass(&tpl, &vars);
-    (rendered, src, tpl)
+    let mut rendered = render_template_single_pass(&tpl, &vars);
+    if template_id == TPL_WORKER_PIPELINE
+        && !member_images_hint.is_empty()
+        && !tpl.contains("{{member_images_hint}}")
+    {
+        rendered = format!("{}\n\n{member_images_hint}", rendered.trim_end());
+    }
+    let final_rendered = if src == "default" {
+        collapse_blank_lines(&rendered)
+    } else {
+        rendered
+    };
+    (final_rendered, src, tpl)
 }
 
 pub(crate) fn render_sys_guard_with_source(
@@ -1024,6 +1168,7 @@ pub(crate) fn preview_role_prompt(
     working_dir_override: Option<&str>,
     feedback_override: Option<&str>,
     current_working_dir: &str,
+    compact: bool,
 ) -> Result<PromptPreviewResponse, String> {
     let meta =
         get_prompt_meta(template_id).ok_or_else(|| format!("未知提示词模板 ID: {template_id}"))?;
@@ -1135,12 +1280,25 @@ pub(crate) fn preview_role_prompt(
                     .collect::<Vec<_>>()
                     .join("\n")
             };
+            let (spec_goal, spec_plan, spec_sql) = if compact && draft_template.is_none() {
+                (
+                    truncate_chars_safe(sample_goal, 600),
+                    truncate_chars_safe(sample_plan, 1800),
+                    truncate_chars_safe(&extract_compact_sql_ddl(sample_sql), 2200),
+                )
+            } else {
+                (
+                    sample_goal.to_string(),
+                    sample_plan.to_string(),
+                    sample_sql.to_string(),
+                )
+            };
             let rendered = render_template_single_pass(
                 &raw_template,
                 &[
-                    ("user_goal", sample_goal),
-                    ("execution_plan", sample_plan),
-                    ("sql_schema_draft", sample_sql),
+                    ("user_goal", &spec_goal),
+                    ("execution_plan", &spec_plan),
+                    ("sql_schema_draft", &spec_sql),
                     ("task_summary", &task_summary),
                 ],
             );
@@ -1207,7 +1365,7 @@ pub(crate) fn preview_role_prompt(
                 dir_profile: Some(profile),
             })
         }
-        TPL_WORKER_PIPELINE | TPL_WORKER_TRIAGE => {
+        TPL_WORKER_PIPELINE | TPL_WORKER_TRIAGE | TPL_WORKER_REVISION => {
             let fallback_task = TeamTask {
                 id: "preview_task".to_string(),
                 run_id: run.map(|r| r.id.clone()).unwrap_or_default(),
@@ -1229,6 +1387,13 @@ pub(crate) fn preview_role_prompt(
                 model: String::new(),
                 session_id: String::new(),
                 custom_prompt: String::new(),
+                images: Vec::new(),
+                revision_note: if template_id == TPL_WORKER_REVISION {
+                    "Rename API route to /api/v2/announcements and publish updated contract"
+                        .to_string()
+                } else {
+                    String::new()
+                },
                 status: "pending".to_string(),
                 attempt: 0,
                 attempt_id: String::new(),
@@ -1248,6 +1413,12 @@ pub(crate) fn preview_role_prompt(
             }
             if let Some(wd) = explicit_wd {
                 preview_task.working_dir = wd.to_string();
+            }
+            if template_id == TPL_WORKER_REVISION && preview_task.revision_note.trim().is_empty() {
+                preview_task.revision_note = feedback_override
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("Apply incremental changes and sync updated contract")
+                    .to_string();
             }
             let t = &preview_task;
             let dummy_run;
@@ -1320,6 +1491,7 @@ pub(crate) fn preview_role_prompt(
                 &up_excerpts,
                 global_templates,
                 draft_template,
+                compact,
             );
             let read_only = template_id == TPL_WORKER_TRIAGE;
             let (guard, _) = render_sys_guard_with_source(
@@ -1382,6 +1554,20 @@ pub(crate) fn preview_role_prompt(
             let t_acc = target_task
                 .map(|t| t.acceptance_criteria.as_str())
                 .unwrap_or("Build succeeds");
+            let v_sql = if compact && draft_template.is_none() {
+                truncate_chars_safe(&extract_compact_sql_ddl(sample_sql), 900)
+            } else {
+                sample_sql.to_string()
+            };
+            let raw_spec = run
+                .map(|r| r.interface_spec.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("(none)");
+            let v_spec = if compact && draft_template.is_none() && raw_spec != "(none)" {
+                truncate_chars_safe(raw_spec, 1000)
+            } else {
+                raw_spec.to_string()
+            };
             let rendered = render_template_single_pass(
                 &raw_template,
                 &[
@@ -1389,13 +1575,8 @@ pub(crate) fn preview_role_prompt(
                     ("domain", t_dom),
                     ("task_description", t_desc),
                     ("acceptance_criteria", t_acc),
-                    ("approved_sql", sample_sql),
-                    (
-                        "locked_interface_spec",
-                        run.map(|r| r.interface_spec.as_str())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("(none)"),
-                    ),
+                    ("approved_sql", &v_sql),
+                    ("locked_interface_spec", &v_spec),
                     (
                         "upstream_contracts",
                         "(Preview: upstream contracts are injected at runtime)",
@@ -1523,6 +1704,11 @@ mod tests {
     fn task() -> TeamTask {
         serde_json::from_value(serde_json::json!({
             "id": "t", "runId": "r", "title": "Task", "domain": "backend",
+            "model": "",
+            "sessionId": "",
+            "customPrompt": "",
+            "images": [],
+            "revisionNote": "",
             "workingDir": "task-dir"
         }))
         .unwrap()
@@ -1572,6 +1758,7 @@ mod tests {
                 None,
                 None,
                 "",
+                true,
             )
             .unwrap();
             assert!(
@@ -1645,13 +1832,15 @@ mod tests {
             Some("override-dir"),
             None,
             "cwd",
+            true,
         )
         .unwrap();
         assert_eq!(preview.rendered_prompt, "run-domain override-dir");
         assert_eq!(preview.source, "run_override");
         assert!(preview.system_guard.starts_with("TEAM COLLABORATION"));
         t.custom_prompt = " \ncustom {{user_goal}}\n\n\n ".into();
-        let actual = render_worker_prompt_with_source(&r, &t, false, &[], &[], &globals, None);
+        let actual =
+            render_worker_prompt_with_source(&r, &t, false, &[], &[], &globals, None, true);
         assert_eq!(actual.1, "task_custom");
         assert_eq!(actual.0, format!(" \ncustom {}\n\n\n ", r.user_goal));
         let preview = preview_role_prompt(
@@ -1667,6 +1856,7 @@ mod tests {
             Some("override-dir"),
             None,
             "cwd",
+            true,
         )
         .unwrap();
         assert_eq!(preview.source, "custom_preview");
@@ -1701,6 +1891,7 @@ mod tests {
             None,
             None,
             "",
+            true,
         )
         .unwrap();
         assert_eq!(preview.rendered_prompt, "run base frontend");
@@ -1720,6 +1911,7 @@ mod tests {
             None,
             None,
             "",
+            true,
         )
         .unwrap();
         assert_eq!(preview.rendered_prompt, "global frontend frontend");
@@ -1738,6 +1930,7 @@ mod tests {
             None,
             None,
             "",
+            true,
         )
         .unwrap();
         assert_eq!(preview.rendered_prompt, "global frontend frontend");
@@ -1767,6 +1960,7 @@ mod tests {
                     Some(""),
                     None,
                     "",
+                    true,
                 )
                 .unwrap();
                 assert_eq!(preview.raw_template, "sql domain");
@@ -1795,6 +1989,7 @@ mod tests {
                 None,
                 None,
                 "",
+                true,
             )
             .unwrap();
             assert_eq!(preview.raw_template, "base");
@@ -1825,12 +2020,97 @@ mod tests {
                     None,
                     None,
                     "",
+                    true,
                 )
                 .unwrap();
                 assert_eq!(preview.raw_template, expected);
                 assert_eq!(preview.source, "global_template");
             }
         }
+    }
+
+    #[test]
+    fn compact_mode_extracts_ddl_and_skips_sql_for_client_when_spec_present() {
+        let mut r = run();
+        r.user_goal = "a".repeat(500);
+        r.sql_schema_draft = "### 1. 说明\n长篇表格\n```sql\nCREATE TABLE sys_demo (id INT);\n```\n### 2. 字段解释\n| a | b |\n| - | - |".into();
+        r.interface_spec = "GET /api/demo -> {id, name}".into();
+
+        let mut be = task();
+        be.domain = "backend".into();
+        be.description = "Implement demo API".into();
+        let (be_prompt, _, _) =
+            render_worker_prompt_with_source(&r, &be, true, &[], &[], &BTreeMap::new(), None, true);
+        assert!(be_prompt.contains("CREATE TABLE sys_demo"));
+        assert!(!be_prompt.contains("长篇表格"));
+        assert!(be_prompt.contains("...[truncated]..."));
+        assert!(!be_prompt.contains("\n\n\n"));
+
+        let mut fe = task();
+        fe.domain = "frontend".into();
+        fe.description = "Implement demo page".into();
+        let (fe_prompt, _, _) = render_worker_prompt_with_source(
+            &r,
+            &fe,
+            false,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            None,
+            true,
+        );
+        assert!(!fe_prompt.contains("CREATE TABLE sys_demo"));
+        assert!(fe_prompt.contains("GET /api/demo"));
+
+        // Non-compact retains full SQL even for frontend
+        let (fe_full, _, _) = render_worker_prompt_with_source(
+            &r,
+            &fe,
+            false,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            None,
+            false,
+        );
+        assert!(fe_full.contains("CREATE TABLE sys_demo"));
+
+        // Compact strips redundant legacy fallback sections from interface_spec
+        let mut r_legacy = run();
+        r_legacy.interface_spec = "### 约定\n\n#### 1. 参考执行计划\n长篇计划\n\n#### 2. 已确认数据库表结构\n9000字废话\n\n#### 3. 协作分工\n后端做接口\n\n#### 4. 统一接口契约要点\nGET /api/ok".into();
+        let (fe_legacy, _, _) = render_worker_prompt_with_source(
+            &r_legacy,
+            &fe,
+            false,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            None,
+            true,
+        );
+        assert!(!fe_legacy.contains("9000字废话"));
+        assert!(fe_legacy.contains("GET /api/ok"));
+    }
+
+    #[test]
+    fn revision_prompt_and_member_images_override_baseline_spec() {
+        let mut r = run();
+        r.interface_spec = "OLD GET /api/old-notice".into();
+        let mut t = task();
+        t.custom_prompt = "Old v1 custom prompt".into();
+        t.revision_note = "Rename route to /api/system/announcements".into();
+        t.images = vec![super::super::types::TeamImage {
+            media_type: "image/png".into(),
+            data: "IMG".into(),
+        }];
+        let (rendered, src, _) =
+            render_worker_prompt_with_source(&r, &t, true, &[], &[], &BTreeMap::new(), None, true);
+        assert_eq!(src, "default");
+        assert!(rendered.contains("Incremental Revision"));
+        assert!(rendered.contains("Rename route to /api/system/announcements"));
+        assert!(rendered.contains("Member-specific reference image(s) attached (1 image(s))"));
+        assert!(rendered.contains("Historical Baseline Spec"));
+        assert!(!rendered.contains("Old v1 custom prompt"));
     }
 
     struct TempDir(std::path::PathBuf);

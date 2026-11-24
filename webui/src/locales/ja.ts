@@ -996,7 +996,7 @@ export const ja: Record<keyof typeof en, string> = {
   'sidebar.recent': '最近のセッション',
   'sidebar.recentChat': '最近のチャット',
   'sidebar.recentFiles': 'ファイルエクスプローラー',
-  'sidebar.recents': 'Recents',
+  'sidebar.recents': '最近のセッション',
   'sidebar.removeProjectBody': 'Remove "{name}" from the sidebar? Session history and files on disk are kept. If a session in this project is still running, the project comes back as new messages arrive.',
   'sidebar.removeProjectConfirm': 'Remove',
   'sidebar.removeProjectFromList': 'Remove from list (preserves sessions & files)',

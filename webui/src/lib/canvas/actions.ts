@@ -43,6 +43,31 @@ import {
   type ToolRow,
 } from '../toolRows.ts';
 
+export type StreamBatchItem =
+  | {
+      kind: 'text';
+      content: string;
+      messageId?: string;
+      partId?: string;
+      partRev?: number;
+      recordSeq?: number;
+      beforeMessageId?: string;
+    }
+  | {
+      kind: 'reasoning';
+      content: string;
+      messageId?: string;
+      partId?: string;
+      partRev?: number;
+      recordSeq?: number;
+      beforeMessageId?: string;
+    }
+  | {
+      kind: 'tool_output';
+      id: string;
+      chunk: string;
+    };
+
 export type CanvasEventAction =
   | {
       type: 'user';
@@ -88,6 +113,10 @@ export type CanvasEventAction =
         recordSeq?: number;
         beforeMessageId?: string;
       }>;
+    }
+  | {
+      type: 'stream_batch';
+      items: StreamBatchItem[];
     }
   | { type: 'notice'; text: string; targetId?: string; id?: string }
   | {
@@ -192,6 +221,7 @@ export function isCanvasEventAction(
   return action.type === 'user'
     || action.type === 'text'
     || action.type === 'text_batch'
+    || action.type === 'stream_batch'
     || action.type === 'reasoning'
     || action.type === 'notice'
     || action.type === 'system'
@@ -699,6 +729,46 @@ export function reduceCanvasEvent<T extends CanvasRowLike & ProjectionMessage>(
           item.partId,
         );
         acc = moveAssistantRowBefore(acc, item.messageId, item.beforeMessageId);
+      }
+      next = acc;
+      break;
+    }
+    case 'stream_batch': {
+      let acc = rows;
+      for (const item of action.items) {
+        if (item.kind === 'text') {
+          acc = withAssistantIdentity(
+            paintAssistantText(
+              acc,
+              item.content,
+              false,
+              item.messageId,
+              item.partId,
+              item.partRev,
+              item.recordSeq,
+            ),
+            item.messageId,
+            item.partId,
+          );
+          acc = moveAssistantRowBefore(acc, item.messageId, item.beforeMessageId);
+        } else if (item.kind === 'reasoning') {
+          acc = withAssistantIdentity(
+            paintAssistantReasoning(
+              acc,
+              item.content,
+              false,
+              item.messageId,
+              item.partId,
+              item.partRev,
+              item.recordSeq,
+            ),
+            item.messageId,
+            item.partId,
+          );
+          acc = moveAssistantRowBefore(acc, item.messageId, item.beforeMessageId);
+        } else {
+          acc = updateToolOutputRow(acc, item.id, item.chunk, false, false);
+        }
       }
       next = acc;
       break;

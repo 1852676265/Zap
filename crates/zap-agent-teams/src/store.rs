@@ -10,9 +10,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::schema::init_schema;
 use super::schema::open_connection;
 use super::types::{
-    clean_path_str, new_team_id, normalize_domain, now_ts, truncate_chars_safe, RoleBindingPreset,
-    TeamContract, TeamEvent, TeamGlobalConfig, TeamImage, TeamProjectPreset, TeamRun,
-    TeamRunDetail, TeamTask, HARD_CAP_MAX_REPAIRS, MAX_CONTRACT_CHARS, MAX_EXCERPT_CHARS,
+    clean_path_str, compute_and_assign_waves, new_team_id, normalize_domain, now_ts,
+    truncate_chars_safe, RoleBindingPreset, TeamContract, TeamEvent, TeamGlobalConfig, TeamImage,
+    TeamProjectPreset, TeamRun, TeamRunDetail, TeamTask, HARD_CAP_MAX_REPAIRS, MAX_CONTRACT_CHARS,
+    MAX_EXCERPT_CHARS,
 };
 
 pub(crate) struct TeamStoreInner {
@@ -375,6 +376,7 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamTask> {
     let attempt_i64: i64 = r.get(15)?;
     let repair_i64: i64 = r.get(17)?;
     let files_json: String = r.get(22)?;
+    let images_json: String = r.get(31)?;
     Ok(TeamTask {
         id: r.get(0)?,
         run_id: r.get(1)?,
@@ -395,6 +397,8 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamTask> {
         model: r.get(13)?,
         session_id: r.get(14)?,
         custom_prompt: r.get(30)?,
+        images: serde_json::from_str(&images_json).unwrap_or_default(),
+        revision_note: r.get(32)?,
         status: r.get(23)?,
         attempt: u32::try_from(attempt_i64.max(0)).unwrap_or(0),
         attempt_id: r.get(16)?,
@@ -455,7 +459,7 @@ pub(crate) fn load_tasks_for_run_conn(
                     agent_id, agent_label, model, session_id, attempt, attempt_id,
                     repair_count, contract_summary, last_output_excerpt, verify_verdict,
                     verify_feedback, touched_files_json, status, started_at, updated_at, finished_at,
-                    project_slot_id, project_name, avatar_id, custom_prompt
+                    project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note
              FROM team_tasks
              WHERE run_id = ?1
              ORDER BY wave ASC, sort_order ASC",
@@ -474,7 +478,7 @@ pub(crate) fn load_task_conn(conn: &Connection, task_id: &str) -> Result<Option<
                 agent_id, agent_label, model, session_id, attempt, attempt_id,
                 repair_count, contract_summary, last_output_excerpt, verify_verdict,
                 verify_feedback, touched_files_json, status, started_at, updated_at, finished_at,
-                project_slot_id, project_name, avatar_id, custom_prompt
+                project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note
          FROM team_tasks
          WHERE id = ?1",
         params![task_id],
@@ -720,6 +724,7 @@ pub(crate) fn create_run_with_tasks_conn(
 fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
     let deps_json = serde_json::to_string(&task.depends_on).unwrap_or_else(|_| "[]".into());
     let files_json = serde_json::to_string(&task.touched_files).unwrap_or_else(|_| "[]".into());
+    let images_json = serde_json::to_string(&task.images).unwrap_or_else(|_| "[]".into());
     conn.execute(
         "INSERT INTO team_tasks (
             id, run_id, domain, title, description, acceptance_criteria,
@@ -727,14 +732,14 @@ fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
             agent_id, agent_label, model, session_id, status, attempt, attempt_id,
             repair_count, contract_summary, last_output_excerpt, verify_verdict,
             verify_feedback, touched_files_json, started_at, updated_at, finished_at,
-            project_slot_id, project_name, avatar_id, custom_prompt
+            project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
             ?7, ?8, ?9, ?10, ?11,
             ?12, ?13, ?14, ?15, ?16, ?17, ?18,
             ?19, ?20, ?21, ?22,
             ?23, ?24, ?25, ?26, ?27,
-            ?28, ?29, ?30, ?31
+            ?28, ?29, ?30, ?31, ?32, ?33
          )",
         params![
             task.id,
@@ -772,6 +777,8 @@ fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
             task.project_name,
             task.avatar_id,
             task.custom_prompt,
+            images_json,
+            task.revision_note,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -816,6 +823,14 @@ fn task_for_draft(client: &TeamTask, old: Option<&TeamTask>, run_id: &str, now: 
     task.touched_files = retained
         .map(|t| t.touched_files.clone())
         .unwrap_or_default();
+    task.revision_note = if client.revision_note.trim().is_empty() {
+        retained
+            .map(|t| t.revision_note.clone())
+            .unwrap_or_default()
+    } else {
+        client.revision_note.clone()
+    };
+    task.images = client.images.iter().take(4).cloned().collect();
     task.started_at = retained.map(|t| t.started_at.clone()).unwrap_or_default();
     task.finished_at = retained.map(|t| t.finished_at.clone()).unwrap_or_default();
     task.updated_at = now.to_string();
@@ -827,6 +842,7 @@ pub(crate) struct RunDraftExtras<'a> {
     pub(crate) sql_working_dir: Option<&'a str>,
     pub(crate) sql_agent_id: Option<&'a str>,
     pub(crate) sql_model: Option<&'a str>,
+    pub(crate) interface_spec: Option<&'a str>,
     pub(crate) prompt_overrides: Option<&'a BTreeMap<String, String>>,
 }
 
@@ -875,6 +891,7 @@ pub(crate) fn update_run_draft_cas_conn(
         }
     });
     let sql_mdl_val = extras.sql_model.map(|s| s.trim().to_string());
+    let spec_val = extras.interface_spec.map(str::to_string);
     let overrides_val = extras.prompt_overrides.map(|m| {
         let mut sanitized = m.clone();
         sanitized.retain(|k, v| !k.trim().is_empty() && !v.trim().is_empty());
@@ -895,6 +912,7 @@ pub(crate) fn update_run_draft_cas_conn(
                  sql_model = COALESCE(?8, sql_model),
                  prompt_overrides_json = COALESCE(?9, prompt_overrides_json),
                  sql_session_id = CASE WHEN ?14 THEN '' ELSE sql_session_id END,
+                 interface_spec = COALESCE(?15, interface_spec),
                  revision = ?10, updated_at = ?11
              WHERE id = ?12 AND revision = ?13",
             params![
@@ -912,6 +930,7 @@ pub(crate) fn update_run_draft_cas_conn(
                 run_id,
                 cur.revision as i64,
                 sql_dir_changed,
+                spec_val,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -934,6 +953,12 @@ pub(crate) fn update_run_draft_cas_conn(
             .map_err(|e| e.to_string())?;
         }
         insert_task_row(&tx, &sanitized)?;
+    }
+    if let Some(ref sp) = spec_val {
+        let _ = tx.execute(
+            "UPDATE team_contracts SET schema_or_api = ?1 WHERE run_id = ?2 AND from_task_id = 'lead_contract'",
+            params![truncate_chars_safe(sp, MAX_CONTRACT_CHARS), run_id],
+        );
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(next_rev)
@@ -1173,6 +1198,355 @@ pub(crate) fn update_run_design_texts_conn(
     Ok(())
 }
 
+/// 在全流程任意阶段（包括运行中途、暂停、已完成）向任务单安全追加新成员与可选接口契约补充，绝不重置或丢失已有成员状态。
+pub(crate) fn append_tasks_to_run_conn(
+    conn: &mut Connection,
+    run_id: &str,
+    new_tasks: &[TeamTask],
+    interface_spec_addition: Option<&str>,
+    replace_interface_spec: Option<&str>,
+) -> Result<u64, String> {
+    if new_tasks.is_empty()
+        && interface_spec_addition
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+        && replace_interface_spec.is_none()
+    {
+        return Err("没有需要插入的新成员或契约内容".to_string());
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let cur = load_run_conn(&tx, run_id)?.ok_or_else(|| format!("未找到任务: {run_id}"))?;
+    if cur.status == "running" && matches!(cur.stage.as_str(), "planning" | "sql_designing") {
+        return Err("当前正处于主控拆单/SQL设计阶段，请等待该阶段完成后再插入成员".to_string());
+    }
+
+    let now = now_ts();
+    let existing = load_tasks_for_run_conn(&tx, run_id)?;
+    let existing_ids: std::collections::HashSet<String> =
+        existing.iter().map(|t| t.id.clone()).collect();
+    let mut combined = existing.clone();
+    let mut added_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for raw in new_tasks {
+        let mut t = raw.clone();
+        if t.id.trim().is_empty() || existing_ids.contains(&t.id) || added_ids.contains(&t.id) {
+            t.id = new_team_id("tsk");
+        }
+        added_ids.insert(t.id.clone());
+        t.run_id = run_id.to_string();
+        t.domain = normalize_domain(&t.domain);
+        t.working_dir = clean_path_str(&t.working_dir);
+        t.images.truncate(4);
+        t.revision_note.clear();
+        t.status = "pending".to_string();
+        t.attempt = 0;
+        t.attempt_id.clear();
+        t.repair_count = 0;
+        t.session_id.clear();
+        t.contract_summary.clear();
+        t.last_output_excerpt.clear();
+        t.verify_verdict.clear();
+        t.verify_feedback.clear();
+        t.touched_files.clear();
+        t.started_at.clear();
+        t.finished_at.clear();
+        t.updated_at = now.clone();
+        combined.push(t);
+    }
+
+    let _ = compute_and_assign_waves(&mut combined)?;
+
+    // 仅更新既有任务的 wave 与 sort_order，保留全部运行态字段与已完成结果
+    for task in &combined {
+        if existing_ids.contains(&task.id) {
+            tx.execute(
+                "UPDATE team_tasks SET wave = ?1, sort_order = ?2 WHERE id = ?3",
+                params![task.wave as i64, task.sort_order as i64, task.id],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            insert_task_row(&tx, task)?;
+        }
+    }
+
+    let next_spec = if let Some(full) = replace_interface_spec {
+        full.to_string()
+    } else if let Some(add) = interface_spec_addition
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if cur.interface_spec.trim().is_empty() {
+            add.to_string()
+        } else {
+            format!("{}\n\n{}", cur.interface_spec.trim_end(), add)
+        }
+    } else {
+        cur.interface_spec.clone()
+    };
+
+    let (next_status, next_stage) =
+        if !new_tasks.is_empty() && matches!(cur.status.as_str(), "completed" | "cancelled") {
+            (
+                "draft",
+                if cur.mode == "triage" {
+                    "triage"
+                } else {
+                    "team_binding"
+                },
+            )
+        } else {
+            (cur.status.as_str(), cur.stage.as_str())
+        };
+
+    let next_rev = cur.revision.saturating_add(1);
+    tx.execute(
+        "UPDATE team_runs
+         SET status = ?1, stage = ?2, interface_spec = ?3, revision = ?4, updated_at = ?5
+         WHERE id = ?6",
+        params![
+            next_status,
+            next_stage,
+            next_spec,
+            next_rev as i64,
+            now,
+            run_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    if next_spec != cur.interface_spec {
+        let _ = tx.execute(
+            "UPDATE team_contracts SET schema_or_api = ?1 WHERE run_id = ?2 AND from_task_id = 'lead_contract'",
+            params![truncate_chars_safe(&next_spec, MAX_CONTRACT_CHARS), run_id],
+        );
+    }
+
+    if !new_tasks.is_empty() {
+        let names: Vec<String> = combined
+            .iter()
+            .filter(|t| added_ids.contains(&t.id))
+            .map(|t| {
+                if t.project_name.trim().is_empty() {
+                    format!("{} (Wave {})", t.title, t.wave)
+                } else {
+                    format!("{} · {} (Wave {})", t.project_name, t.title, t.wave)
+                }
+            })
+            .collect();
+        let _ = append_event_conn(
+            &tx,
+            run_id,
+            "task_inserted",
+            "",
+            "user",
+            &format!("插入 {} 位协同成员：{}", added_ids.len(), names.join("、")),
+            interface_spec_addition.unwrap_or(""),
+        );
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(next_rev)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RevisionTaskTarget {
+    pub(crate) task_id: String,
+    pub(crate) note: String,
+    pub(crate) images: Vec<TeamImage>,
+    pub(crate) replace_images: bool,
+    pub(crate) extra_depends_on: Vec<String>,
+}
+
+/// 安排单成员定向改造或跨成员联动变更：
+/// - 仅重置本次受影响成员的状态为 `pending` 并写入 `revision_note`（与可选附图、追加前置依赖）；
+/// - 其余未勾选成员的 `completed` 状态与既有成果完整保留；
+/// - 校验 DAG 无环并自动重算波次，确保下游联动成员等上游改完再开工。
+pub(crate) fn schedule_revision_conn(
+    conn: &mut Connection,
+    run_id: &str,
+    targets: &[RevisionTaskTarget],
+    interface_spec_addition: Option<&str>,
+    replace_interface_spec: Option<&str>,
+    auto_start: bool,
+) -> Result<u64, String> {
+    if targets.is_empty() {
+        return Err("请至少选择一位需要修改或联动的成员".to_string());
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let cur = load_run_conn(&tx, run_id)?.ok_or_else(|| format!("未找到任务: {run_id}"))?;
+    if cur.status == "running" && matches!(cur.stage.as_str(), "planning" | "sql_designing") {
+        return Err("当前正处于主控拆单/SQL设计阶段，请稍候再发起变更".to_string());
+    }
+
+    let mut all_tasks = load_tasks_for_run_conn(&tx, run_id)?;
+    let valid_ids: std::collections::HashSet<String> =
+        all_tasks.iter().map(|t| t.id.clone()).collect();
+    let now = now_ts();
+    let mut updated_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut target_titles: Vec<String> = Vec::new();
+    let mut summary_details: Vec<String> = Vec::new();
+
+    for spec in targets {
+        let tid = spec.task_id.trim();
+        let note = spec.note.trim();
+        if tid.is_empty() || note.is_empty() {
+            return Err("每个需要改造的成员都必须指定 taskId 与修改说明".to_string());
+        }
+        let task = all_tasks
+            .iter_mut()
+            .find(|t| t.id == tid)
+            .ok_or_else(|| format!("未找到子任务: {tid}"))?;
+        if matches!(task.status.as_str(), "running" | "verifying" | "repairing") {
+            return Err(format!(
+                "成员「{}」正在执行中，请等待其完成或暂停后再发起定向改造",
+                task.title
+            ));
+        }
+        if !updated_ids.insert(task.id.clone()) {
+            return Err(format!("成员「{}」重复出现在改造列表中", task.title));
+        }
+        task.status = "pending".to_string();
+        task.attempt_id.clear();
+        task.repair_count = 0;
+        task.verify_verdict.clear();
+        task.verify_feedback.clear();
+        task.revision_note = note.to_string();
+        task.updated_at = now.clone();
+        if spec.replace_images {
+            task.images = spec.images.iter().take(4).cloned().collect();
+        } else if !spec.images.is_empty() {
+            for im in &spec.images {
+                if task.images.len() >= 4 {
+                    break;
+                }
+                task.images.push(im.clone());
+            }
+        }
+        for dep in &spec.extra_depends_on {
+            let dep_id = dep.trim();
+            if !dep_id.is_empty()
+                && dep_id != task.id
+                && valid_ids.contains(dep_id)
+                && !task.depends_on.iter().any(|d| d == dep_id)
+            {
+                task.depends_on.push(dep_id.to_string());
+            }
+        }
+        let label = if task.project_name.trim().is_empty() {
+            task.title.clone()
+        } else {
+            format!("{} · {}", task.project_name, task.title)
+        };
+        target_titles.push(label.clone());
+        summary_details.push(format!("- {label}: {}", truncate_chars_safe(note, 260)));
+    }
+
+    let _ = compute_and_assign_waves(&mut all_tasks)?;
+
+    for task in &all_tasks {
+        if updated_ids.contains(&task.id) {
+            let deps_json = serde_json::to_string(&task.depends_on).unwrap_or_else(|_| "[]".into());
+            let images_json = serde_json::to_string(&task.images).unwrap_or_else(|_| "[]".into());
+            tx.execute(
+                "UPDATE team_tasks
+                 SET depends_on_json = ?1, wave = ?2, sort_order = ?3,
+                     status = 'pending', attempt_id = '', repair_count = 0,
+                     verify_verdict = '', verify_feedback = '',
+                     revision_note = ?4, images_json = ?5, updated_at = ?6
+                 WHERE id = ?7",
+                params![
+                    deps_json,
+                    task.wave as i64,
+                    task.sort_order as i64,
+                    task.revision_note,
+                    images_json,
+                    now,
+                    task.id,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            tx.execute(
+                "UPDATE team_tasks SET wave = ?1, sort_order = ?2 WHERE id = ?3",
+                params![task.wave as i64, task.sort_order as i64, task.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let next_spec = if let Some(full) = replace_interface_spec {
+        full.to_string()
+    } else if let Some(add) = interface_spec_addition
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if cur.interface_spec.trim().is_empty() {
+            add.to_string()
+        } else {
+            format!("{}\n\n{}", cur.interface_spec.trim_end(), add)
+        }
+    } else {
+        cur.interface_spec.clone()
+    };
+
+    let next_status = if auto_start { "running" } else { "draft" };
+    let next_stage = if cur.mode == "triage" {
+        "triage"
+    } else if auto_start {
+        "executing"
+    } else {
+        "team_binding"
+    };
+    let next_rev = cur.revision.saturating_add(1);
+
+    tx.execute(
+        "UPDATE team_runs
+         SET status = ?1, stage = ?2, interface_spec = ?3, revision = ?4, updated_at = ?5
+         WHERE id = ?6",
+        params![
+            next_status,
+            next_stage,
+            next_spec,
+            next_rev as i64,
+            now,
+            run_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    if next_spec != cur.interface_spec {
+        let _ = tx.execute(
+            "UPDATE team_contracts SET schema_or_api = ?1 WHERE run_id = ?2 AND from_task_id = 'lead_contract'",
+            params![truncate_chars_safe(&next_spec, MAX_CONTRACT_CHARS), run_id],
+        );
+    }
+
+    let _ = append_event_conn(
+        &tx,
+        run_id,
+        "revision_scheduled",
+        if targets.len() == 1 {
+            targets[0].task_id.as_str()
+        } else {
+            ""
+        },
+        "user",
+        &format!(
+            "发起{}（涉及 {} 位：{}）",
+            if targets.len() > 1 {
+                "跨成员联动改造"
+            } else {
+                "单成员定向改造"
+            },
+            targets.len(),
+            target_titles.join(" → ")
+        ),
+        &summary_details.join("\n"),
+    );
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(next_rev)
+}
+
 pub(crate) fn update_run_stage_conn(
     conn: &Connection,
     run_id: &str,
@@ -1315,6 +1689,28 @@ pub(crate) fn finish_task_fenced_conn(
     };
     let clean_excerpt = truncate_chars_safe(excerpt, MAX_EXCERPT_CHARS);
     let files_json = serde_json::to_string(touched_files).unwrap_or_else(|_| "[]".into());
+    let (next_desc, clear_revision) = if status == "completed" {
+        if let Ok(Some(cur)) = load_task_conn(conn, task_id) {
+            if !cur.revision_note.trim().is_empty() {
+                let archive = format!(
+                    "[已完成改造 {now}] {}",
+                    truncate_chars_safe(&cur.revision_note, 400)
+                );
+                let combined = if cur.description.trim().is_empty() {
+                    archive
+                } else {
+                    format!("{}\n{archive}", cur.description.trim_end())
+                };
+                (Some(truncate_chars_safe(&combined, 6000)), true)
+            } else {
+                (None, true)
+            }
+        } else {
+            (None, false)
+        }
+    } else {
+        (None, false)
+    };
     let changed = if let Some(contract) = contract_summary {
         let clean_contract = truncate_chars_safe(contract, MAX_CONTRACT_CHARS);
         conn.execute(
@@ -1322,7 +1718,9 @@ pub(crate) fn finish_task_fenced_conn(
              SET status = ?1, last_output_excerpt = ?2, contract_summary = ?3,
                  verify_verdict = ?4, verify_feedback = ?5, repair_count = ?6,
                  touched_files_json = ?7, updated_at = ?8,
-                 finished_at = CASE WHEN ?9 != '' THEN ?9 ELSE finished_at END
+                 finished_at = CASE WHEN ?9 != '' THEN ?9 ELSE finished_at END,
+                 description = COALESCE(?12, description),
+                 revision_note = CASE WHEN ?13 THEN '' ELSE revision_note END
              WHERE id = ?10 AND attempt_id = ?11",
             params![
                 status,
@@ -1336,6 +1734,8 @@ pub(crate) fn finish_task_fenced_conn(
                 finished,
                 task_id,
                 expected_attempt_id,
+                next_desc,
+                clear_revision,
             ],
         )
         .map_err(|e| e.to_string())?
@@ -1345,7 +1745,9 @@ pub(crate) fn finish_task_fenced_conn(
              SET status = ?1, last_output_excerpt = ?2,
                  verify_verdict = ?3, verify_feedback = ?4, repair_count = ?5,
                  touched_files_json = ?6, updated_at = ?7,
-                 finished_at = CASE WHEN ?8 != '' THEN ?8 ELSE finished_at END
+                 finished_at = CASE WHEN ?8 != '' THEN ?8 ELSE finished_at END,
+                 description = COALESCE(?11, description),
+                 revision_note = CASE WHEN ?12 THEN '' ELSE revision_note END
              WHERE id = ?9 AND attempt_id = ?10",
             params![
                 status,
@@ -1358,6 +1760,8 @@ pub(crate) fn finish_task_fenced_conn(
                 finished,
                 task_id,
                 expected_attempt_id,
+                next_desc,
+                clear_revision,
             ],
         )
         .map_err(|e| e.to_string())?

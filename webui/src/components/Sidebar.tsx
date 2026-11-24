@@ -581,6 +581,7 @@ export function Sidebar({
   // 让「哪个会话正在执行」实时显示在侧栏行右侧的圈圈里。
   const [activeIds, setActiveIds] = useState<string[]>([]);
   const sessionListBodyRef = useRef<HTMLDivElement | null>(null);
+  const projectsListRef = useRef<HTMLDivElement | null>(null);
   const activeSessionItemRef = useRef<HTMLDivElement | null>(null);
   // Selection is an explicit navigation intent, unlike a background reload.
   // Keep it pending across a cross-project fetch until the destination row
@@ -619,6 +620,21 @@ export function Sidebar({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     () => new Set(initialSidebarMemory.expanded),
   );
+  const [recentsExpanded, setRecentsExpanded] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sidebar_recents_expanded') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [projectsExpanded, setProjectsExpanded] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sidebar_projects_expanded') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [showAllRecents, setShowAllRecents] = useState<boolean>(false);
   // 「展开更多」只属于当前页面内的展开动作：不写入 localStorage。
   // 旧实现把它当作跨刷新记忆，导致用户点过一次后每次打开都是全量列表、
   // 而「收起」入口被顶到长列表底部，看起来就像折叠功能消失了。
@@ -1026,12 +1042,12 @@ export function Sidebar({
   useLayoutEffect(() => {
     const top = restoredScrollTopRef.current;
     if (top == null) return;
-    const container = sessionListBodyRef.current;
+    const container = projectsListRef.current ?? sessionListBodyRef.current;
     if (!container) return;
     container.scrollTop = Math.max(0, Math.min(top, container.scrollHeight - container.clientHeight));
     restoredScrollTopRef.current = null; // 只恢复一次，后续网络更新不再拉回旧位置
     pendingCenterSessionIdRef.current = null;
-  }, [sidebarTab, collapsed, sessions.length, projectSessionsMap, expandedProjects, projects]);
+  }, [sidebarTab, collapsed, sessions.length, projectSessionsMap, expandedProjects, projectsExpanded, projects]);
 
   // 展开状态属于「本浏览器上次看到的样子」，刷新后原样恢复；跨设备冷启动
   // 没有本地记忆，才由下方的活跃/忙碌自动展开兜底决定。
@@ -1053,9 +1069,10 @@ export function Sidebar({
     const timer = window.setTimeout(() => {
       const snapshot = sidebarSnapshotRef.current;
       if (snapshot) {
+        const scrollEl = projectsListRef.current ?? sessionListBodyRef.current;
         saveSidebarSnapshot({
           ...snapshot,
-          scrollTop: sessionListBodyRef.current?.scrollTop ?? snapshot.scrollTop ?? 0,
+          scrollTop: scrollEl?.scrollTop ?? snapshot.scrollTop ?? 0,
         });
       }
     }, 250);
@@ -1067,9 +1084,10 @@ export function Sidebar({
     const flush = () => {
       const snapshot = sidebarSnapshotRef.current;
       if (!snapshot) return;
+      const scrollEl = projectsListRef.current ?? sessionListBodyRef.current;
       saveSidebarSnapshot({
         ...snapshot,
-        scrollTop: sessionListBodyRef.current?.scrollTop ?? snapshot.scrollTop ?? 0,
+        scrollTop: scrollEl?.scrollTop ?? snapshot.scrollTop ?? 0,
       });
     };
     const onVisibility = () => {
@@ -2552,14 +2570,32 @@ export function Sidebar({
       )
     : [];
 
+  // 过滤掉尚未发出第一条消息的空白会话（新建但未发送消息者不建会话、不入列表；首发即入列并持续展示）
+  const isNonEmptySession = (s: SessionMetaWithProject) => {
+    if (allOptimistic.some((opt) => opt.id === s.id)) return true;
+    if (s.id === activeSessionId) return true;
+    if (activeSet.has(s.id)) return true;
+    return (s.message_count ?? 0) > 0;
+  };
+
   const knownHashes = new Set(allProjects.map((p) => p.hash));
   const recentsList = sortSessions(
     merged.filter((s) => {
+      if (!isNonEmptySession(s)) return false;
       if (s.project_hash && knownHashes.has(s.project_hash)) return false;
-      // 已被某个项目分组认领的会话不再进“最近”，避免同一 id 出现两行。
+      // 已被某个项目分组认领的会话不再进“最近会话”，避免同一 id 出现两行。
       return !projectOwnerById.has(s.id);
     })
   );
+  const displayRecents = (() => {
+    if (showAllRecents || selectMode) return recentsList;
+    const topList = recentsList.slice(0, 5);
+    if (activeSessionId && !topList.some((s) => s.id === activeSessionId)) {
+      const activeItem = recentsList.find((s) => s.id === activeSessionId);
+      if (activeItem) return [...topList, activeItem];
+    }
+    return topList;
+  })();
 
   const filtered = q ? searchFiltered : merged;
   // 显式多选模式与 Ctrl/Shift 临时多选共用同一套选中状态与批量删除栏。
@@ -2836,7 +2872,18 @@ export function Sidebar({
       ) : (
         <>
           <div class="sidebar-actions">
-            <button class="sidebar-action" onClick={() => { onSwitchWorkbenchView?.('chat'); exitSelectMode(); onNew(); }}>
+            <button
+              class="sidebar-action"
+              onClick={() => {
+                setRecentsExpanded(true);
+                try {
+                  localStorage.setItem('sidebar_recents_expanded', 'true');
+                } catch {}
+                onSwitchWorkbenchView?.('chat');
+                exitSelectMode();
+                onNew();
+              }}
+            >
               <span class="sidebar-action-icon"><PlusIcon /></span>
               <span class="sidebar-action-label">{t('sidebar.newChat')}</span>
             </button>
@@ -2913,103 +2960,142 @@ export function Sidebar({
             </button>
           </div>
 
-          <div class="session-group-header">
-        <span class="session-group-label">
-          {selectionActive ? t('sidebar.selectedCount', { n: selectedIds.size }) : t('sidebar.recent')}
-        </span>
-        <span class="session-group-actions">
-          {selectionActive ? (
-            <>
+      <div class="session-list-body" ref={sessionListBodyRef} aria-busy={loading || pendingDeleteCount > 0}>
+        <div
+          class={`session-group-header${!selectMode && recentsList.length > 0 ? ' clickable' : ''}`}
+          onClick={() => {
+            if (!selectMode && recentsList.length > 0) {
+              setRecentsExpanded((prev) => {
+                const next = !prev;
+                try {
+                  localStorage.setItem('sidebar_recents_expanded', String(next));
+                } catch {}
+                return next;
+              });
+            }
+          }}
+          title={!selectMode && recentsList.length > 0 ? (recentsExpanded ? (t('sidebar.collapse') || '折叠') : (t('sidebar.expand') || '展开')) : undefined}
+          aria-expanded={recentsList.length > 0 ? recentsExpanded : undefined}
+        >
+          <div class="session-group-title-wrap">
+            <span class="session-group-label">
+              {selectionActive ? t('sidebar.selectedCount', { n: selectedIds.size }) : t('sidebar.recents')}
+            </span>
+            {!selectionActive && recentsList.length > 0 && (
+              <span class={`section-caret ${recentsExpanded ? 'expanded' : ''}`} aria-hidden="true">
+                {recentsExpanded ? '▾' : '▸'}
+              </span>
+            )}
+          </div>
+          <span class="session-group-actions" onClick={(e) => e.stopPropagation()}>
+            {selectionActive ? (
+              <>
+                <button
+                  type="button"
+                  class="session-select-btn"
+                  onClick={() => {
+                    const domVisible = Array.from(
+                      document.querySelectorAll<HTMLElement>(
+                        '.session-list-body .session-item[data-session-id]',
+                      ),
+                    )
+                      .map((el) => el.dataset.sessionId)
+                      .filter((id): id is string => !!id);
+                    const visible = domVisible.length > 0 ? domVisible : filtered.map((s) => s.id);
+                    const allSelected = visible.length > 0 && visible.every((id) => selectedIds.has(id));
+                    setSelectedIds(allSelected ? new Set() : new Set(visible));
+                    selectionAnchorRef.current = allSelected ? null : (visible[0] ?? null);
+                  }}
+                >
+                  {t('sidebar.selectAll')}
+                </button>
+                <button
+                  type="button"
+                  class="session-select-btn"
+                  onClick={() => {
+                    const domVisible = Array.from(
+                      document.querySelectorAll<HTMLElement>(
+                        '.session-list-body .session-item[data-session-id]',
+                      ),
+                    )
+                      .map((el) => el.dataset.sessionId)
+                      .filter((id): id is string => !!id);
+                    const visible = domVisible.length > 0 ? domVisible : filtered.map((s) => s.id);
+                    setSelectedIds((current) => {
+                      const next = new Set(current);
+                      for (const id of visible) {
+                        if (next.has(id)) next.delete(id);
+                        else next.add(id);
+                      }
+                      return next;
+                    });
+                    // 反选后选择集合不再连续，清掉锚点避免下一次 Shift 选中意外的范围。
+                    selectionAnchorRef.current = null;
+                  }}
+                >
+                  {t('sidebar.invertSelect')}
+                </button>
+                <button
+                  type="button"
+                  class="session-select-btn"
+                  onClick={exitSelectMode}
+                  disabled={pendingDeleteCount > 0}
+                >
+                  {t('sidebar.selectDone')}
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
                 class="session-select-btn"
                 onClick={() => {
-                  const visible = filtered.map((s) => s.id);
-                  const allSelected = visible.length > 0 && visible.every((id) => selectedIds.has(id));
-                  setSelectedIds(allSelected ? new Set() : new Set(visible));
-                  selectionAnchorRef.current = allSelected ? null : (visible[0] ?? null);
-                }}
-              >
-                {t('sidebar.selectAll')}
-              </button>
-              <button
-                type="button"
-                class="session-select-btn"
-                onClick={() => {
-                  const visible = filtered.map((s) => s.id);
-                  setSelectedIds((current) => {
-                    const next = new Set(current);
-                    for (const id of visible) {
-                      if (next.has(id)) next.delete(id);
-                      else next.add(id);
-                    }
-                    return next;
-                  });
-                  // 反选后选择集合不再连续，清掉锚点避免下一次 Shift 选中意外的范围。
+                  setMenuFor(null);
+                  setRecentsExpanded(true);
+                  try {
+                    localStorage.setItem('sidebar_recents_expanded', 'true');
+                  } catch {}
                   selectionAnchorRef.current = null;
+                  setSelectMode(true);
                 }}
+                disabled={filtered.length === 0}
               >
-                {t('sidebar.invertSelect')}
+                {t('sidebar.select')}
               </button>
-              <button
-                type="button"
-                class="session-select-btn"
-                onClick={exitSelectMode}
-                disabled={pendingDeleteCount > 0}
-              >
-                {t('sidebar.selectDone')}
-              </button>
-            </>
-          ) : (
+            )}
+          </span>
+        </div>
+        {showBatchBar && (
+          <div class="session-select-delete-bar">
+            {deleteError && (
+              <div class="session-select-delete-error" role="alert">{deleteError}</div>
+            )}
+            {pendingDeleteCount > 0 && (
+              <div class="session-select-delete-progress" aria-live="polite">
+                {t('sidebar.deletingCount', { n: pendingDeleteCount })}
+              </div>
+            )}
             <button
               type="button"
-              class="session-select-btn"
+              class="session-select-delete-btn"
+              disabled={selectedIds.size === 0 || pendingDeleteCount > 0}
               onClick={() => {
-                setMenuFor(null);
-                selectionAnchorRef.current = null;
-                setSelectMode(true);
+                // 选中项可能来自尚未展开/超出全局 50 条的项目桶，按 id 从完整
+                // 会话集合解析，避免批量删除悄悄漏行。
+                const targets = resolveSessionsByIds(selectedIds);
+                if (targets.length === 0) return;
+                setDeleteError(null);
+                setDeleteTargets(targets);
               }}
-              disabled={filtered.length === 0}
             >
-              {t('sidebar.select')}
+              <TrashIcon />
+              <span>
+                {selectedIds.size > 0
+                  ? t('sidebar.deleteSelectedCount', { n: selectedIds.size })
+                  : t('sidebar.deleteSelected')}
+              </span>
             </button>
-          )}
-        </span>
-      </div>
-      {showBatchBar && (
-        <div class="session-select-delete-bar">
-          {deleteError && (
-            <div class="session-select-delete-error" role="alert">{deleteError}</div>
-          )}
-          {pendingDeleteCount > 0 && (
-            <div class="session-select-delete-progress" aria-live="polite">
-              {t('sidebar.deletingCount', { n: pendingDeleteCount })}
-            </div>
-          )}
-          <button
-            type="button"
-            class="session-select-delete-btn"
-            disabled={selectedIds.size === 0 || pendingDeleteCount > 0}
-            onClick={() => {
-              // 选中项可能来自尚未展开/超出全局 50 条的项目桶，按 id 从完整
-              // 会话集合解析，避免批量删除悄悄漏行。
-              const targets = resolveSessionsByIds(selectedIds);
-              if (targets.length === 0) return;
-              setDeleteError(null);
-              setDeleteTargets(targets);
-            }}
-          >
-            <TrashIcon />
-            <span>
-              {selectedIds.size > 0
-                ? t('sidebar.deleteSelectedCount', { n: selectedIds.size })
-                : t('sidebar.deleteSelected')}
-            </span>
-          </button>
-        </div>
-      )}
-
-      <div class="session-list-body" ref={sessionListBodyRef} aria-busy={loading || pendingDeleteCount > 0}>
+          </div>
+        )}
         {loading && allProjects.length === 0 && (
           <div class="session-empty">{t('sidebar.loading')}</div>
         )}
@@ -3022,9 +3108,51 @@ export function Sidebar({
           </div>
         ) : (
           <>
-            <div class="sidebar-section-header">
-              <span class="sidebar-section-title">{t('sidebar.projects')}</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+            {/* 1. 最近会话列表（未归入项目分组的独立会话直接展示在顶部“最近会话”下） */}
+            {recentsExpanded && recentsList.length > 0 && (
+              <div
+                class={
+                  'sidebar-recents-section' +
+                  (projectsExpanded && visibleProjects.length > 0 ? ' has-projects-below' : '')
+                }
+              >
+                <div class="project-sessions-list" style={{ paddingLeft: 0 }}>
+                  {uniqueSessionsById(displayRecents).map(renderItem)}
+                </div>
+                {recentsList.length > 5 && !selectMode && (
+                  <button
+                    type="button"
+                    class="project-show-more-btn"
+                    onClick={() => setShowAllRecents((prev) => !prev)}
+                  >
+                    <span>{showAllRecents ? t('sidebar.showLess') : t('sidebar.showMore')}</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 2. 项目工作区分组 */}
+            <div
+              class="sidebar-section-header clickable"
+              onClick={() => {
+                setProjectsExpanded((prev) => {
+                  const next = !prev;
+                  try {
+                    localStorage.setItem('sidebar_projects_expanded', String(next));
+                  } catch {}
+                  return next;
+                });
+              }}
+              title={projectsExpanded ? (t('sidebar.collapse') || '折叠') : (t('sidebar.expand') || '展开')}
+              aria-expanded={projectsExpanded}
+            >
+              <div class="sidebar-section-title-wrap">
+                <span class="sidebar-section-title">{t('sidebar.projects')}</span>
+                <span class={`section-caret ${projectsExpanded ? 'expanded' : ''}`} aria-hidden="true">
+                  {projectsExpanded ? '▾' : '▸'}
+                </span>
+              </div>
+              <div class="sidebar-section-actions" onClick={(e) => e.stopPropagation()}>
                 <button
                   type="button"
                   class="sidebar-section-action-btn"
@@ -3050,17 +3178,11 @@ export function Sidebar({
               </div>
             </div>
 
-            {visibleProjects.map((p) => {
+            {projectsExpanded && visibleProjects.length > 0 && (
+              <div class="sidebar-projects-list" ref={projectsListRef}>
+                {visibleProjects.map((p) => {
               const isExpanded = expandedProjects.has(p.hash);
               const isShowAll = showAllProjects.has(p.hash);
-
-              // 过滤掉尚未发出第一条消息的空白会话（新建但未发送消息者不建会话、不入列表；首发即入列并持续展示）
-              const isNonEmptySession = (s: SessionMetaWithProject) => {
-                if (allOptimistic.some((opt) => opt.id === s.id)) return true;
-                if (s.id === activeSessionId) return true;
-                if (activeSet.has(s.id)) return true;
-                return (s.message_count ?? 0) > 0;
-              };
 
               const baseSessions = rowsForProject(p).filter(isNonEmptySession);
               const projectOptimistics = allOptimistic.filter(
@@ -3259,15 +3381,12 @@ export function Sidebar({
                 </div>
               );
             })}
+              </div>
+            )}
 
-            {recentsList.length > 0 && (
-              <div class="sidebar-recents-section">
-                <div class="sidebar-section-header">
-                  <span class="sidebar-section-title">{t('sidebar.recents')}</span>
-                </div>
-                <div class="project-sessions-list" style={{ paddingLeft: 0 }}>
-                  {uniqueSessionsById(recentsList.slice(0, 10)).map(renderItem)}
-                </div>
+            {visibleProjects.length === 0 && recentsList.length === 0 && (
+              <div class="session-empty" style={{ padding: '12px', fontSize: '12px' }}>
+                {t('sidebar.empty')}
               </div>
             )}
           </>
