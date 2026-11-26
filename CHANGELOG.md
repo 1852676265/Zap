@@ -21,6 +21,30 @@
   - 具体缺陷修复与行为改善说明...
 -->
 
+## v2.0.3 (2026-11-26)
+
+- **[Agent Teams QA Gate & Multi-Round Delivery] Targeted upstream rework, round snapshots, and lead memory binding**:
+  - Added a read-only QA verification gate that routes discovered defects directly back to responsible upstream members for targeted rework and automatic regression retesting.
+  - Added multi-round delivery snapshots with per-round file tracking, in-place rework support, merged SQL delivery artifacts, and lead manager neural-memory binding across planning and revisions.
+  - Enhanced cross-repository peer consultation with fuzzy teammate matching, Chinese keyword extraction, and broader source-file evidence discovery.
+- **[Neural Memory & Session Isolation] Smarter team delivery sync and hidden team child sessions**:
+  - Improved team-to-memory synchronization with WAL-aware change detection, role-scoped delivery distillation, slot-based contract replacement, and session-agent lookup support.
+  - Isolated Agent Teams and subagent child sessions from the main sidebar, project lists, and search results while keeping direct deep-link access intact.
+- **[WebUI Composer UX] Moved model selector into the input footer**:
+  - Relocated the model selector from the top header into the composer footer beside the mode selector with upward dropdown menus and compact mobile layout adaptations.
+
+---
+
+- **[Agent Teams QA 验收闸门与多期交付] 定向上游返工回流、分期快照与负责人记忆绑定**：
+  - 新增只读 QA 验收闸门，发现缺陷后可自动定向打回对应上游研发成员原会话返工，修复完成后自动触发回归复测。
+  - 新增多期交付快照、单期改动文件记录、原地返工、合并式交付 SQL 汇总，以及团队负责人神经记忆绑定能力，规划与改造阶段可自动继承项目上下文。
+  - 增强跨项目同事问询能力，支持按项目名与领域模糊匹配成员、中文关键词检索与更多常见源码后缀读取。
+- **[神经记忆同步与子会话隔离] 更精准的团队成果沉淀与侧边栏净化**：
+  - 升级团队成果至神经记忆的同步机制，支持感知 SQLite WAL 写入、按角色定向分发 DDL/契约/排障经验、按槽位覆盖旧契约及会话绑定查询。
+  - 将 Agent Teams 与子智能体产生的子会话从主侧边栏、项目列表与全局搜索中自动隐藏，同时保留直链详情查看能力。
+- **[WebUI 输入栏交互] 模型选择器迁入输入框底部**：
+  - 将模型选择器从顶部标题栏移至输入框底部操作区（位于模式选择器左侧），适配向上弹出下拉菜单与移动端紧凑展示。
+
 ## v2.0.2 (2026-11-24)
 
 - **[Agent Teams Incremental Collaboration & Revisions] Mid-run member insertion, cascading revisions, and compact prompts**:
