@@ -26,20 +26,25 @@ use super::planner::{
     build_pipeline_plan_for_run, extract_json_object, generate_unified_interface_spec,
 };
 use super::store::{
-    append_event_conn, append_task_note_conn, append_tasks_to_run_conn, claim_task_attempt_conn,
-    finish_task_fenced_conn, load_config_conn, load_contracts_for_run_conn,
-    load_custom_projects_conn, load_role_presets_conn, load_run_conn, load_run_detail_conn,
-    load_task_conn, load_tasks_for_run_conn, schedule_revision_conn, set_run_status_conn,
-    set_task_status_fenced_conn, update_run_delivery_conn, update_run_design_conn,
-    update_run_interface_spec_conn, update_run_sql_binding_conn, update_run_stage_conn,
-    update_task_followup_result_conn, upsert_contract_conn, upsert_role_preset_conn,
-    with_team_store, RevisionTaskTarget,
+    append_event_conn, append_task_note_conn, append_tasks_to_run_conn, build_round_task_snapshot,
+    claim_task_attempt_conn, finalize_round_delivery_conn, finish_task_fenced_conn,
+    load_config_conn, load_contracts_for_run_conn, load_custom_projects_conn,
+    load_role_presets_conn, load_round_conn, load_run_conn, load_run_detail_conn, load_task_conn,
+    load_tasks_for_run_conn, promote_retest_ancestors_passed_conn, route_qa_rework_fenced_conn,
+    schedule_revision_conn, set_run_status_conn, set_task_status_fenced_conn,
+    update_run_design_conn, update_run_interface_spec_conn, update_run_sql_binding_conn,
+    update_run_stage_conn, update_task_followup_result_conn, upsert_contract_conn,
+    upsert_role_preset_conn, with_team_store, QaReworkTarget, RevisionRoundOptions,
+    RevisionTaskTarget,
 };
-use super::tools::{register_team_session_ctx, unregister_team_session_ctx, ActiveTeamSessionCtx};
+use super::tools::{
+    register_team_session_ctx, unregister_team_session_ctx, ActiveTeamSessionCtx,
+    TeamToolAccessMode,
+};
 use super::types::{
-    clean_path_str, compute_and_assign_waves, domain_badge_cn, normalize_domain, path_to_clean_str,
-    truncate_chars_safe, RoleBindingPreset, TeamContract, TeamImage, TeamRun, TeamTask,
-    HARD_CAP_MAX_REPAIRS,
+    clean_path_str, compute_and_assign_waves, domain_badge_cn, normalize_domain, now_ts,
+    path_to_clean_str, truncate_chars_safe, RoleBindingPreset, TeamContract, TeamImage, TeamRound,
+    TeamRoundTaskSnapshot, TeamRun, TeamTask, HARD_CAP_MAX_REPAIRS,
 };
 
 pub(crate) async fn global_prompt_templates() -> Result<BTreeMap<String, String>, String> {
@@ -590,7 +595,7 @@ async fn run_sql_designer_turn(
             domain: "sql".to_string(),
             actor_label: "SQL designer".to_string(),
             provider_name: effective_model.clone(),
-            read_only_mode: true,
+            access_mode: TeamToolAccessMode::ReadOnly,
         },
     );
     let session_title = format!("🗄 [SQL表结构设计] {}", run.title);
@@ -603,8 +608,9 @@ async fn run_sql_designer_turn(
         &effective_wd,
         (!effective_model.is_empty()).then_some(effective_model.as_str()),
         &prompt,
-        true,
+        TeamToolAccessMode::ReadOnly,
         &run.goal_images,
+        None,
     )
     .await;
     unregister_team_session_ctx(&session_id);
@@ -714,6 +720,10 @@ pub async fn start_or_resume_run(host: Arc<dyn TeamHost>, run_id: &str) -> Resul
             start_design_phase(host, rid, current_wd).await;
         }
         return Ok(());
+    }
+
+    if !run_snap.sql_schema_draft.trim().is_empty() {
+        trigger_neural_memory_team_sync_async();
     }
 
     let handle = ActiveRunHandle::new();
@@ -936,7 +946,8 @@ pub(crate) async fn append_tasks_and_dispatch(
     Ok((detail, live))
 }
 
-/// 发起单成员定向改造或跨成员联动变更（可选更新统一契约，自动按 DAG 波次先后唤醒既有会话执行）。
+/// 发起单成员定向改造或跨成员联动变更（可选更新统一契约与开启新一期存档，自动按 DAG 波次先后唤醒既有会话执行）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch_member_revision(
     host: Arc<dyn TeamHost>,
     run_id: &str,
@@ -944,6 +955,7 @@ pub(crate) async fn dispatch_member_revision(
     interface_spec_addition: Option<String>,
     replace_interface_spec: Option<String>,
     auto_start: bool,
+    round_opts: RevisionRoundOptions,
 ) -> Result<(super::types::TeamRunDetail, bool), String> {
     let rid = run_id.trim().to_string();
     if rid.is_empty() {
@@ -1001,6 +1013,7 @@ pub(crate) async fn dispatch_member_revision(
                 spec_add.as_deref(),
                 spec_rep.as_deref(),
                 auto_start,
+                &round_opts,
             )
         })
     })
@@ -1157,7 +1170,7 @@ pub async fn send_member_note(
         return Err("请输入补充指令内容".to_string());
     }
 
-    let (run, task) = tokio::task::spawn_blocking({
+    let (run, task, teammates_line) = tokio::task::spawn_blocking({
         let rid = rid.clone();
         let tid = tid.clone();
         move || {
@@ -1169,7 +1182,9 @@ pub async fn send_member_note(
                 if task.run_id != rid {
                     return Err("子任务不属于该任务单".to_string());
                 }
-                Ok::<_, String>((run, task))
+                let all_tasks = load_tasks_for_run_conn(&store.conn, &rid)?;
+                let teammates = format_teammates_line(&all_tasks, &tid);
+                Ok::<_, String>((run, task, teammates))
             })
         }
     })
@@ -1303,8 +1318,15 @@ pub async fn send_member_note(
     };
     let session_title = format!("🤝 [{}] {}", domain_badge_cn(&task.domain), task.title);
     let working_dir = PathBuf::from(task.working_dir.trim());
-    let read_only = run.mode == "triage";
+    let access_mode = if run.mode == "triage" {
+        TeamToolAccessMode::ReadOnly
+    } else if is_pipeline_qa_gate_task(&run.mode, &task) {
+        TeamToolAccessMode::QaVerifyOnly
+    } else {
+        TeamToolAccessMode::ReadWrite
+    };
     let mut existing_files = task.touched_files.clone();
+    let mut existing_round_files = task.round_touched_files.clone();
     let rid_bg = rid.clone();
     let tid_bg = tid.clone();
 
@@ -1318,7 +1340,7 @@ pub async fn send_member_note(
                 domain: task.domain.clone(),
                 actor_label: actor_label.clone(),
                 provider_name: effective_model.clone(),
-                read_only_mode: read_only,
+                access_mode,
             },
         );
 
@@ -1331,8 +1353,9 @@ pub async fn send_member_note(
             &working_dir,
             (!effective_model.is_empty()).then_some(effective_model.as_str()),
             &prompt,
-            read_only,
+            access_mode,
             &images_owned,
+            (!teammates_line.is_empty()).then_some(teammates_line.as_str()),
         )
         .await;
 
@@ -1342,7 +1365,10 @@ pub async fn send_member_note(
             Ok((reply, files)) => {
                 for f in files {
                     if !existing_files.contains(&f) {
-                        existing_files.push(f);
+                        existing_files.push(f.clone());
+                    }
+                    if !existing_round_files.contains(&f) {
+                        existing_round_files.push(f);
                     }
                 }
                 let rid_ok = rid_bg.clone();
@@ -1360,6 +1386,7 @@ pub async fn send_member_note(
                             &tid_ok,
                             &reply,
                             &existing_files,
+                            &existing_round_files,
                         )?;
                         let _ = append_event_conn(
                             &store.conn,
@@ -1397,6 +1424,27 @@ pub async fn send_member_note(
     });
 
     Ok(("dispatched_to_session".to_string(), true))
+}
+
+/// 检查任务的所有直接及传递上游依赖是否均已处于 `completed` 状态。
+/// 防止 QA 验收定向打回传递上游（如 Wave 1 后端）返工时，因中间节点仍为 `completed` 导致 QA 与上游并发抢跑。
+fn all_ancestors_completed(task: &TeamTask, tasks_by_id: &HashMap<&str, &TeamTask>) -> bool {
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = task.depends_on.iter().map(String::as_str).collect();
+    while let Some(dep_id) = stack.pop() {
+        if dep_id == task.id.as_str() || !visited.insert(dep_id) {
+            continue;
+        }
+        if let Some(dep_task) = tasks_by_id.get(dep_id) {
+            if dep_task.status != "completed" {
+                return false;
+            }
+            for parent in &dep_task.depends_on {
+                stack.push(parent.as_str());
+            }
+        }
+    }
+    true
 }
 
 async fn orchestrate_run_loop(
@@ -1444,10 +1492,8 @@ async fn orchestrate_run_loop(
                 return;
             };
 
-            let status_by_id: HashMap<String, String> = tasks
-                .iter()
-                .map(|t| (t.id.clone(), t.status.clone()))
-                .collect();
+            let tasks_by_id: HashMap<&str, &TeamTask> =
+                tasks.iter().map(|t| (t.id.as_str(), t)).collect();
 
             if failed_wave.is_none() {
                 let mut eligible: Vec<TeamTask> = tasks
@@ -1455,12 +1501,7 @@ async fn orchestrate_run_loop(
                     .filter(|t| {
                         t.status != "completed"
                             && !in_flight.contains(&t.id)
-                            && t.depends_on.iter().all(|dep| {
-                                status_by_id
-                                    .get(dep)
-                                    .map(|s| s == "completed")
-                                    .unwrap_or(true)
-                            })
+                            && all_ancestors_completed(t, &tasks_by_id)
                     })
                     .cloned()
                     .collect();
@@ -1615,6 +1656,7 @@ async fn execute_single_task_lifecycle(
     let prep = tokio::task::spawn_blocking({
         let rid = run_id.clone();
         let tid = task_id.clone();
+        let run_mode = run.mode.clone();
         move || {
             with_team_store(|store| {
                 let task = load_task_conn(&store.conn, &tid)?
@@ -1633,12 +1675,30 @@ async fn execute_single_task_lifecycle(
                 zap_neural_memory::bind_session_neural_agent(&session_id, &task.agent_id)?;
                 let wd_clean = task.working_dir.trim().to_string();
                 let proj_hash = host_for_prep.hash_path(Path::new(&wd_clean));
-                let (_attempt_no, attempt_id) =
-                    claim_task_attempt_conn(&store.conn, &tid, &session_id, &proj_hash, "running")?;
+                let is_qa_routed_rework =
+                    run_mode == "pipeline" && task.verify_verdict == "qa_rework";
+                let claim_status = if is_qa_routed_rework {
+                    "repairing"
+                } else {
+                    "running"
+                };
+                let (_attempt_no, attempt_id) = claim_task_attempt_conn(
+                    &store.conn,
+                    &tid,
+                    &session_id,
+                    &proj_hash,
+                    claim_status,
+                )?;
 
+                let teammates_line = format_teammates_line(&all_tasks, &tid);
                 let has_dependents = all_tasks
                     .iter()
                     .any(|other| other.depends_on.iter().any(|d| d == &tid));
+                let upstream_ancestors = if is_pipeline_qa_gate_task(&run_mode, &task) {
+                    collect_upstream_ancestor_tasks(&all_tasks, &task)
+                } else {
+                    Vec::new()
+                };
 
                 let dep_set: HashSet<String> = task.depends_on.iter().cloned().collect();
                 let upstream_contracts: Vec<TeamContract> = all_contracts
@@ -1676,13 +1736,29 @@ async fn execute_single_task_lifecycle(
                     format!("{} ({})", domain_badge_cn(&task.domain), task.agent_label)
                 };
 
+                let start_summary = if is_qa_routed_rework {
+                    format!(
+                        "开始 QA 缺陷返工修复「{}」→ 目录 `{}`",
+                        task.title, wd_clean
+                    )
+                } else if is_pipeline_qa_gate_task(&run_mode, &task)
+                    && task.verify_verdict == "routed_rework"
+                {
+                    format!(
+                        "上游已返工，开始第 {} 轮 QA 回归复测「{}」",
+                        task.repair_count, task.title
+                    )
+                } else {
+                    format!("开始执行「{}」→ 目录 `{}`", task.title, wd_clean)
+                };
+
                 let _ = append_event_conn(
                     &store.conn,
                     &rid,
                     "task_started",
                     &tid,
                     &actor,
-                    &format!("开始执行「{}」→ 目录 `{}`", task.title, wd_clean),
+                    &start_summary,
                     "",
                 );
 
@@ -1692,10 +1768,12 @@ async fn execute_single_task_lifecycle(
                     attempt_id,
                     actor,
                     has_dependents,
+                    upstream_ancestors,
                     upstream_contracts,
                     upstream_excerpts,
                     globals,
                     compact_prompts,
+                    teammates_line,
                 ))
             })
         }
@@ -1708,10 +1786,12 @@ async fn execute_single_task_lifecycle(
         attempt_id,
         actor,
         has_dependents,
+        upstream_ancestors,
         upstream_contracts,
         upstream_excerpts,
         globals,
         compact_prompts,
+        teammates_line,
     ) = match prep {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
@@ -1746,6 +1826,19 @@ async fn execute_single_task_lifecycle(
         run.lead_model.trim().to_string()
     };
 
+    let is_qa_gate = is_pipeline_qa_gate_task(&run.mode, &task) && !upstream_ancestors.is_empty();
+    let is_qa_routed_rework = run.mode == "pipeline" && task.verify_verdict == "qa_rework";
+    let is_qa_retest = is_qa_gate
+        && task.verify_verdict == "routed_rework"
+        && !task.revision_note.trim().is_empty();
+    let access_mode = if run.mode == "triage" {
+        TeamToolAccessMode::ReadOnly
+    } else if is_qa_gate {
+        TeamToolAccessMode::QaVerifyOnly
+    } else {
+        TeamToolAccessMode::ReadWrite
+    };
+
     register_team_session_ctx(
         &session_id,
         ActiveTeamSessionCtx {
@@ -1754,30 +1847,52 @@ async fn execute_single_task_lifecycle(
             domain: task.domain.clone(),
             actor_label: actor.clone(),
             provider_name: effective_model.clone(),
-            read_only_mode: run.mode == "triage",
+            access_mode,
         },
     );
 
-    let (initial_prompt, _, _) = render_worker_prompt_with_source(
-        &run,
-        &task,
-        has_dependents,
-        &upstream_contracts,
-        &upstream_excerpts,
-        &globals,
-        None,
-        compact_prompts,
-    );
-    let session_title = format!("🤝 [{}] {}", domain_badge_cn(&task.domain), task.title);
-    let working_dir = PathBuf::from(task.working_dir.trim());
-
-    let mut all_touched_files: Vec<String> = task.touched_files.clone();
-    let mut current_repair_count = task.repair_count;
     let max_repairs = if run.mode == "pipeline" && run.auto_verify {
         run.max_repairs.min(HARD_CAP_MAX_REPAIRS)
     } else {
         0
     };
+
+    let initial_prompt = if is_qa_retest {
+        render_qa_retest_prompt(
+            &run,
+            &task,
+            task.repair_count.max(1),
+            max_repairs.max(task.repair_count.max(1)),
+            &upstream_ancestors,
+            &upstream_contracts,
+            &upstream_excerpts,
+            compact_prompts,
+        )
+    } else {
+        let (mut prompt, _, _) = render_worker_prompt_with_source(
+            &run,
+            &task,
+            has_dependents,
+            &upstream_contracts,
+            &upstream_excerpts,
+            &globals,
+            None,
+            compact_prompts,
+        );
+        if is_qa_gate {
+            let roster = format_qa_upstream_roster(&upstream_ancestors);
+            if !roster.trim().is_empty() {
+                prompt = format!("{}\n\n{roster}", prompt.trim_end());
+            }
+        }
+        prompt
+    };
+    let session_title = format!("🤝 [{}] {}", domain_badge_cn(&task.domain), task.title);
+    let working_dir = PathBuf::from(task.working_dir.trim());
+
+    let mut all_touched_files: Vec<String> = task.touched_files.clone();
+    let mut round_touched_files: Vec<String> = task.round_touched_files.clone();
+    let mut current_repair_count = task.repair_count;
 
     let effective_images: Vec<TeamImage> = if !task.images.is_empty() {
         task.images.clone()
@@ -1820,8 +1935,9 @@ async fn execute_single_task_lifecycle(
             &working_dir,
             (!effective_model.is_empty()).then_some(effective_model.as_str()),
             &next_prompt,
-            run.mode == "triage",
+            access_mode,
             &effective_images,
+            (!teammates_line.is_empty()).then_some(teammates_line.as_str()),
         )
         .await;
 
@@ -1842,6 +1958,7 @@ async fn execute_single_task_lifecycle(
                     &err_msg,
                     current_repair_count,
                     &all_touched_files,
+                    &round_touched_files,
                 )
                 .await;
                 log_task_event(
@@ -1861,15 +1978,20 @@ async fn execute_single_task_lifecycle(
             }
         };
 
+        let turn_had_files = !turn_files.is_empty();
         for f in turn_files {
             if !all_touched_files.contains(&f) {
-                all_touched_files.push(f);
+                all_touched_files.push(f.clone());
+            }
+            if !round_touched_files.contains(&f) {
+                round_touched_files.push(f);
             }
         }
 
         // 若是流水线编码模式且存在下游依赖，但智能体未主动调用 team_publish_contract，自动兜底提炼契约摘要
         // 若为定向/联动改造回合且成员未调用 team_publish_contract 更新既有契约，则强制用本轮输出覆盖更新契约，防止下游读到 v1 旧路径
         if run.mode == "pipeline"
+            && !is_qa_gate
             && (has_dependents || matches!(task.domain.as_str(), "sql" | "backend"))
         {
             let force_update = if is_revision_round {
@@ -1895,6 +2017,62 @@ async fn execute_single_task_lifecycle(
             ensure_fallback_contract(&run_id, &task, &assistant_output, force_update).await;
         }
 
+        // 若本轮是 QA 验收打回后的上游返工修复：直接交由下游 QA 验收侦探执行完整回归复测，避免重复跑轻量单任务 Verifier
+        if is_qa_routed_rework {
+            if assistant_output.trim().is_empty() && !turn_had_files {
+                let err_msg = "QA 返工修复未产生有效输出或代码改动，已暂停等待人工确认。";
+                let _ = commit_task_outcome_fenced(
+                    &task_id,
+                    &attempt_id,
+                    "failed",
+                    &assistant_output,
+                    None,
+                    "rejected",
+                    err_msg,
+                    current_repair_count,
+                    &all_touched_files,
+                    &round_touched_files,
+                )
+                .await;
+                log_task_event(
+                    &run_id,
+                    &task_id,
+                    &actor,
+                    "task_failed_gate",
+                    &format!("「{}」QA 返工未产生有效改动，已熔断暂停", task.title),
+                    err_msg,
+                )
+                .await;
+                break false;
+            }
+            let committed = commit_task_outcome_fenced(
+                &task_id,
+                &attempt_id,
+                "completed",
+                &assistant_output,
+                None,
+                "retest",
+                "已完成 QA 打回返工修复，等待验收侦探自动复测。",
+                current_repair_count,
+                &all_touched_files,
+                &round_touched_files,
+            )
+            .await;
+            if committed {
+                log_task_event(
+                    &run_id,
+                    &task_id,
+                    &actor,
+                    "task_rework_completed",
+                    &format!("「{}」已完成 QA 返工修复，等待验收侦探复测", task.title),
+                    &assistant_output,
+                )
+                .await;
+                trigger_neural_memory_team_sync_async();
+            }
+            break committed;
+        }
+
         // 无需独立验收（排障会诊模式或用户关闭了自动验收）→ 直接标记完成
         if run.mode == "triage" || !run.auto_verify {
             let committed = commit_task_outcome_fenced(
@@ -1907,6 +2085,7 @@ async fn execute_single_task_lifecycle(
                 "",
                 current_repair_count,
                 &all_touched_files,
+                &round_touched_files,
             )
             .await;
             if committed {
@@ -1919,6 +2098,7 @@ async fn execute_single_task_lifecycle(
                     &assistant_output,
                 )
                 .await;
+                trigger_neural_memory_team_sync_async();
             }
             break committed;
         }
@@ -1941,6 +2121,7 @@ async fn execute_single_task_lifecycle(
             &run,
             &task,
             &upstream_contracts,
+            &upstream_ancestors,
             &assistant_output,
             &all_touched_files,
         )
@@ -1961,9 +2142,27 @@ async fn execute_single_task_lifecycle(
                 &verdict.summary,
                 current_repair_count,
                 &all_touched_files,
+                &round_touched_files,
             )
             .await;
             if committed {
+                if is_qa_gate && !upstream_ancestors.is_empty() {
+                    let rid_p = run_id.clone();
+                    let anc_ids: Vec<String> =
+                        upstream_ancestors.iter().map(|t| t.id.clone()).collect();
+                    let qa_sum = verdict.summary.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        with_team_store(|store| {
+                            promote_retest_ancestors_passed_conn(
+                                &store.conn,
+                                &rid_p,
+                                &anc_ids,
+                                &qa_sum,
+                            )
+                        })
+                    })
+                    .await;
+                }
                 log_task_event(
                     &run_id,
                     &task_id,
@@ -1973,11 +2172,174 @@ async fn execute_single_task_lifecycle(
                     "",
                 )
                 .await;
+                trigger_neural_memory_team_sync_async();
             }
             break committed;
         }
 
-        // 验收未通过：检查是否仍有自动打回返工额度
+        // QA 验收闸门未通过：优先将缺陷精准路由回对应上游智能体原会话返工，绝不让 QA 越权改业务代码
+        if is_qa_gate {
+            let routed_targets =
+                resolve_qa_rework_targets(&verdict, &upstream_ancestors, &assistant_output);
+            if !routed_targets.is_empty() {
+                if current_repair_count < max_repairs {
+                    current_repair_count += 1;
+                    let rid_r = run_id.clone();
+                    let tid_r = task_id.clone();
+                    let att_r = attempt_id.clone();
+                    let out_r = assistant_output.clone();
+                    let sum_r = verdict.summary.clone();
+                    let tf_r = all_touched_files.clone();
+                    let rtf_r = round_touched_files.clone();
+                    let targets_r = routed_targets.clone();
+                    let routed = tokio::task::spawn_blocking(move || {
+                        with_team_store(|store| {
+                            route_qa_rework_fenced_conn(
+                                &mut store.conn,
+                                &rid_r,
+                                &tid_r,
+                                &att_r,
+                                current_repair_count,
+                                max_repairs,
+                                &out_r,
+                                &sum_r,
+                                &tf_r,
+                                &rtf_r,
+                                &targets_r,
+                            )
+                        })
+                    })
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or(false);
+                    if !routed {
+                        let _ = commit_task_outcome_fenced(
+                            &task_id,
+                            &attempt_id,
+                            "failed",
+                            &assistant_output,
+                            None,
+                            "rejected",
+                            &format!("QA 回流上游返工落盘失败：{}", verdict.summary),
+                            current_repair_count,
+                            &all_touched_files,
+                            &round_touched_files,
+                        )
+                        .await;
+                    }
+                    break routed;
+                } else {
+                    let target_lines: Vec<String> = routed_targets
+                        .iter()
+                        .map(|rt| format!("- {}: {}", rt.task_id, rt.instructions))
+                        .collect();
+                    let feedback = format!(
+                        "{}\n已达最大 QA 回流返工轮次（{} 次），以下上游缺陷待人工介入：\n{}",
+                        verdict.summary,
+                        max_repairs,
+                        target_lines.join("\n")
+                    );
+                    let _ = commit_task_outcome_fenced(
+                        &task_id,
+                        &attempt_id,
+                        "failed",
+                        &assistant_output,
+                        None,
+                        "rejected",
+                        &feedback,
+                        current_repair_count,
+                        &all_touched_files,
+                        &round_touched_files,
+                    )
+                    .await;
+                    log_task_event(
+                        &run_id,
+                        &task_id,
+                        "verifier",
+                        "task_failed_gate",
+                        &format!(
+                            "「{}」连续 {} 轮 QA 回流返工仍未清零缺陷，触发熔断暂停人工介入",
+                            task.title, max_repairs
+                        ),
+                        &feedback,
+                    )
+                    .await;
+                    break false;
+                }
+            }
+
+            // QA 自身核查不完整且未归因出上游缺陷：原地让 QA 补充只读复查与归因，绝不指示其修改业务源码
+            if current_repair_count < max_repairs {
+                current_repair_count += 1;
+                let _ = commit_task_outcome_fenced(
+                    &task_id,
+                    &attempt_id,
+                    "repairing",
+                    &assistant_output,
+                    None,
+                    "rejected",
+                    &verdict.repair_instructions,
+                    current_repair_count,
+                    &all_touched_files,
+                    &round_touched_files,
+                )
+                .await;
+                log_task_event(
+                    &run_id,
+                    &task_id,
+                    "verifier",
+                    "task_repair_triggered",
+                    &format!(
+                        "QA 核查报告待补充（第 {}/{} 次）：{}",
+                        current_repair_count,
+                        max_repairs,
+                        truncate_chars_safe(&verdict.summary, 100)
+                    ),
+                    &verdict.repair_instructions,
+                )
+                .await;
+                next_prompt = render_qa_recheck_prompt(
+                    &task,
+                    current_repair_count,
+                    max_repairs,
+                    &verdict.summary,
+                    &verdict.repair_instructions,
+                    &upstream_ancestors,
+                );
+                continue;
+            } else {
+                let feedback = format!("{}\n{}", verdict.summary, verdict.repair_instructions);
+                let _ = commit_task_outcome_fenced(
+                    &task_id,
+                    &attempt_id,
+                    "failed",
+                    &assistant_output,
+                    None,
+                    "rejected",
+                    &feedback,
+                    current_repair_count,
+                    &all_touched_files,
+                    &round_touched_files,
+                )
+                .await;
+                log_task_event(
+                    &run_id,
+                    &task_id,
+                    "verifier",
+                    "task_failed_gate",
+                    &format!(
+                        "「{}」连续 {} 次复查仍未通过验收，触发熔断暂停人工介入",
+                        task.title, max_repairs
+                    ),
+                    &feedback,
+                )
+                .await;
+                break false;
+            }
+        }
+
+        // 常规研发成员验收未通过：检查是否仍有自动打回返工额度
         if current_repair_count < max_repairs {
             current_repair_count += 1;
             let _ = commit_task_outcome_fenced(
@@ -1990,6 +2352,7 @@ async fn execute_single_task_lifecycle(
                 &verdict.repair_instructions,
                 current_repair_count,
                 &all_touched_files,
+                &round_touched_files,
             )
             .await;
             log_task_event(
@@ -2037,6 +2400,7 @@ async fn execute_single_task_lifecycle(
                 &feedback,
                 current_repair_count,
                 &all_touched_files,
+                &round_touched_files,
             )
             .await;
             log_task_event(
@@ -2069,20 +2433,44 @@ async fn run_native_session_turn(
     working_dir: &Path,
     provider_override: Option<&str>,
     prompt: &str,
-    read_only_mode: bool,
+    access_mode: TeamToolAccessMode,
     images: &[TeamImage],
+    teammates_line: Option<&str>,
 ) -> Result<(String, Vec<String>), String> {
     let globals = global_prompt_templates().await?;
     let wd_text = path_to_clean_str(working_dir);
     let hint = inspect_dir_profile(working_dir).to_hint();
-    let (guard, _) = render_sys_guard_with_source(
-        read_only_mode,
-        &wd_text,
-        session_id,
-        &hint,
-        Some(&run.prompt_overrides),
-        &globals,
-    );
+    let mut guard = match access_mode {
+        TeamToolAccessMode::QaVerifyOnly => render_qa_verify_sys_guard(&wd_text),
+        TeamToolAccessMode::ReadOnly => {
+            render_sys_guard_with_source(
+                true,
+                &wd_text,
+                session_id,
+                &hint,
+                Some(&run.prompt_overrides),
+                &globals,
+            )
+            .0
+        }
+        TeamToolAccessMode::ReadWrite => {
+            render_sys_guard_with_source(
+                false,
+                &wd_text,
+                session_id,
+                &hint,
+                Some(&run.prompt_overrides),
+                &globals,
+            )
+            .0
+        }
+    };
+    if let Some(line) = teammates_line.map(str::trim).filter(|s| !s.is_empty()) {
+        if !guard.trim().is_empty() {
+            guard.push('\n');
+        }
+        guard.push_str(line);
+    }
     let child_cancel = handle.cancel.child_token();
     handle.register_child(child_cancel.clone());
     let req = HostChildTurnRequest {
@@ -2100,26 +2488,144 @@ async fn run_native_session_turn(
     host.run_child_turn(req, child_cancel).await
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct VerifierReworkTarget {
+    #[serde(default, alias = "taskId")]
+    pub(crate) task_id: String,
+    #[serde(default)]
+    pub(crate) instructions: String,
+}
+
 #[derive(Debug, Deserialize)]
-struct VerifierVerdict {
+pub(crate) struct VerifierVerdict {
     #[serde(default = "default_pass")]
-    passed: bool,
+    pub(crate) passed: bool,
     #[serde(default)]
-    summary: String,
+    pub(crate) summary: String,
     #[serde(default)]
-    repair_instructions: String,
+    pub(crate) repair_instructions: String,
+    #[serde(default, alias = "reworkTargets")]
+    pub(crate) rework_targets: Vec<VerifierReworkTarget>,
 }
 
 fn default_pass() -> bool {
     true
 }
 
+fn match_upstream_ancestor_id<'a>(raw: &str, ancestors: &'a [TeamTask]) -> Option<&'a str> {
+    let key = raw.trim().trim_start_matches('#').trim();
+    if key.is_empty() {
+        return None;
+    }
+    let lower = key.to_ascii_lowercase();
+    if let Some(t) = ancestors.iter().find(|t| t.id.eq_ignore_ascii_case(key)) {
+        return Some(t.id.as_str());
+    }
+    if key.len() >= 4 {
+        let suffix_hits: Vec<&TeamTask> = ancestors
+            .iter()
+            .filter(|t| t.id.to_ascii_lowercase().ends_with(&lower))
+            .collect();
+        if suffix_hits.len() == 1 {
+            return Some(suffix_hits[0].id.as_str());
+        }
+    }
+    let domain_hits: Vec<&TeamTask> = ancestors
+        .iter()
+        .filter(|t| t.domain.eq_ignore_ascii_case(key))
+        .collect();
+    if domain_hits.len() == 1 {
+        return Some(domain_hits[0].id.as_str());
+    }
+    let proj_hits: Vec<&TeamTask> = ancestors
+        .iter()
+        .filter(|t| {
+            !t.project_name.trim().is_empty() && t.project_name.trim().eq_ignore_ascii_case(key)
+        })
+        .collect();
+    if proj_hits.len() == 1 {
+        return Some(proj_hits[0].id.as_str());
+    }
+    None
+}
+
+/// 将 QA Verifier 返回的 `rework_targets` 规范化、去重并收敛到合法的上游祖先任务集合。
+pub(crate) fn resolve_qa_rework_targets(
+    verdict: &VerifierVerdict,
+    upstream_ancestors: &[TeamTask],
+    qa_output: &str,
+) -> Vec<QaReworkTarget> {
+    if upstream_ancestors.is_empty() {
+        return Vec::new();
+    }
+    let mut merged: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+
+    for item in &verdict.rework_targets {
+        let Some(canonical_id) = match_upstream_ancestor_id(&item.task_id, upstream_ancestors)
+        else {
+            continue;
+        };
+        let inst = item.instructions.trim();
+        let effective_inst = if !inst.is_empty() {
+            inst
+        } else if !verdict.repair_instructions.trim().is_empty() {
+            verdict.repair_instructions.trim()
+        } else {
+            verdict.summary.trim()
+        };
+        if effective_inst.is_empty() {
+            continue;
+        }
+        let key = canonical_id.to_string();
+        if !merged.contains_key(&key) {
+            order.push(key.clone());
+        }
+        let entry = merged.entry(key).or_default();
+        if !entry.iter().any(|existing| existing == effective_inst) {
+            entry.push(effective_inst.to_string());
+        }
+    }
+
+    if !order.is_empty() {
+        return order
+            .into_iter()
+            .filter_map(|id| {
+                let parts = merged.remove(&id)?;
+                Some(QaReworkTarget {
+                    task_id: id,
+                    instructions: parts.join("\n"),
+                })
+            })
+            .collect();
+    }
+
+    // 单上游祖先兜底：当 QA 产出了实质报告且仅有一个上游研发成员时，即使 Verifier 未显式填 rework_targets 也可无歧义归因
+    if upstream_ancestors.len() == 1 && qa_output.trim().chars().count() >= 80 {
+        let inst = if !verdict.repair_instructions.trim().is_empty() {
+            verdict.repair_instructions.trim()
+        } else {
+            verdict.summary.trim()
+        };
+        if !inst.is_empty() {
+            return vec![QaReworkTarget {
+                task_id: upstream_ancestors[0].id.clone(),
+                instructions: inst.to_string(),
+            }];
+        }
+    }
+
+    Vec::new()
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn verify_task_delivery(
     provider_name: &str,
     working_dir: &Path,
     run: &TeamRun,
     task: &TeamTask,
     upstream_contracts: &[TeamContract],
+    upstream_ancestors: &[TeamTask],
     worker_output: &str,
     touched_files: &[String],
 ) -> VerifierVerdict {
@@ -2129,6 +2635,7 @@ async fn verify_task_delivery(
             summary: "智能体未产生任何有效输出或代码变更".to_string(),
             repair_instructions: "请实际检查目标代码库并完成要求的改造，输出改动说明与契约。"
                 .to_string(),
+            rework_targets: Vec::new(),
         };
     }
 
@@ -2137,6 +2644,7 @@ async fn verify_task_delivery(
             passed: true,
             summary: "已完成执行（配置读取跳过独立复核）".to_string(),
             repair_instructions: String::new(),
+            rework_targets: Vec::new(),
         };
     };
 
@@ -2206,6 +2714,7 @@ async fn verify_task_delivery(
             passed: true,
             summary: "已完成交付".to_string(),
             repair_instructions: String::new(),
+            rework_targets: Vec::new(),
         };
     };
 
@@ -2271,10 +2780,19 @@ async fn verify_task_delivery(
     } else {
         task.description.clone()
     };
-    let worker_out_str =
-        truncate_chars_safe(worker_output, if compact_prompts { 1200 } else { 2200 });
+    let is_qa_gate = !upstream_ancestors.is_empty();
+    let worker_out_str = truncate_chars_safe(
+        worker_output,
+        if is_qa_gate {
+            3600
+        } else if compact_prompts {
+            1200
+        } else {
+            2200
+        },
+    );
 
-    let prompt = match execution_prompt(
+    let mut prompt = match execution_prompt(
         run,
         TPL_VERIFIER_GATE,
         Some(&task.domain),
@@ -2300,9 +2818,23 @@ async fn verify_task_delivery(
                 summary: format!("Prompt configuration failed: {e}"),
                 repair_instructions: "Restore template configuration access before retrying."
                     .to_string(),
+                rework_targets: Vec::new(),
             }
         }
     };
+
+    if is_qa_gate {
+        let roster = format_qa_upstream_roster(upstream_ancestors);
+        prompt.push_str(&format!(
+            "\n\n{roster}\n\nQA GATE ROUTING RULE (CRITICAL):\n\
+             This task is a read-only QA verification gate and MUST NOT modify upstream business code itself.\n\
+             - If the QA report concludes PASS (no blocking defects), output ONLY JSON:\n\
+               {{\"passed\":true,\"summary\":\"One-sentence Chinese conclusion\",\"repair_instructions\":\"\",\"rework_targets\":[]}}\n\
+             - If the QA report finds defects in upstream code/deliverables, output `\"passed\":false` and populate `\"rework_targets\"` with ONLY the responsible upstream `task_id`(s) from the list above, giving each target concrete Chinese fix instructions:\n\
+               {{\"passed\":false,\"summary\":\"One-sentence Chinese conclusion\",\"repair_instructions\":\"\",\"rework_targets\":[{{\"task_id\":\"<exact upstream task_id>\",\"instructions\":\"Exact fixes required for this specialist\"}}]}}\n\
+             - Leave `\"rework_targets\":[]` and fill `\"repair_instructions\"` ONLY if the QA agent itself failed to execute verification (empty/superficial report) and must re-inspect."
+        ));
+    }
 
     let msgs = vec![Message::user(prompt)];
     let fut = async {
@@ -2334,6 +2866,7 @@ async fn verify_task_delivery(
             passed: true,
             summary: "已完成交付产物核查".to_string(),
             repair_instructions: String::new(),
+            rework_targets: Vec::new(),
         },
     }
 }
@@ -2386,9 +2919,16 @@ async fn finalize_successful_run(run_id: &str, run: &TeamRun) -> bool {
         let rid = rid.clone();
         move || {
             with_team_store(|store| {
+                let latest = load_run_conn(&store.conn, &rid)?;
+                let round_no = latest
+                    .as_ref()
+                    .map(|r| r.current_round_no.max(1))
+                    .unwrap_or(1);
                 Ok::<_, String>((
+                    latest,
                     load_tasks_for_run_conn(&store.conn, &rid)?,
                     load_contracts_for_run_conn(&store.conn, &rid)?,
+                    load_round_conn(&store.conn, &rid, round_no)?,
                 ))
             })
         }
@@ -2397,81 +2937,237 @@ async fn finalize_successful_run(run_id: &str, run: &TeamRun) -> bool {
     .ok()
     .and_then(Result::ok);
 
-    let (tasks, contracts) = data.unwrap_or_default();
+    let (latest_run_opt, tasks, contracts, existing_round) = data.unwrap_or_default();
+    let latest_run = latest_run_opt.unwrap_or_else(|| run.clone());
+    let round_no = latest_run.current_round_no.max(1);
+    let is_triage = latest_run.mode == "triage";
+    let final_stage = if is_triage { "triage" } else { "completed" };
 
-    let latest_run = tokio::task::spawn_blocking({
-        let rid_q = rid.clone();
-        move || with_team_store(|s| load_run_conn(&s.conn, &rid_q))
-    })
-    .await
-    .ok()
-    .and_then(Result::ok)
-    .flatten()
-    .unwrap_or_else(|| run.clone());
+    // 区分本期参与成员与未参与成员（第 1 期默认全体参与；第 2 期及以上以开期时登记的参与集 + 本期新追加成员为准）
+    let prev_round_map: HashMap<String, TeamRoundTaskSnapshot> = existing_round
+        .as_ref()
+        .map(|r| r.tasks.iter().map(|t| (t.id.clone(), t.clone())).collect())
+        .unwrap_or_default();
+    let has_explicit_participation = round_no > 1 && !prev_round_map.is_empty();
 
-    let delivery_sql = extract_delivery_sql(&latest_run, &contracts);
+    let mut participating_ids: HashSet<String> = HashSet::new();
+    let mut round_task_snaps: Vec<TeamRoundTaskSnapshot> = Vec::with_capacity(tasks.len());
+    for t in &tasks {
+        let (participated, inst) = if has_explicit_participation {
+            if let Some(prev) = prev_round_map.get(&t.id) {
+                (prev.participated, prev.instruction.clone())
+            } else {
+                // 本期执行中途通过 append_tasks 新追加的成员视为参与本期
+                let fallback_inst = if !t.custom_prompt.trim().is_empty() {
+                    t.custom_prompt.clone()
+                } else {
+                    t.description.clone()
+                };
+                (true, fallback_inst)
+            }
+        } else {
+            let fallback_inst = prev_round_map
+                .get(&t.id)
+                .map(|p| p.instruction.clone())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    if !t.custom_prompt.trim().is_empty() {
+                        t.custom_prompt.clone()
+                    } else {
+                        t.description.clone()
+                    }
+                });
+            (true, fallback_inst)
+        };
+        if participated {
+            participating_ids.insert(t.id.clone());
+        }
+        round_task_snaps.push(build_round_task_snapshot(
+            t,
+            participated,
+            &inst,
+            round_no == 1,
+        ));
+    }
 
-    let synthesis = if latest_run.mode == "triage" {
+    let participating_tasks: Vec<&TeamTask> = tasks
+        .iter()
+        .filter(|t| participating_ids.contains(&t.id))
+        .collect();
+
+    let round_created_at = existing_round
+        .as_ref()
+        .map(|r| r.created_at.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| latest_run.created_at.clone());
+
+    let round_contracts: Vec<TeamContract> = if round_no == 1 {
+        contracts.clone()
+    } else {
+        contracts
+            .iter()
+            .filter(|c| {
+                let is_part_task = participating_ids.contains(&c.from_task_id);
+                let time_ok = round_created_at.is_empty()
+                    || c.created_at.as_str() >= round_created_at.as_str();
+                (is_part_task && time_ok)
+                    || (c.from_task_id == "lead_contract"
+                        && existing_round
+                            .as_ref()
+                            .is_some_and(|r| !r.interface_spec.trim().is_empty())
+                        && time_ok)
+            })
+            .cloned()
+            .collect()
+    };
+
+    let round_sql_draft = if round_no == 1 {
+        latest_run.sql_schema_draft.clone()
+    } else {
+        existing_round
+            .as_ref()
+            .map(|r| r.sql_schema_draft.clone())
+            .unwrap_or_default()
+    };
+    let round_delivery_sql =
+        extract_round_delivery_sql(&round_sql_draft, &round_contracts, &participating_tasks);
+
+    let round_title = existing_round
+        .as_ref()
+        .map(|r| r.title.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if round_no == 1 {
+                latest_run.title.clone()
+            } else {
+                format!("第 {} 期改造", round_no)
+            }
+        });
+    let round_requirement = existing_round
+        .as_ref()
+        .map(|r| r.requirement.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| latest_run.user_goal.clone());
+
+    let synthesis = if is_triage {
         synthesize_triage_report(&latest_run, &tasks).await
     } else {
-        let mut lines = vec![format!(
-            "### ✅ 跨项目协作交付完成：《{}》",
-            latest_run.title
-        )];
-        for t in &tasks {
-            let files_note = if t.touched_files.is_empty() {
+        let mut lines = if round_no == 1 {
+            vec![format!(
+                "### ✅ 跨项目协作交付完成：《{}》",
+                latest_run.title
+            )]
+        } else {
+            vec![format!(
+                "### ✅ 第 {} 期交付完成：《{}》",
+                round_no, round_title
+            )]
+        };
+        let mut skipped_count = 0usize;
+        for snap in &round_task_snaps {
+            if !snap.participated {
+                skipped_count += 1;
+                continue;
+            }
+            let files_note = if snap.touched_files.is_empty() {
                 "无文件写入".to_string()
             } else {
                 format!(
                     "改动 {} 个文件 ({})",
-                    t.touched_files.len(),
-                    t.touched_files.join(", ")
+                    snap.touched_files.len(),
+                    snap.touched_files.join(", ")
                 )
             };
             lines.push(format!(
                 "- **[{}] {}**：{}（返工 {} 次）",
-                if t.project_name.is_empty() {
-                    domain_badge_cn(&t.domain)
+                if snap.project_name.is_empty() {
+                    domain_badge_cn(&snap.domain)
                 } else {
-                    &t.project_name
+                    &snap.project_name
                 },
-                t.title,
+                snap.title,
                 files_note,
-                t.repair_count
+                snap.repair_count
             ));
         }
-        if !contracts.is_empty() {
+        if skipped_count > 0 {
             lines.push(format!(
-                "\n共沉淀 **{} 份** 跨项目表结构/接口契约，各专属智能体记忆已同步异步归档。",
-                contracts.len()
+                "- *其余 {} 位成员本期未受波及，保持原版本状态。*",
+                skipped_count
+            ));
+        }
+        if !round_contracts.is_empty() {
+            lines.push(format!(
+                "\n本期沉淀 **{} 份** 跨项目表结构/接口契约，各专属智能体记忆已同步异步归档。",
+                round_contracts.len()
             ));
         }
         lines.join("\n")
     };
 
+    let completed_round = TeamRound {
+        round_no,
+        title: round_title,
+        requirement: round_requirement,
+        status: "completed".to_string(),
+        stage: final_stage.to_string(),
+        requires_db: if round_no == 1 {
+            latest_run.requires_db || !round_delivery_sql.trim().is_empty()
+        } else {
+            existing_round.as_ref().is_some_and(|r| r.requires_db)
+                || !round_delivery_sql.trim().is_empty()
+        },
+        execution_plan: if round_no == 1 {
+            latest_run.execution_plan.clone()
+        } else {
+            existing_round
+                .as_ref()
+                .map(|r| r.execution_plan.clone())
+                .unwrap_or_default()
+        },
+        sql_schema_draft: round_sql_draft,
+        interface_spec: if round_no == 1 {
+            latest_run.interface_spec.clone()
+        } else {
+            existing_round
+                .as_ref()
+                .map(|r| r.interface_spec.clone())
+                .unwrap_or_default()
+        },
+        delivery_sql: round_delivery_sql,
+        synthesis_report: synthesis.clone(),
+        tasks: round_task_snaps,
+        contracts: round_contracts,
+        created_at: round_created_at,
+        finished_at: now_ts(),
+    };
+
     let rid_save = run_id.to_string();
     let syn_save = synthesis.clone();
-    let sql_save = delivery_sql.clone();
-    let is_triage = latest_run.mode == "triage";
-    let final_stage = if is_triage { "triage" } else { "completed" };
-    tokio::task::spawn_blocking(move || {
+    let finalized = tokio::task::spawn_blocking(move || {
         with_team_store(|store| {
             let current_tasks = load_tasks_for_run_conn(&store.conn, &rid_save)?;
             if current_tasks.iter().any(|t| t.status != "completed") {
                 return Ok(false);
             }
-            update_run_delivery_conn(
+            finalize_round_delivery_conn(
                 &store.conn,
                 &rid_save,
                 "completed",
                 final_stage,
-                &sql_save,
-                &syn_save,
+                &completed_round,
             )?;
             let msg = if is_triage {
                 "三方跨库联合排障会诊已完成！已生成跨层根因定位报告，可一键转化为修复任务。"
+                    .to_string()
+            } else if round_no > 1 {
+                format!(
+                    "第 {} 期改造与验收全部完成！已生成本期独立存档并汇总至最终交付卡。",
+                    round_no
+                )
             } else {
                 "全部项目并发开发与交叉验收顺利完成！已生成《一键交付卡》并沉淀至专属记忆。"
+                    .to_string()
             };
             let _ = append_event_conn(
                 &store.conn,
@@ -2479,7 +3175,7 @@ async fn finalize_successful_run(run_id: &str, run: &TeamRun) -> bool {
                 "run_completed",
                 "",
                 "orchestrator",
-                msg,
+                &msg,
                 &syn_save,
             );
             Ok(true)
@@ -2488,46 +3184,133 @@ async fn finalize_successful_run(run_id: &str, run: &TeamRun) -> bool {
     .await
     .ok()
     .and_then(Result::ok)
-    .unwrap_or(false)
+    .unwrap_or(false);
+
+    if finalized {
+        trigger_neural_memory_team_sync_async();
+    }
+    finalized
 }
 
-fn extract_delivery_sql(run: &TeamRun, contracts: &[TeamContract]) -> String {
+/// 异步触发专属智能体记忆桥接增量回流（非阻塞，主流程零额外延迟）。
+fn trigger_neural_memory_team_sync_async() {
+    let _ = tokio::task::spawn_blocking(zap_neural_memory::sync_team_deliveries_now);
+}
+
+fn text_has_sql_ddl_or_dml(text: &str) -> bool {
+    let up = text.to_ascii_uppercase();
+    up.contains("CREATE TABLE")
+        || up.contains("ALTER TABLE")
+        || up.contains("DROP TABLE")
+        || up.contains("CREATE INDEX")
+        || up.contains("CREATE UNIQUE INDEX")
+        || up.contains("CREATE OR REPLACE")
+        || up.contains("INSERT INTO")
+        || up.contains("COMMENT ON")
+}
+
+fn push_unique_sql_block(blocks: &mut Vec<String>, candidate: &str) {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if blocks
+        .iter()
+        .any(|existing| existing == trimmed || existing.contains(trimmed))
+    {
+        return;
+    }
+    blocks.retain(|existing| !trimmed.contains(existing.as_str()));
+    blocks.push(trimmed.to_string());
+}
+
+fn extract_fenced_sql_blocks(source: &str) -> Vec<String> {
     let mut blocks = Vec::new();
-    let source = if !run.sql_schema_draft.trim().is_empty() {
-        run.sql_schema_draft.as_str()
-    } else {
-        ""
-    };
-    if !source.is_empty() {
-        let mut rest = source;
-        while let Some(start) = rest.find("```sql") {
-            let after = &rest[start + 6..];
-            if let Some(end) = after.find("```") {
-                let block = after[..end].trim();
-                if !block.is_empty() {
-                    blocks.push(block.to_string());
-                }
-                rest = &after[end + 3..];
+    let lower = source.to_ascii_lowercase();
+    let mut offset = 0usize;
+    while let Some(rel) = lower[offset..].find("```sql") {
+        let fence_start = offset + rel + 6;
+        // 跳过 ```sql 后同行剩余字符（如 ```sqlite 或空格/换行）
+        let after_header = if let Some(nl) = source[fence_start..].find('\n') {
+            fence_start + nl + 1
+        } else {
+            break;
+        };
+        if let Some(end_rel) = source[after_header..].find("```") {
+            let block = source[after_header..after_header + end_rel].trim();
+            if !block.is_empty() {
+                push_unique_sql_block(&mut blocks, block);
+            }
+            offset = after_header + end_rel + 3;
+        } else {
+            break;
+        }
+    }
+    blocks
+}
+
+fn extract_sql_blocks_from_text(source: &str) -> Vec<String> {
+    let mut blocks = extract_fenced_sql_blocks(source);
+    if blocks.is_empty() && text_has_sql_ddl_or_dml(source) {
+        push_unique_sql_block(&mut blocks, source);
+    }
+    blocks
+}
+
+/// 提取单期独立增量 SQL：同时整合本期 `sql_draft`、本期契约中的 SQL（不再在 `sql_draft` 非空时忽略契约 SQL）以及参与成员输出中的 DDL 代码块。
+pub(crate) fn extract_round_delivery_sql(
+    sql_draft: &str,
+    contracts: &[TeamContract],
+    participating_tasks: &[&TeamTask],
+) -> String {
+    let mut blocks: Vec<String> = Vec::new();
+
+    if !sql_draft.trim().is_empty() {
+        for b in extract_sql_blocks_from_text(sql_draft) {
+            push_unique_sql_block(&mut blocks, &b);
+        }
+    }
+
+    // 始终扫描契约中的 SQL（修复已有 sql_schema_draft 时忽略后续契约 SQL 的问题）
+    for c in contracts {
+        if c.domain == "sql" {
+            let extracted = extract_sql_blocks_from_text(&c.schema_or_api);
+            if extracted.is_empty() {
+                push_unique_sql_block(&mut blocks, &c.schema_or_api);
             } else {
-                break;
+                for b in extracted {
+                    push_unique_sql_block(&mut blocks, &b);
+                }
+            }
+        } else {
+            for b in extract_fenced_sql_blocks(&c.schema_or_api) {
+                if text_has_sql_ddl_or_dml(&b) {
+                    push_unique_sql_block(&mut blocks, &b);
+                }
+            }
+            for b in extract_fenced_sql_blocks(&c.notes) {
+                if text_has_sql_ddl_or_dml(&b) {
+                    push_unique_sql_block(&mut blocks, &b);
+                }
             }
         }
-        if blocks.is_empty()
-            && (source.contains("CREATE TABLE")
-                || source.contains("ALTER TABLE")
-                || source.contains("INSERT INTO"))
-        {
-            blocks.push(source.trim().to_string());
-        }
     }
-    if blocks.is_empty() {
-        for c in contracts {
-            if c.domain == "sql" && !c.schema_or_api.trim().is_empty() {
-                blocks.push(c.schema_or_api.trim().to_string());
+
+    // 兜底提取本期参与成员最终汇报中附带的 ```sql``` DDL 变更块（例如二期后端直接改表并附带 ALTER TABLE）
+    for t in participating_tasks {
+        for b in extract_fenced_sql_blocks(&t.last_output_excerpt) {
+            if text_has_sql_ddl_or_dml(&b) {
+                push_unique_sql_block(&mut blocks, &b);
             }
         }
     }
+
     blocks.join("\n\n-- ----------------------------------------\n\n")
+}
+
+#[allow(dead_code)]
+pub(crate) fn extract_delivery_sql(run: &TeamRun, contracts: &[TeamContract]) -> String {
+    extract_round_delivery_sql(&run.sql_schema_draft, contracts, &[])
 }
 
 async fn synthesize_triage_report(run: &TeamRun, tasks: &[TeamTask]) -> String {
@@ -2584,7 +3367,7 @@ async fn synthesize_triage_report(run: &TeamRun, tasks: &[TeamTask]) -> String {
     .await
     {
         Ok(prompt) => prompt,
-        Err(e) => return format!("Template configuration failed: {e}//n//n{fallback}"),
+        Err(e) => return format!("Template configuration failed: {e}\n\n{fallback}"),
     };
 
     let msgs = vec![Message::user(prompt)];
@@ -2626,6 +3409,7 @@ async fn mark_run_failed(run_id: &str, reason: &str) {
         })
     })
     .await;
+    trigger_neural_memory_team_sync_async();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2639,6 +3423,7 @@ async fn commit_task_outcome_fenced(
     verify_feedback: &str,
     repair_count: u32,
     touched_files: &[String],
+    round_touched_files: &[String],
 ) -> bool {
     let tid = task_id.to_string();
     let aid = attempt_id.to_string();
@@ -2648,6 +3433,7 @@ async fn commit_task_outcome_fenced(
     let vv = verify_verdict.to_string();
     let vf = verify_feedback.to_string();
     let files = touched_files.to_vec();
+    let round_files = round_touched_files.to_vec();
     tokio::task::spawn_blocking(move || {
         with_team_store(|store| {
             finish_task_fenced_conn(
@@ -2661,6 +3447,7 @@ async fn commit_task_outcome_fenced(
                 &vf,
                 repair_count,
                 &files,
+                &round_files,
             )
         })
     })

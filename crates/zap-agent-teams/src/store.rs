@@ -10,10 +10,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::schema::init_schema;
 use super::schema::open_connection;
 use super::types::{
-    clean_path_str, compute_and_assign_waves, new_team_id, normalize_domain, now_ts,
-    truncate_chars_safe, RoleBindingPreset, TeamContract, TeamEvent, TeamGlobalConfig, TeamImage,
-    TeamProjectPreset, TeamRun, TeamRunDetail, TeamTask, HARD_CAP_MAX_REPAIRS, MAX_CONTRACT_CHARS,
-    MAX_EXCERPT_CHARS,
+    clean_path_str, compute_and_assign_waves, domain_badge_cn, new_team_id, normalize_domain,
+    now_ts, truncate_chars_safe, RoleBindingPreset, TeamContract, TeamEvent, TeamGlobalConfig,
+    TeamImage, TeamProjectPreset, TeamRound, TeamRoundTaskSnapshot, TeamRun, TeamRunDetail,
+    TeamTask, HARD_CAP_MAX_REPAIRS, MAX_CONTRACT_CHARS, MAX_EXCERPT_CHARS,
 };
 
 pub(crate) struct TeamStoreInner {
@@ -133,6 +133,11 @@ pub(crate) fn load_config_conn(conn: &Connection) -> TeamGlobalConfig {
         .unwrap_or_default();
     cfg.max_repairs = cfg.max_repairs.min(HARD_CAP_MAX_REPAIRS);
     cfg.max_parallel_per_wave = cfg.max_parallel_per_wave.clamp(1, 6);
+    if cfg.default_lead_agent_id.trim().is_empty() {
+        cfg.default_lead_agent_id = "none".to_string();
+    } else {
+        cfg.default_lead_agent_id = cfg.default_lead_agent_id.trim().to_string();
+    }
     cfg
 }
 
@@ -140,6 +145,11 @@ pub(crate) fn save_config_conn(conn: &Connection, cfg: &TeamGlobalConfig) -> Res
     let mut sanitized = cfg.clone();
     sanitized.max_repairs = sanitized.max_repairs.min(HARD_CAP_MAX_REPAIRS);
     sanitized.max_parallel_per_wave = sanitized.max_parallel_per_wave.clamp(1, 6);
+    if sanitized.default_lead_agent_id.trim().is_empty() {
+        sanitized.default_lead_agent_id = "none".to_string();
+    } else {
+        sanitized.default_lead_agent_id = sanitized.default_lead_agent_id.trim().to_string();
+    }
     sanitized
         .prompt_templates
         .retain(|k, v| !k.trim().is_empty() && !v.trim().is_empty());
@@ -337,6 +347,13 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamRun> {
     let overrides_json: String = r.get(25)?;
     let prompt_overrides: BTreeMap<String, String> =
         serde_json::from_str(&overrides_json).unwrap_or_default();
+    let round_no_i64: i64 = r.get(26)?;
+    let lead_agent_raw: String = r.get(27)?;
+    let lead_agent_id = if lead_agent_raw.trim().is_empty() {
+        "none".to_string()
+    } else {
+        lead_agent_raw.trim().to_string()
+    };
     Ok(TeamRun {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -361,6 +378,8 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamRun> {
             .unwrap_or(2)
             .min(HARD_CAP_MAX_REPAIRS),
         lead_model: r.get(8)?,
+        lead_agent_id,
+        current_round_no: u32::try_from(round_no_i64.max(1)).unwrap_or(1),
         source_triage_id: r.get(9)?,
         synthesis_report: r.get(10)?,
         created_at: r.get(11)?,
@@ -377,6 +396,7 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamTask> {
     let repair_i64: i64 = r.get(17)?;
     let files_json: String = r.get(22)?;
     let images_json: String = r.get(31)?;
+    let round_files_json: String = r.get(33)?;
     Ok(TeamTask {
         id: r.get(0)?,
         run_id: r.get(1)?,
@@ -408,6 +428,7 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamTask> {
         verify_verdict: r.get(20)?,
         verify_feedback: r.get(21)?,
         touched_files: serde_json::from_str(&files_json).unwrap_or_default(),
+        round_touched_files: serde_json::from_str(&round_files_json).unwrap_or_default(),
         started_at: r.get(24)?,
         updated_at: r.get(25)?,
         finished_at: r.get(26)?,
@@ -421,7 +442,8 @@ pub(crate) fn list_runs_conn(conn: &Connection, limit: usize) -> Result<Vec<Team
             "SELECT id, title, user_goal, mode, status, revision, auto_verify, max_repairs,
                     lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at,
                     stage, requires_db, execution_plan, sql_schema_draft, interface_spec, delivery_sql, goal_images_json,
-                    sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json
+                    sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json,
+                    current_round_no, lead_agent_id
              FROM team_runs
              ORDER BY updated_at DESC
              LIMIT ?1",
@@ -438,7 +460,8 @@ pub(crate) fn load_run_conn(conn: &Connection, run_id: &str) -> Result<Option<Te
         "SELECT id, title, user_goal, mode, status, revision, auto_verify, max_repairs,
                 lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at,
                 stage, requires_db, execution_plan, sql_schema_draft, interface_spec, delivery_sql, goal_images_json,
-                sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json
+                sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json,
+                current_round_no, lead_agent_id
          FROM team_runs
          WHERE id = ?1",
         params![run_id],
@@ -459,7 +482,8 @@ pub(crate) fn load_tasks_for_run_conn(
                     agent_id, agent_label, model, session_id, attempt, attempt_id,
                     repair_count, contract_summary, last_output_excerpt, verify_verdict,
                     verify_feedback, touched_files_json, status, started_at, updated_at, finished_at,
-                    project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note
+                    project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note,
+                    round_touched_files_json
              FROM team_tasks
              WHERE run_id = ?1
              ORDER BY wave ASC, sort_order ASC",
@@ -478,7 +502,8 @@ pub(crate) fn load_task_conn(conn: &Connection, task_id: &str) -> Result<Option<
                 agent_id, agent_label, model, session_id, attempt, attempt_id,
                 repair_count, contract_summary, last_output_excerpt, verify_verdict,
                 verify_feedback, touched_files_json, status, started_at, updated_at, finished_at,
-                project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note
+                project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note,
+                round_touched_files_json
          FROM team_tasks
          WHERE id = ?1",
         params![task_id],
@@ -587,15 +612,18 @@ pub(crate) fn update_task_followup_result_conn(
     task_id: &str,
     excerpt: &str,
     touched_files: &[String],
+    round_touched_files: &[String],
 ) -> Result<(), String> {
     let now = now_ts();
     let clean_excerpt = truncate_chars_safe(excerpt, MAX_EXCERPT_CHARS);
     let files_json = serde_json::to_string(touched_files).unwrap_or_else(|_| "[]".into());
+    let round_files_json =
+        serde_json::to_string(round_touched_files).unwrap_or_else(|_| "[]".into());
     conn.execute(
         "UPDATE team_tasks
-         SET last_output_excerpt = ?1, touched_files_json = ?2, updated_at = ?3
-         WHERE id = ?4",
-        params![clean_excerpt, files_json, now, task_id],
+         SET last_output_excerpt = ?1, touched_files_json = ?2, round_touched_files_json = ?3, updated_at = ?4
+         WHERE id = ?5",
+        params![clean_excerpt, files_json, round_files_json, now, task_id],
     )
     .map_err(|e| e.to_string())?;
     if let Ok(Some(t)) = load_task_conn(conn, task_id) {
@@ -640,6 +668,358 @@ pub(crate) fn load_events_for_run_conn(
     Ok(rows.flatten().collect())
 }
 
+fn row_to_round(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamRound> {
+    let round_no_i64: i64 = r.get(0)?;
+    let requires_db_i64: i64 = r.get(5)?;
+    let tasks_json: String = r.get(11)?;
+    let contracts_json: String = r.get(12)?;
+    Ok(TeamRound {
+        round_no: u32::try_from(round_no_i64.max(1)).unwrap_or(1),
+        title: r.get(1)?,
+        requirement: r.get(2)?,
+        status: r.get(3)?,
+        stage: r.get(4)?,
+        requires_db: requires_db_i64 != 0,
+        execution_plan: r.get(6)?,
+        sql_schema_draft: r.get(7)?,
+        interface_spec: r.get(8)?,
+        delivery_sql: r.get(9)?,
+        synthesis_report: r.get(10)?,
+        tasks: serde_json::from_str(&tasks_json).unwrap_or_default(),
+        contracts: serde_json::from_str(&contracts_json).unwrap_or_default(),
+        created_at: r.get(13)?,
+        finished_at: r.get(14)?,
+    })
+}
+
+pub(crate) fn load_rounds_for_run_conn(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<Vec<TeamRound>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT round_no, title, requirement, status, stage, requires_db,
+                    execution_plan, sql_schema_draft, interface_spec, delivery_sql,
+                    synthesis_report, tasks_snapshot_json, contracts_snapshot_json,
+                    created_at, finished_at
+             FROM team_rounds
+             WHERE run_id = ?1
+             ORDER BY round_no ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![run_id], row_to_round)
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+pub(crate) fn load_round_conn(
+    conn: &Connection,
+    run_id: &str,
+    round_no: u32,
+) -> Result<Option<TeamRound>, String> {
+    conn.query_row(
+        "SELECT round_no, title, requirement, status, stage, requires_db,
+                execution_plan, sql_schema_draft, interface_spec, delivery_sql,
+                synthesis_report, tasks_snapshot_json, contracts_snapshot_json,
+                created_at, finished_at
+         FROM team_rounds
+         WHERE run_id = ?1 AND round_no = ?2",
+        params![run_id, round_no.max(1) as i64],
+        row_to_round,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) fn upsert_round_conn(
+    conn: &Connection,
+    run_id: &str,
+    round: &TeamRound,
+) -> Result<(), String> {
+    let tasks_json = serde_json::to_string(&round.tasks).unwrap_or_else(|_| "[]".into());
+    let contracts_json = serde_json::to_string(&round.contracts).unwrap_or_else(|_| "[]".into());
+    conn.execute(
+        "INSERT INTO team_rounds (
+            run_id, round_no, title, requirement, status, stage, requires_db,
+            execution_plan, sql_schema_draft, interface_spec, delivery_sql,
+            synthesis_report, tasks_snapshot_json, contracts_snapshot_json,
+            created_at, finished_at
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+            ?8, ?9, ?10, ?11,
+            ?12, ?13, ?14,
+            ?15, ?16
+         )
+         ON CONFLICT(run_id, round_no) DO UPDATE SET
+            title = excluded.title,
+            requirement = excluded.requirement,
+            status = excluded.status,
+            stage = excluded.stage,
+            requires_db = excluded.requires_db,
+            execution_plan = excluded.execution_plan,
+            sql_schema_draft = excluded.sql_schema_draft,
+            interface_spec = excluded.interface_spec,
+            delivery_sql = excluded.delivery_sql,
+            synthesis_report = excluded.synthesis_report,
+            tasks_snapshot_json = excluded.tasks_snapshot_json,
+            contracts_snapshot_json = excluded.contracts_snapshot_json,
+            created_at = CASE WHEN excluded.created_at != '' THEN excluded.created_at ELSE team_rounds.created_at END,
+            finished_at = excluded.finished_at",
+        params![
+            run_id,
+            round.round_no.max(1) as i64,
+            round.title,
+            round.requirement,
+            round.status,
+            round.stage,
+            i64::from(round.requires_db),
+            round.execution_plan,
+            round.sql_schema_draft,
+            round.interface_spec,
+            round.delivery_sql,
+            round.synthesis_report,
+            tasks_json,
+            contracts_json,
+            round.created_at,
+            round.finished_at,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 根据成员当前运行态构建单期快照节点；未参与本期的成员 `participated = false` 且 `touched_files` 为空。
+pub(crate) fn build_round_task_snapshot(
+    task: &TeamTask,
+    participated: bool,
+    instruction: &str,
+    use_cumulative_fallback: bool,
+) -> TeamRoundTaskSnapshot {
+    if participated {
+        let files = if !task.round_touched_files.is_empty() {
+            task.round_touched_files.clone()
+        } else if use_cumulative_fallback {
+            task.touched_files.clone()
+        } else {
+            Vec::new()
+        };
+        TeamRoundTaskSnapshot {
+            id: task.id.clone(),
+            domain: task.domain.clone(),
+            project_name: task.project_name.clone(),
+            title: task.title.clone(),
+            status: task.status.clone(),
+            participated: true,
+            wave: task.wave,
+            repair_count: task.repair_count,
+            working_dir: task.working_dir.clone(),
+            agent_id: task.agent_id.clone(),
+            model: task.model.clone(),
+            session_id: task.session_id.clone(),
+            instruction: instruction.to_string(),
+            contract_summary: task.contract_summary.clone(),
+            last_output_excerpt: task.last_output_excerpt.clone(),
+            verify_verdict: task.verify_verdict.clone(),
+            verify_feedback: task.verify_feedback.clone(),
+            touched_files: files,
+        }
+    } else {
+        TeamRoundTaskSnapshot {
+            id: task.id.clone(),
+            domain: task.domain.clone(),
+            project_name: task.project_name.clone(),
+            title: task.title.clone(),
+            status: task.status.clone(),
+            participated: false,
+            wave: task.wave,
+            repair_count: 0,
+            working_dir: task.working_dir.clone(),
+            agent_id: task.agent_id.clone(),
+            model: task.model.clone(),
+            session_id: task.session_id.clone(),
+            instruction: String::new(),
+            contract_summary: String::new(),
+            last_output_excerpt: String::new(),
+            verify_verdict: String::new(),
+            verify_feedback: String::new(),
+            touched_files: Vec::new(),
+        }
+    }
+}
+
+/// 将各期 `delivery_sql` 按期号升序分段汇总为整单 `run.delivery_sql`。
+pub(crate) fn aggregate_rounds_delivery_sql(rounds: &[TeamRound]) -> String {
+    let mut non_empty: Vec<&TeamRound> = rounds
+        .iter()
+        .filter(|r| !r.delivery_sql.trim().is_empty())
+        .collect();
+    non_empty.sort_by_key(|r| r.round_no);
+    if non_empty.is_empty() {
+        return String::new();
+    }
+    if non_empty.len() == 1 && non_empty[0].round_no == 1 {
+        return non_empty[0].delivery_sql.trim().to_string();
+    }
+    non_empty
+        .into_iter()
+        .map(|r| {
+            let label = if r.title.trim().is_empty() {
+                format!("第 {} 期", r.round_no)
+            } else {
+                format!("第 {} 期 · {}", r.round_no, r.title.trim())
+            };
+            format!("-- === {label} SQL ===\n\n{}", r.delivery_sql.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// 开新一期前，确保当前已完成的期号已经落库到 `team_rounds`（兼容旧历史单无 `team_rounds` 记录场景）。
+pub(crate) fn ensure_completed_round_snapshot_conn(
+    conn: &Connection,
+    run: &TeamRun,
+    tasks: &[TeamTask],
+    contracts: &[TeamContract],
+) -> Result<(), String> {
+    let round_no = run.current_round_no.max(1);
+    let existing = load_round_conn(conn, &run.id, round_no)?;
+    if existing
+        .as_ref()
+        .is_some_and(|r| r.status == "completed" && !r.tasks.is_empty())
+    {
+        return Ok(());
+    }
+    let now = now_ts();
+    let prev_map: std::collections::HashMap<String, TeamRoundTaskSnapshot> = existing
+        .as_ref()
+        .map(|r| r.tasks.iter().map(|t| (t.id.clone(), t.clone())).collect())
+        .unwrap_or_default();
+
+    let use_cumulative = round_no == 1;
+    let task_snaps: Vec<TeamRoundTaskSnapshot> = tasks
+        .iter()
+        .map(|t| {
+            let (participated, inst) = if let Some(prev) = prev_map.get(&t.id) {
+                (prev.participated, prev.instruction.clone())
+            } else if round_no == 1 {
+                let fallback_inst = if !t.custom_prompt.trim().is_empty() {
+                    t.custom_prompt.clone()
+                } else {
+                    t.description.clone()
+                };
+                (true, fallback_inst)
+            } else {
+                (!t.round_touched_files.is_empty(), t.description.clone())
+            };
+            build_round_task_snapshot(t, participated, &inst, use_cumulative)
+        })
+        .collect();
+
+    let created_at = existing
+        .as_ref()
+        .map(|r| r.created_at.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| run.created_at.clone());
+    let finished_at = if !run.finished_at.trim().is_empty() {
+        run.finished_at.clone()
+    } else {
+        now
+    };
+
+    let round = TeamRound {
+        round_no,
+        title: existing
+            .as_ref()
+            .map(|r| r.title.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if round_no == 1 {
+                    if run.title.trim().is_empty() {
+                        "第 1 期交付".to_string()
+                    } else {
+                        run.title.clone()
+                    }
+                } else {
+                    format!("第 {} 期改造", round_no)
+                }
+            }),
+        requirement: existing
+            .as_ref()
+            .map(|r| r.requirement.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| run.user_goal.clone()),
+        status: "completed".to_string(),
+        stage: if run.stage.trim().is_empty() {
+            "completed".to_string()
+        } else {
+            run.stage.clone()
+        },
+        requires_db: existing
+            .as_ref()
+            .map(|r| r.requires_db)
+            .unwrap_or(run.requires_db),
+        execution_plan: existing
+            .as_ref()
+            .map(|r| r.execution_plan.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if round_no == 1 {
+                    run.execution_plan.clone()
+                } else {
+                    String::new()
+                }
+            }),
+        sql_schema_draft: existing
+            .as_ref()
+            .map(|r| r.sql_schema_draft.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if round_no == 1 {
+                    run.sql_schema_draft.clone()
+                } else {
+                    String::new()
+                }
+            }),
+        interface_spec: existing
+            .as_ref()
+            .map(|r| r.interface_spec.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if round_no == 1 {
+                    run.interface_spec.clone()
+                } else {
+                    String::new()
+                }
+            }),
+        delivery_sql: existing
+            .as_ref()
+            .map(|r| r.delivery_sql.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if round_no == 1 {
+                    run.delivery_sql.clone()
+                } else {
+                    String::new()
+                }
+            }),
+        synthesis_report: existing
+            .as_ref()
+            .map(|r| r.synthesis_report.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| run.synthesis_report.clone()),
+        tasks: task_snaps,
+        contracts: existing
+            .as_ref()
+            .map(|r| r.contracts.clone())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| contracts.to_vec()),
+        created_at,
+        finished_at,
+    };
+    upsert_round_conn(conn, &run.id, &round)
+}
+
 pub(crate) fn load_run_detail_conn(
     conn: &Connection,
     run_id: &str,
@@ -651,11 +1031,13 @@ pub(crate) fn load_run_detail_conn(
     let tasks = load_tasks_for_run_conn(conn, run_id)?;
     let contracts = load_contracts_for_run_conn(conn, run_id)?;
     let events = load_events_for_run_conn(conn, run_id, after_seq, 300)?;
+    let rounds = load_rounds_for_run_conn(conn, run_id)?;
     Ok(Some(TeamRunDetail {
         run,
         tasks,
         contracts,
         events,
+        rounds,
     }))
 }
 
@@ -675,14 +1057,20 @@ pub(crate) fn create_run_with_tasks_conn(
     } else {
         run.sql_agent_id.trim()
     };
+    let clean_lead_agent = if run.lead_agent_id.trim().is_empty() {
+        "none"
+    } else {
+        run.lead_agent_id.trim()
+    };
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
         "INSERT INTO team_runs (
             id, title, user_goal, mode, status, revision, auto_verify, max_repairs,
             lead_model, source_triage_id, synthesis_report, created_at, updated_at, finished_at,
             stage, requires_db, execution_plan, sql_schema_draft, interface_spec, delivery_sql, goal_images_json,
-            sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+            sql_working_dir, sql_agent_id, sql_model, sql_session_id, prompt_overrides_json,
+            current_round_no, lead_agent_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
         params![
             run.id,
             run.title,
@@ -710,6 +1098,8 @@ pub(crate) fn create_run_with_tasks_conn(
             run.sql_model.trim(),
             run.sql_session_id.trim(),
             overrides_json,
+            run.current_round_no.max(1) as i64,
+            clean_lead_agent,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -724,6 +1114,8 @@ pub(crate) fn create_run_with_tasks_conn(
 fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
     let deps_json = serde_json::to_string(&task.depends_on).unwrap_or_else(|_| "[]".into());
     let files_json = serde_json::to_string(&task.touched_files).unwrap_or_else(|_| "[]".into());
+    let round_files_json =
+        serde_json::to_string(&task.round_touched_files).unwrap_or_else(|_| "[]".into());
     let images_json = serde_json::to_string(&task.images).unwrap_or_else(|_| "[]".into());
     conn.execute(
         "INSERT INTO team_tasks (
@@ -732,14 +1124,15 @@ fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
             agent_id, agent_label, model, session_id, status, attempt, attempt_id,
             repair_count, contract_summary, last_output_excerpt, verify_verdict,
             verify_feedback, touched_files_json, started_at, updated_at, finished_at,
-            project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note
+            project_slot_id, project_name, avatar_id, custom_prompt, images_json, revision_note,
+            round_touched_files_json
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6,
             ?7, ?8, ?9, ?10, ?11,
             ?12, ?13, ?14, ?15, ?16, ?17, ?18,
             ?19, ?20, ?21, ?22,
             ?23, ?24, ?25, ?26, ?27,
-            ?28, ?29, ?30, ?31, ?32, ?33
+            ?28, ?29, ?30, ?31, ?32, ?33, ?34
          )",
         params![
             task.id,
@@ -779,6 +1172,7 @@ fn insert_task_row(conn: &Connection, task: &TeamTask) -> Result<(), String> {
             task.custom_prompt,
             images_json,
             task.revision_note,
+            round_files_json,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -823,6 +1217,9 @@ fn task_for_draft(client: &TeamTask, old: Option<&TeamTask>, run_id: &str, now: 
     task.touched_files = retained
         .map(|t| t.touched_files.clone())
         .unwrap_or_default();
+    task.round_touched_files = retained
+        .map(|t| t.round_touched_files.clone())
+        .unwrap_or_default();
     task.revision_note = if client.revision_note.trim().is_empty() {
         retained
             .map(|t| t.revision_note.clone())
@@ -844,6 +1241,7 @@ pub(crate) struct RunDraftExtras<'a> {
     pub(crate) sql_model: Option<&'a str>,
     pub(crate) interface_spec: Option<&'a str>,
     pub(crate) prompt_overrides: Option<&'a BTreeMap<String, String>>,
+    pub(crate) lead_agent_id: Option<&'a str>,
 }
 
 /// CAS 更新任务草稿（校验 `expected_revision`，仅允许在非 `running` 态下整单编辑任务拓扑）。
@@ -891,6 +1289,14 @@ pub(crate) fn update_run_draft_cas_conn(
         }
     });
     let sql_mdl_val = extras.sql_model.map(|s| s.trim().to_string());
+    let lead_aid_val = extras.lead_agent_id.map(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            "none".to_string()
+        } else {
+            t.to_string()
+        }
+    });
     let spec_val = extras.interface_spec.map(str::to_string);
     let overrides_val = extras.prompt_overrides.map(|m| {
         let mut sanitized = m.clone();
@@ -913,6 +1319,7 @@ pub(crate) fn update_run_draft_cas_conn(
                  prompt_overrides_json = COALESCE(?9, prompt_overrides_json),
                  sql_session_id = CASE WHEN ?14 THEN '' ELSE sql_session_id END,
                  interface_spec = COALESCE(?15, interface_spec),
+                 lead_agent_id = COALESCE(?16, lead_agent_id),
                  revision = ?10, updated_at = ?11
              WHERE id = ?12 AND revision = ?13",
             params![
@@ -931,6 +1338,7 @@ pub(crate) fn update_run_draft_cas_conn(
                 cur.revision as i64,
                 sql_dir_changed,
                 spec_val,
+                lead_aid_val,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -962,6 +1370,25 @@ pub(crate) fn update_run_draft_cas_conn(
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(next_rev)
+}
+
+pub(crate) fn update_run_lead_agent_conn(
+    conn: &Connection,
+    run_id: &str,
+    lead_agent_id: &str,
+) -> Result<(), String> {
+    let now = now_ts();
+    let aid = if lead_agent_id.trim().is_empty() {
+        "none"
+    } else {
+        lead_agent_id.trim()
+    };
+    conn.execute(
+        "UPDATE team_runs SET lead_agent_id = ?1, revision = revision + 1, updated_at = ?2 WHERE id = ?3",
+        params![aid, now, run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub(crate) fn set_run_status_conn(
@@ -1248,6 +1675,7 @@ pub(crate) fn append_tasks_to_run_conn(
         t.verify_verdict.clear();
         t.verify_feedback.clear();
         t.touched_files.clear();
+        t.round_touched_files.clear();
         t.started_at.clear();
         t.finished_at.clear();
         t.updated_at = now.clone();
@@ -1356,10 +1784,23 @@ pub(crate) struct RevisionTaskTarget {
     pub(crate) extra_depends_on: Vec<String>,
 }
 
+/// 发起新一期/定向改造时附带的期次元信息（可选）。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RevisionRoundOptions {
+    pub(crate) round_requirement: Option<String>,
+    pub(crate) round_title: Option<String>,
+    pub(crate) requires_sql: Option<bool>,
+    pub(crate) sql_note: Option<String>,
+    /// 当当前期已 `completed` 时，若为 `true` 则在当前期原地返工修订（不递增 `current_round_no`，保留本期已改动文件与原始期次需求，并在完成后覆盖更新当前期快照）。
+    pub(crate) in_place_rework: bool,
+}
+
 /// 安排单成员定向改造或跨成员联动变更：
-/// - 仅重置本次受影响成员的状态为 `pending` 并写入 `revision_note`（与可选附图、追加前置依赖）；
+/// - 若当前期已 `completed`，先确保当前期已快照落库到 `team_rounds`，再将 `current_round_no += 1` 创建新一期；
+/// - 仅重置本次受影响成员的状态为 `pending`、清零其 `round_touched_files_json = '[]'` 并写入 `revision_note`（与可选附图、追加前置依赖）；
 /// - 其余未勾选成员的 `completed` 状态与既有成果完整保留；
 /// - 校验 DAG 无环并自动重算波次，确保下游联动成员等上游改完再开工。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn schedule_revision_conn(
     conn: &mut Connection,
     run_id: &str,
@@ -1367,6 +1808,7 @@ pub(crate) fn schedule_revision_conn(
     interface_spec_addition: Option<&str>,
     replace_interface_spec: Option<&str>,
     auto_start: bool,
+    round_opts: &RevisionRoundOptions,
 ) -> Result<u64, String> {
     if targets.is_empty() {
         return Err("请至少选择一位需要修改或联动的成员".to_string());
@@ -1378,10 +1820,29 @@ pub(crate) fn schedule_revision_conn(
     }
 
     let mut all_tasks = load_tasks_for_run_conn(&tx, run_id)?;
+    let all_contracts = load_contracts_for_run_conn(&tx, run_id)?;
+    let in_place_rework = round_opts.in_place_rework;
+    let starting_new_round = cur.status == "completed" && !in_place_rework;
+    if starting_new_round {
+        ensure_completed_round_snapshot_conn(&tx, &cur, &all_tasks, &all_contracts)?;
+    }
+    let next_round_no = if starting_new_round {
+        cur.current_round_no.max(1).saturating_add(1)
+    } else {
+        cur.current_round_no.max(1)
+    };
+    let existing_round = if !starting_new_round {
+        load_round_conn(&tx, run_id, next_round_no)?
+    } else {
+        None
+    };
+
     let valid_ids: std::collections::HashSet<String> =
         all_tasks.iter().map(|t| t.id.clone()).collect();
     let now = now_ts();
     let mut updated_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut target_notes: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut target_titles: Vec<String> = Vec::new();
     let mut summary_details: Vec<String> = Vec::new();
 
@@ -1404,12 +1865,16 @@ pub(crate) fn schedule_revision_conn(
         if !updated_ids.insert(task.id.clone()) {
             return Err(format!("成员「{}」重复出现在改造列表中", task.title));
         }
+        target_notes.insert(task.id.clone(), note.to_string());
         task.status = "pending".to_string();
         task.attempt_id.clear();
         task.repair_count = 0;
         task.verify_verdict.clear();
         task.verify_feedback.clear();
         task.revision_note = note.to_string();
+        if !in_place_rework {
+            task.round_touched_files.clear();
+        }
         task.updated_at = now.clone();
         if spec.replace_images {
             task.images = spec.images.iter().take(4).cloned().collect();
@@ -1446,19 +1911,26 @@ pub(crate) fn schedule_revision_conn(
         if updated_ids.contains(&task.id) {
             let deps_json = serde_json::to_string(&task.depends_on).unwrap_or_else(|_| "[]".into());
             let images_json = serde_json::to_string(&task.images).unwrap_or_else(|_| "[]".into());
+            let round_files_json = if in_place_rework {
+                serde_json::to_string(&task.round_touched_files).unwrap_or_else(|_| "[]".into())
+            } else {
+                "[]".to_string()
+            };
             tx.execute(
                 "UPDATE team_tasks
                  SET depends_on_json = ?1, wave = ?2, sort_order = ?3,
                      status = 'pending', attempt_id = '', repair_count = 0,
                      verify_verdict = '', verify_feedback = '',
-                     revision_note = ?4, images_json = ?5, updated_at = ?6
-                 WHERE id = ?7",
+                     revision_note = ?4, images_json = ?5,
+                     round_touched_files_json = ?6, updated_at = ?7
+                 WHERE id = ?8",
                 params![
                     deps_json,
                     task.wave as i64,
                     task.sort_order as i64,
                     task.revision_note,
                     images_json,
+                    round_files_json,
                     now,
                     task.id,
                 ],
@@ -1488,6 +1960,32 @@ pub(crate) fn schedule_revision_conn(
         cur.interface_spec.clone()
     };
 
+    let sql_note_clean = round_opts
+        .sql_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let round_requires_db = round_opts.requires_sql.unwrap_or_else(|| {
+        sql_note_clean.is_some() || existing_round.as_ref().is_some_and(|r| r.requires_db)
+    }) || sql_note_clean.is_some();
+    let next_run_requires_db = cur.requires_db || round_requires_db;
+    let next_run_sql_draft = match sql_note_clean.as_deref() {
+        Some(note) if !cur.sql_schema_draft.contains(note) => {
+            if cur.sql_schema_draft.trim().is_empty() {
+                note.to_string()
+            } else {
+                format!(
+                    "{}\n\n### 第 {} 期数据库变更说明\n{}",
+                    cur.sql_schema_draft.trim_end(),
+                    next_round_no,
+                    note
+                )
+            }
+        }
+        _ => cur.sql_schema_draft.clone(),
+    };
+
     let next_status = if auto_start { "running" } else { "draft" };
     let next_stage = if cur.mode == "triage" {
         "triage"
@@ -1500,12 +1998,17 @@ pub(crate) fn schedule_revision_conn(
 
     tx.execute(
         "UPDATE team_runs
-         SET status = ?1, stage = ?2, interface_spec = ?3, revision = ?4, updated_at = ?5
-         WHERE id = ?6",
+         SET status = ?1, stage = ?2, interface_spec = ?3,
+             requires_db = ?4, sql_schema_draft = ?5,
+             current_round_no = ?6, revision = ?7, updated_at = ?8
+         WHERE id = ?9",
         params![
             next_status,
             next_stage,
             next_spec,
+            i64::from(next_run_requires_db),
+            next_run_sql_draft,
+            next_round_no as i64,
             next_rev as i64,
             now,
             run_id
@@ -1520,6 +2023,139 @@ pub(crate) fn schedule_revision_conn(
         );
     }
 
+    // 写入或更新当前期的 `team_rounds` 进行中快照（记录本期参与成员、改造指令与需求说明）
+    let prev_round_tasks: std::collections::HashMap<String, TeamRoundTaskSnapshot> = existing_round
+        .as_ref()
+        .map(|r| r.tasks.iter().map(|t| (t.id.clone(), t.clone())).collect())
+        .unwrap_or_default();
+    let round_tasks: Vec<TeamRoundTaskSnapshot> = all_tasks
+        .iter()
+        .map(|t| {
+            if let Some(note) = target_notes.get(&t.id) {
+                build_round_task_snapshot(t, true, note, false)
+            } else if let Some(prev) = prev_round_tasks.get(&t.id) {
+                if prev.participated {
+                    build_round_task_snapshot(t, true, &prev.instruction, false)
+                } else {
+                    build_round_task_snapshot(t, false, "", false)
+                }
+            } else {
+                build_round_task_snapshot(t, false, "", false)
+            }
+        })
+        .collect();
+
+    let round_title = if in_place_rework {
+        existing_round
+            .as_ref()
+            .map(|r| r.title.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                round_opts
+                    .round_title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("第 {} 期改造", next_round_no))
+    } else {
+        round_opts
+            .round_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                existing_round
+                    .as_ref()
+                    .map(|r| r.title.clone())
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| format!("第 {} 期改造", next_round_no))
+    };
+    let incoming_req = round_opts
+        .round_requirement
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let round_requirement = if in_place_rework {
+        let prev_req = existing_round
+            .as_ref()
+            .map(|r| r.requirement.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let rework_body = incoming_req.unwrap_or_else(|| summary_details.join("\n"));
+        match prev_req {
+            Some(prev) if !rework_body.is_empty() && !prev.contains(&rework_body) => {
+                format!("{prev}\n\n【本期返工修正】\n{rework_body}")
+            }
+            Some(prev) => prev,
+            None => rework_body,
+        }
+    } else {
+        incoming_req
+            .or_else(|| {
+                existing_round
+                    .as_ref()
+                    .map(|r| r.requirement.clone())
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| summary_details.join("\n"))
+    };
+    let round_sql_draft = sql_note_clean.unwrap_or_else(|| {
+        existing_round
+            .as_ref()
+            .map(|r| r.sql_schema_draft.clone())
+            .unwrap_or_default()
+    });
+    let round_interface_spec = if let Some(full) = replace_interface_spec {
+        full.to_string()
+    } else if let Some(add) = interface_spec_addition
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        add.to_string()
+    } else {
+        existing_round
+            .as_ref()
+            .map(|r| r.interface_spec.clone())
+            .unwrap_or_default()
+    };
+    let round_created_at = existing_round
+        .as_ref()
+        .map(|r| r.created_at.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| now.clone());
+
+    let new_round = TeamRound {
+        round_no: next_round_no,
+        title: round_title,
+        requirement: round_requirement,
+        status: next_status.to_string(),
+        stage: next_stage.to_string(),
+        requires_db: round_requires_db,
+        execution_plan: existing_round
+            .as_ref()
+            .map(|r| r.execution_plan.clone())
+            .unwrap_or_default(),
+        sql_schema_draft: round_sql_draft,
+        interface_spec: round_interface_spec,
+        delivery_sql: existing_round
+            .as_ref()
+            .map(|r| r.delivery_sql.clone())
+            .unwrap_or_default(),
+        synthesis_report: String::new(),
+        tasks: round_tasks,
+        contracts: existing_round
+            .as_ref()
+            .map(|r| r.contracts.clone())
+            .unwrap_or_default(),
+        created_at: round_created_at,
+        finished_at: String::new(),
+    };
+    upsert_round_conn(&tx, run_id, &new_round)?;
+
     let _ = append_event_conn(
         &tx,
         run_id,
@@ -1531,8 +2167,15 @@ pub(crate) fn schedule_revision_conn(
         },
         "user",
         &format!(
-            "发起{}（涉及 {} 位：{}）",
-            if targets.len() > 1 {
+            "发起第 {} 期{}（涉及 {} 位：{}）",
+            next_round_no,
+            if in_place_rework {
+                if targets.len() > 1 {
+                    "原地联动返工"
+                } else {
+                    "原地定向返工"
+                }
+            } else if targets.len() > 1 {
                 "跨成员联动改造"
             } else {
                 "单成员定向改造"
@@ -1591,6 +2234,24 @@ pub(crate) fn update_run_interface_spec_conn(
     Ok(())
 }
 
+/// 二期增量交付汇总时合并 `delivery_sql`：保留一期建表脚本，不直接覆写。
+#[allow(dead_code)]
+pub(crate) fn merge_delivery_sql(existing: &str, incoming: &str, timestamp: &str) -> String {
+    let old = existing.trim();
+    let new = incoming.trim();
+    if old.is_empty() {
+        return new.to_string();
+    }
+    if new.is_empty() || old == new || old.contains(new) {
+        return old.to_string();
+    }
+    if new.contains(old) {
+        return new.to_string();
+    }
+    format!("{old}\n\n-- === 增量改造 SQL（{timestamp}）===\n\n{new}")
+}
+
+#[allow(dead_code)]
 pub(crate) fn update_run_delivery_conn(
     conn: &Connection,
     run_id: &str,
@@ -1605,6 +2266,16 @@ pub(crate) fn update_run_delivery_conn(
     } else {
         ""
     };
+    let existing_sql: String = conn
+        .query_row(
+            "SELECT delivery_sql FROM team_runs WHERE id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let merged_sql = merge_delivery_sql(&existing_sql, delivery_sql, &now);
     conn.execute(
         "UPDATE team_runs
          SET status = ?1, stage = ?2, delivery_sql = ?3, synthesis_report = ?4,
@@ -1614,8 +2285,67 @@ pub(crate) fn update_run_delivery_conn(
         params![
             status,
             stage,
-            delivery_sql,
+            merged_sql,
             synthesis_report,
+            now,
+            finished,
+            run_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 完成当前期交付：持久化本期 `team_rounds` 完整快照，并按期号分段汇总各期 `delivery_sql` 更新至 `team_runs`。
+pub(crate) fn finalize_round_delivery_conn(
+    conn: &Connection,
+    run_id: &str,
+    status: &str,
+    stage: &str,
+    round: &TeamRound,
+) -> Result<(), String> {
+    let now = now_ts();
+    let finished = if matches!(status, "completed" | "failed" | "cancelled") {
+        now.as_str()
+    } else {
+        ""
+    };
+    let mut final_round = round.clone();
+    final_round.status = status.to_string();
+    final_round.stage = stage.to_string();
+    if final_round.finished_at.trim().is_empty() && !finished.is_empty() {
+        final_round.finished_at = finished.to_string();
+    }
+    upsert_round_conn(conn, run_id, &final_round)?;
+
+    let all_rounds = load_rounds_for_run_conn(conn, run_id)?;
+    let aggregated_sql = aggregate_rounds_delivery_sql(&all_rounds);
+    let existing_sql: String = conn
+        .query_row(
+            "SELECT delivery_sql FROM team_runs WHERE id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let final_run_sql = if aggregated_sql.trim().is_empty() {
+        existing_sql
+    } else {
+        aggregated_sql
+    };
+
+    conn.execute(
+        "UPDATE team_runs
+         SET status = ?1, stage = ?2, delivery_sql = ?3, synthesis_report = ?4,
+             revision = revision + 1, updated_at = ?5,
+             finished_at = CASE WHEN ?6 != '' THEN ?6 ELSE finished_at END
+         WHERE id = ?7",
+        params![
+            status,
+            stage,
+            final_run_sql,
+            final_round.synthesis_report,
             now,
             finished,
             run_id
@@ -1680,6 +2410,7 @@ pub(crate) fn finish_task_fenced_conn(
     verify_feedback: &str,
     repair_count: u32,
     touched_files: &[String],
+    round_touched_files: &[String],
 ) -> Result<bool, String> {
     let now = now_ts();
     let finished = if matches!(status, "completed" | "failed" | "cancelled") {
@@ -1689,6 +2420,8 @@ pub(crate) fn finish_task_fenced_conn(
     };
     let clean_excerpt = truncate_chars_safe(excerpt, MAX_EXCERPT_CHARS);
     let files_json = serde_json::to_string(touched_files).unwrap_or_else(|_| "[]".into());
+    let round_files_json =
+        serde_json::to_string(round_touched_files).unwrap_or_else(|_| "[]".into());
     let (next_desc, clear_revision) = if status == "completed" {
         if let Ok(Some(cur)) = load_task_conn(conn, task_id) {
             if !cur.revision_note.trim().is_empty() {
@@ -1717,7 +2450,7 @@ pub(crate) fn finish_task_fenced_conn(
             "UPDATE team_tasks
              SET status = ?1, last_output_excerpt = ?2, contract_summary = ?3,
                  verify_verdict = ?4, verify_feedback = ?5, repair_count = ?6,
-                 touched_files_json = ?7, updated_at = ?8,
+                 touched_files_json = ?7, round_touched_files_json = ?14, updated_at = ?8,
                  finished_at = CASE WHEN ?9 != '' THEN ?9 ELSE finished_at END,
                  description = COALESCE(?12, description),
                  revision_note = CASE WHEN ?13 THEN '' ELSE revision_note END
@@ -1736,6 +2469,7 @@ pub(crate) fn finish_task_fenced_conn(
                 expected_attempt_id,
                 next_desc,
                 clear_revision,
+                round_files_json,
             ],
         )
         .map_err(|e| e.to_string())?
@@ -1744,7 +2478,7 @@ pub(crate) fn finish_task_fenced_conn(
             "UPDATE team_tasks
              SET status = ?1, last_output_excerpt = ?2,
                  verify_verdict = ?3, verify_feedback = ?4, repair_count = ?5,
-                 touched_files_json = ?6, updated_at = ?7,
+                 touched_files_json = ?6, round_touched_files_json = ?13, updated_at = ?7,
                  finished_at = CASE WHEN ?8 != '' THEN ?8 ELSE finished_at END,
                  description = COALESCE(?11, description),
                  revision_note = CASE WHEN ?12 THEN '' ELSE revision_note END
@@ -1762,6 +2496,7 @@ pub(crate) fn finish_task_fenced_conn(
                 expected_attempt_id,
                 next_desc,
                 clear_revision,
+                round_files_json,
             ],
         )
         .map_err(|e| e.to_string())?
@@ -1776,6 +2511,229 @@ pub(crate) fn finish_task_fenced_conn(
         }
     }
     Ok(changed > 0)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QaReworkTarget {
+    pub(crate) task_id: String,
+    pub(crate) instructions: String,
+}
+
+/// 原子化将 QA 验收发现的缺陷精准路由回对应上游智能体（保留其原会话、目录与记忆体），并将 QA 节点置回待复测态。
+/// 带 `expected_qa_attempt_id` 栅栏校验，防止旧尝试覆盖新状态。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn route_qa_rework_fenced_conn(
+    conn: &mut Connection,
+    run_id: &str,
+    qa_task_id: &str,
+    expected_qa_attempt_id: &str,
+    next_qa_round: u32,
+    max_repairs: u32,
+    qa_output_excerpt: &str,
+    qa_summary: &str,
+    qa_touched_files: &[String],
+    qa_round_touched_files: &[String],
+    targets: &[QaReworkTarget],
+) -> Result<bool, String> {
+    if targets.is_empty() {
+        return Ok(false);
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let Some(qa_cur) = load_task_conn(&tx, qa_task_id)? else {
+        return Ok(false);
+    };
+    if qa_cur.run_id != run_id || qa_cur.attempt_id != expected_qa_attempt_id {
+        return Ok(false);
+    }
+
+    let now = now_ts();
+    let mut routed_labels: Vec<String> = Vec::new();
+    let mut retest_lines: Vec<String> = Vec::new();
+
+    for target in targets {
+        let Some(up) = load_task_conn(&tx, &target.task_id)? else {
+            continue;
+        };
+        if up.run_id != run_id || up.id == qa_task_id {
+            continue;
+        }
+        if matches!(up.status.as_str(), "running" | "verifying") {
+            continue;
+        }
+        let next_up_repair = up.repair_count.saturating_add(1);
+        let target_feedback = format!(
+            "【QA 验收打回（第 {next_qa_round}/{max_repairs} 轮）】{}\n{}",
+            qa_summary.trim(),
+            target.instructions.trim()
+        );
+        let target_rev_note = format!(
+            "[QA 验收打回返工 · 第 {next_qa_round}/{max_repairs} 轮]\n验收结论：{}\n请仅修复以下归属你的缺陷并重新验证构建/测试；若接口或字段变更，请调用 `team_publish_contract` 更新契约：\n{}",
+            qa_summary.trim(),
+            target.instructions.trim()
+        );
+        tx.execute(
+            "UPDATE team_tasks
+             SET status = 'repairing', attempt_id = '', repair_count = ?1,
+                 verify_verdict = 'qa_rework', verify_feedback = ?2,
+                 revision_note = ?3, updated_at = ?4
+             WHERE id = ?5 AND run_id = ?6",
+            params![
+                next_up_repair as i64,
+                target_feedback,
+                target_rev_note,
+                now,
+                up.id,
+                run_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let short_tag = up
+            .id
+            .chars()
+            .rev()
+            .take(5)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+        let label = if !up.project_name.trim().is_empty() {
+            format!(
+                "#{short_tag} {}（{}）",
+                up.project_name.trim(),
+                domain_badge_cn(&up.domain)
+            )
+        } else {
+            format!(
+                "#{short_tag} {}（{}）",
+                truncate_chars_safe(&up.title, 24),
+                domain_badge_cn(&up.domain)
+            )
+        };
+        routed_labels.push(label.clone());
+        retest_lines.push(format!(
+            "- {label} [{}]: {}",
+            up.id,
+            truncate_chars_safe(target.instructions.trim(), 320)
+        ));
+
+        let _ = append_event_conn(
+            &tx,
+            run_id,
+            "task_qa_rework_routed",
+            &up.id,
+            "verifier",
+            &format!(
+                "验收侦探发现缺陷，已打回「{}」原会话返工修复（第 {next_qa_round}/{max_repairs} 轮）",
+                up.title
+            ),
+            target.instructions.trim(),
+        );
+    }
+
+    if routed_labels.is_empty() {
+        return Ok(false);
+    }
+
+    let clean_excerpt = truncate_chars_safe(qa_output_excerpt, MAX_EXCERPT_CHARS);
+    let files_json = serde_json::to_string(qa_touched_files).unwrap_or_else(|_| "[]".into());
+    let round_files_json =
+        serde_json::to_string(qa_round_touched_files).unwrap_or_else(|_| "[]".into());
+    let qa_feedback = format!(
+        "QA 验收发现上游缺陷，已定向打回 {} 返工修复（第 {next_qa_round}/{max_repairs} 轮），待修复完成后自动复测。\n验收摘要：{}",
+        routed_labels.join("、"),
+        qa_summary.trim()
+    );
+    let qa_retest_note = format!(
+        "上轮 QA 验收结论：{}\n已打回以下上游成员返工修复，请逐项复测确认缺陷清零且无回归：\n{}",
+        qa_summary.trim(),
+        retest_lines.join("\n")
+    );
+
+    let changed = tx
+        .execute(
+            "UPDATE team_tasks
+             SET status = 'pending', attempt_id = '', repair_count = ?1,
+                 last_output_excerpt = ?2, verify_verdict = 'routed_rework',
+                 verify_feedback = ?3, revision_note = ?4,
+                 touched_files_json = ?5, round_touched_files_json = ?6, updated_at = ?7
+             WHERE id = ?8 AND attempt_id = ?9",
+            params![
+                next_qa_round as i64,
+                clean_excerpt,
+                qa_feedback,
+                qa_retest_note,
+                files_json,
+                round_files_json,
+                now,
+                qa_task_id,
+                expected_qa_attempt_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if changed == 0 {
+        return Ok(false);
+    }
+
+    let _ = append_event_conn(
+        &tx,
+        run_id,
+        "task_qa_rework_routed",
+        qa_task_id,
+        "verifier",
+        &format!(
+            "QA 验收未通过（第 {next_qa_round}/{max_repairs} 轮），已回流至 {} 返工，完成后自动复测",
+            routed_labels.join("、")
+        ),
+        &qa_retest_note,
+    );
+    let _ = tx.execute(
+        "UPDATE team_runs SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+        params![now, run_id],
+    );
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// 当 QA 复测通过后，将此前等待复测（`verify_verdict = 'retest'`）的上游返工成员统一升级为 `passed`。
+pub(crate) fn promote_retest_ancestors_passed_conn(
+    conn: &Connection,
+    run_id: &str,
+    ancestor_ids: &[String],
+    qa_summary: &str,
+) -> Result<usize, String> {
+    if ancestor_ids.is_empty() {
+        return Ok(0);
+    }
+    let now = now_ts();
+    let feedback = if qa_summary.trim().is_empty() {
+        "QA 复测通过".to_string()
+    } else {
+        format!(
+            "QA 复测通过：{}",
+            truncate_chars_safe(qa_summary.trim(), 240)
+        )
+    };
+    let mut total = 0usize;
+    for id in ancestor_ids {
+        let changed = conn
+            .execute(
+                "UPDATE team_tasks
+                 SET verify_verdict = 'passed', verify_feedback = ?1, updated_at = ?2
+                 WHERE run_id = ?3 AND id = ?4 AND status = 'completed' AND verify_verdict = 'retest'",
+                params![feedback, now, run_id, id],
+            )
+            .map_err(|e| e.to_string())?;
+        total += changed;
+    }
+    if total > 0 {
+        let _ = conn.execute(
+            "UPDATE team_runs SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+            params![now, run_id],
+        );
+    }
+    Ok(total)
 }
 
 pub(crate) fn set_task_status_fenced_conn(
@@ -1896,6 +2854,8 @@ pub(crate) fn append_event_conn(
 
 pub(crate) fn delete_run_conn(conn: &mut Connection, run_id: &str) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM team_rounds WHERE run_id = ?1", params![run_id])
+        .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM team_events WHERE run_id = ?1", params![run_id])
         .map_err(|e| e.to_string())?;
     tx.execute(

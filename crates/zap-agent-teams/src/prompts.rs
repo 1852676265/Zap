@@ -515,6 +515,8 @@ const DEFAULT_SYS_GUARD_READONLY: &str = r#"TEAM READ-ONLY ({{working_dir}}): In
 
 const DEFAULT_SYS_GUARD_COLLAB: &str = r#"TEAM COLLABORATION ({{working_dir}}): Focus strictly on your repo/domain. Follow locked SQL/API names verbatim. Use `team_ask_peer` for peer details and `team_publish_contract` when finalizing API/schema changes."#;
 
+const DEFAULT_SYS_GUARD_QA_VERIFY: &str = r#"TEAM QA VERIFICATION GATE ({{working_dir}}): Inspect code across upstream repositories and run build/test/verification commands ONLY. NEVER modify, create, or patch business source files. If defects are found, report exact file paths, root causes, and attribute every defect to its responsible upstream teammate `task_id` so the orchestrator routes rework back to that specialist."#;
+
 const DEFAULT_WORKER_PIPELINE: &str = r#"Task [{{domain_label}} | Wave {{wave}} | {{project_name}}]: {{task_title}}
 Dir: {{working_dir}}
 Goal: {{user_goal}}
@@ -942,6 +944,14 @@ pub(crate) fn build_worker_sections(
             "SQL agent boundary: the schema is approved. Only prepare/write `.sql` scripts and publish the final SQL contract with `team_publish_contract`; do not modify backend or frontend business source."
                 .to_string()
         }
+    } else if is_pipeline_qa_gate_task(&run.mode, task) {
+        if compact {
+            "QA Gate Boundary: Inspect and run build/test checks ONLY; NEVER edit business source files. Attribute every defect to the responsible upstream `task_id` with exact paths and fixes so the orchestrator routes rework back to that specialist."
+                .to_string()
+        } else {
+            "QA Verification Gate Boundary: Your job is independent end-to-end verification, NOT fixing business code. Inspect upstream repositories and run build/test/verification commands read-only; NEVER modify business source files. When defects are found, clearly state the verdict as FAIL and group every defect under the exact responsible upstream `task_id` (with file paths, root cause, and required fixes) so the orchestrator automatically routes rework back to the owning specialist."
+                .to_string()
+        }
     } else {
         String::new()
     };
@@ -1116,6 +1126,196 @@ fn render_worker_template(
         rendered
     };
     (final_rendered, src, tpl)
+}
+
+pub(crate) fn is_pipeline_qa_gate_task(run_mode: &str, task: &TeamTask) -> bool {
+    run_mode == "pipeline" && task.domain == "qa" && !task.depends_on.is_empty()
+}
+
+/// 收集 QA 验收节点上游所有可承接缺陷返工的祖先任务（按波次与排序号稳定排列；若存在非 QA 研发祖先则优先仅返回研发节点）。
+pub(crate) fn collect_upstream_ancestor_tasks(
+    all_tasks: &[TeamTask],
+    target_task: &TeamTask,
+) -> Vec<TeamTask> {
+    let by_id: std::collections::HashMap<&str, &TeamTask> =
+        all_tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue: std::collections::VecDeque<String> = target_task
+        .depends_on
+        .iter()
+        .filter(|d| d.as_str() != target_task.id.as_str())
+        .cloned()
+        .collect();
+    let mut collected: Vec<TeamTask> = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        if let Some(t) = by_id.get(id.as_str()) {
+            collected.push((*t).clone());
+            for dep in &t.depends_on {
+                if dep != &target_task.id && !visited.contains(dep) {
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+    let has_non_qa = collected.iter().any(|t| t.domain != "qa");
+    if has_non_qa {
+        collected.retain(|t| t.domain != "qa");
+    }
+    collected.sort_by(|a, b| {
+        a.wave
+            .cmp(&b.wave)
+            .then_with(|| a.sort_order.cmp(&b.sort_order))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    collected
+}
+
+pub(crate) fn format_qa_upstream_roster(ancestors: &[TeamTask]) -> String {
+    if ancestors.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = ancestors
+        .iter()
+        .map(|t| {
+            let proj = if !t.project_name.trim().is_empty() {
+                t.project_name.trim()
+            } else {
+                "-"
+            };
+            let files = if t.touched_files.is_empty() {
+                "(none)".to_string()
+            } else {
+                truncate_chars_safe(&t.touched_files.join(", "), 220)
+            };
+            format!(
+                "- task_id: \"{}\" | domain: {} | project: {} | working_dir: {} | title: {} | touched_files: {}",
+                t.id,
+                t.domain,
+                proj,
+                t.working_dir.trim(),
+                truncate_chars_safe(&t.title, 80),
+                files
+            )
+        })
+        .collect();
+    format!(
+        "Upstream Teammates (cite exact `task_id` for any defect so rework is routed to the owning specialist):\n{}",
+        lines.join("\n")
+    )
+}
+
+pub(crate) fn render_qa_verify_sys_guard(working_dir: &str) -> String {
+    render_template_single_pass(DEFAULT_SYS_GUARD_QA_VERIFY, &[("working_dir", working_dir)])
+}
+
+pub(crate) fn render_qa_retest_prompt(
+    run: &TeamRun,
+    qa_task: &TeamTask,
+    qa_round: u32,
+    max_repairs: u32,
+    upstream_ancestors: &[TeamTask],
+    upstream_contracts: &[TeamContract],
+    upstream_excerpts: &[(String, String)],
+    compact: bool,
+) -> String {
+    let (_, spec_sec, up_sec, dom_sec, _) = build_worker_sections(
+        run,
+        qa_task,
+        false,
+        upstream_contracts,
+        upstream_excerpts,
+        compact,
+    );
+    let roster = format_qa_upstream_roster(upstream_ancestors);
+    let mut parts = vec![
+        format!(
+            "[QA Retest Round {}/{} | {}] {}",
+            qa_round,
+            max_repairs,
+            qa_task.working_dir.trim(),
+            qa_task.title
+        ),
+        format!(
+            "Upstream specialists have completed defect fixes from the previous QA round:\n{}",
+            qa_task.revision_note.trim()
+        ),
+        format!("Done when: {}", qa_task.acceptance_criteria.trim()),
+    ];
+    if !up_sec.trim().is_empty() {
+        parts.push(up_sec);
+    }
+    if !spec_sec.trim().is_empty() {
+        parts.push(spec_sec);
+    }
+    if !roster.trim().is_empty() {
+        parts.push(roster);
+    }
+    if !dom_sec.trim().is_empty() {
+        parts.push(dom_sec);
+    }
+    parts.push(
+        "Re-inspect the updated repositories and re-run build/test/regression checks. Do NOT edit business source files. Clearly conclude PASS if all defects are resolved and regression checks pass, or FAIL with exact upstream `task_id` attribution for any remaining/new defects."
+            .to_string(),
+    );
+    collapse_blank_lines(&parts.join("\n\n"))
+}
+
+pub(crate) fn render_qa_recheck_prompt(
+    qa_task: &TeamTask,
+    repair_attempt: u32,
+    max_repairs: u32,
+    verifier_summary: &str,
+    repair_instructions: &str,
+    upstream_ancestors: &[TeamTask],
+) -> String {
+    let roster = format_qa_upstream_roster(upstream_ancestors);
+    let mut parts = vec![
+        format!(
+            "[QA Re-check {}/{} | {}]",
+            repair_attempt,
+            max_repairs,
+            qa_task.working_dir.trim()
+        ),
+        format!("Incomplete QA check: {}", verifier_summary.trim()),
+        format!("Verification required: {}", repair_instructions.trim()),
+        format!("Done when: {}", qa_task.acceptance_criteria.trim()),
+    ];
+    if !roster.trim().is_empty() {
+        parts.push(roster);
+    }
+    parts.push(
+        "Rule: Do NOT modify or fix business source files yourself. Complete the read-only verification/tests, clearly state PASS or FAIL, and attribute every discovered defect to the exact responsible upstream `task_id` above."
+            .to_string(),
+    );
+    collapse_blank_lines(&parts.join("\n\n"))
+}
+
+pub(crate) fn format_teammates_line(tasks: &[TeamTask], self_task_id: &str) -> String {
+    let items: Vec<String> = tasks
+        .iter()
+        .filter(|t| t.id != self_task_id)
+        .map(|t| {
+            let name = if !t.project_name.trim().is_empty() {
+                t.project_name.trim()
+            } else if !t.title.trim().is_empty() {
+                t.title.trim()
+            } else {
+                t.domain.as_str()
+            };
+            format!("{} | {} | {}", t.id, name, t.domain)
+        })
+        .collect();
+    if items.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Teammates for `team_ask_peer` (pass id, project name, or domain): {}",
+            items.join("; ")
+        )
+    }
 }
 
 pub(crate) fn render_sys_guard_with_source(
@@ -1403,6 +1603,7 @@ pub(crate) fn preview_role_prompt(
                 verify_verdict: String::new(),
                 verify_feedback: String::new(),
                 touched_files: Vec::new(),
+                round_touched_files: Vec::new(),
                 started_at: String::new(),
                 updated_at: String::new(),
                 finished_at: String::new(),
@@ -1452,6 +1653,8 @@ pub(crate) fn preview_role_prompt(
                         auto_verify: true,
                         max_repairs: 2,
                         lead_model: String::new(),
+                        lead_agent_id: "none".to_string(),
+                        current_round_no: 1,
                         source_triage_id: String::new(),
                         synthesis_report: String::new(),
                         created_at: String::new(),
@@ -1494,7 +1697,7 @@ pub(crate) fn preview_role_prompt(
                 compact,
             );
             let read_only = template_id == TPL_WORKER_TRIAGE;
-            let (guard, _) = render_sys_guard_with_source(
+            let (mut guard, _) = render_sys_guard_with_source(
                 read_only,
                 &t.working_dir,
                 "preview",
@@ -1502,6 +1705,11 @@ pub(crate) fn preview_role_prompt(
                 run_overrides,
                 global_templates,
             );
+            let teammates_line = format_teammates_line(all_tasks, &t.id);
+            if !teammates_line.is_empty() {
+                guard.push('\n');
+                guard.push_str(&teammates_line);
+            }
             Ok(PromptPreviewResponse {
                 template_id: meta.id.to_string(),
                 source: final_src.to_string(),

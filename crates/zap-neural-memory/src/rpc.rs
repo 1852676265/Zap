@@ -38,6 +38,16 @@ pub fn handle_rpc(action: &str, payload: &Value) -> Result<Value, String> {
             with_read(|conn, data_dir| build_bootstrap_payload_conn(conn, data_dir))
         }
 
+        "neural:get-session-agent" => {
+            let sid = payload
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            with_read(|conn, _| get_session_agent_payload_conn(conn, &sid))
+        }
+
         "neural:set-session-agent" => {
             let sid = payload
                 .get("sessionId")
@@ -569,6 +579,36 @@ pub fn handle_rpc(action: &str, payload: &Value) -> Result<Value, String> {
 
         _ => Err(format!("未知 neural_memory RPC action: {action}")),
     }
+}
+
+pub(crate) fn get_session_agent_payload_conn(
+    conn: &Connection,
+    sid: &str,
+) -> Result<Value, String> {
+    let clean_sid = sid.trim();
+    let explicit = get_explicit_session_agent_conn(conn, clean_sid);
+    let agents = load_agents_conn(conn)?;
+    let (agent_id, explicitly_bound) = match explicit {
+        Some(aid) => {
+            let trimmed = aid.trim();
+            (
+                if trimmed.is_empty() {
+                    "none".to_string()
+                } else {
+                    trimmed.to_string()
+                },
+                true,
+            )
+        }
+        None => ("none".to_string(), false),
+    };
+    Ok(json!({
+        "success": true,
+        "sessionId": clean_sid,
+        "agentId": agent_id,
+        "explicitlyBound": explicitly_bound,
+        "agents": agents,
+    }))
 }
 
 fn build_bootstrap_payload_conn(conn: &Connection, data_dir: &Path) -> Result<Value, String> {

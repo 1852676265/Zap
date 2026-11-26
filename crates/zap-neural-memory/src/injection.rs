@@ -30,7 +30,8 @@ use super::store::{
     KnownProject,
 };
 use super::team_bridge::{
-    format_team_overview_line, list_recent_team_runs_for_project, lookup_team_run_overview,
+    format_team_overview_line, lazy_sync_team_deliveries_if_changed,
+    list_recent_team_runs_for_project, lookup_team_run_overview,
 };
 use super::types::{
     normalize_project_key, normalize_project_name, NeuralNode, ProfileFact, RawTurn, TimelineEvent,
@@ -353,6 +354,7 @@ pub async fn apply_session_static_system_append(
     let pkey_dir = current_proj_key.clone();
     let pname_dir = current_proj_name.clone();
     let store_res = tokio::task::spawn_blocking(move || {
+        let _ = lazy_sync_team_deliveries_if_changed();
         let agent = resolve_agent_for_session_cached(&sid_for_db)?;
         let (should_mount_tool, mut block, frozen_profiles, known_ids) = with_read(|conn, _| {
             let should_mount_tool = agent.is_some() || has_any_agents_conn(conn);
@@ -614,6 +616,7 @@ pub fn build_dynamic_turn_reminder_with_context(
         }
         return None;
     };
+    let _ = lazy_sync_team_deliveries_if_changed();
     let known_projects = list_known_projects_cached(&agent.id).unwrap_or_default();
 
     let res = with_read(|conn, _| {

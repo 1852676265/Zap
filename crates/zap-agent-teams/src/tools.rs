@@ -20,7 +20,17 @@ use super::store::{
     append_event_conn, load_contracts_for_run_conn, load_run_conn, load_tasks_for_run_conn,
     upsert_contract_conn, with_team_store,
 };
-use super::types::{domain_badge_cn, normalize_domain, truncate_chars_safe};
+use super::types::{domain_badge_cn, normalize_domain, truncate_chars_safe, TeamTask};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TeamToolAccessMode {
+    /// 常规研发成员：可读写业务源码、发布契约并跨库问询。
+    ReadWrite,
+    /// 严格只读（跨库联合会诊 / SQL 审稿）：仅允许只读检视工具与跨库问询，禁用命令行与写文件。
+    ReadOnly,
+    /// 流水线 QA 验收闸门：允许只读检视、跨库问询与命令行编译/测试校验，但硬性禁用写/改文件工具与契约发布，防止越权代改业务代码。
+    QaVerifyOnly,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveTeamSessionCtx {
@@ -29,7 +39,7 @@ pub(crate) struct ActiveTeamSessionCtx {
     pub(crate) domain: String,
     pub(crate) actor_label: String,
     pub(crate) provider_name: String,
-    pub(crate) read_only_mode: bool,
+    pub(crate) access_mode: TeamToolAccessMode,
 }
 
 fn active_team_sessions() -> &'static Mutex<HashMap<String, ActiveTeamSessionCtx>> {
@@ -70,24 +80,34 @@ pub fn apply_session_team_tools(
         return;
     };
 
-    if ctx.read_only_mode {
-        runtime.mcp = false;
-        runtime.shared_mcp_registry = None;
-        runtime
-            .extra_tools
-            .retain(|tool| team_readonly_tool(tool.name()));
-        runtime.extra_hooks.push(Arc::new(TeamReadonlyHook));
-    }
-
-    if !ctx.read_only_mode
-        && !runtime
-            .extra_tools
-            .iter()
-            .any(|t| t.name() == "team_publish_contract")
-    {
-        runtime
-            .extra_tools
-            .push(Arc::new(TeamPublishContractTool::new(sid.to_string())) as Arc<dyn Tool>);
+    match ctx.access_mode {
+        TeamToolAccessMode::ReadOnly => {
+            runtime.mcp = false;
+            runtime.shared_mcp_registry = None;
+            runtime
+                .extra_tools
+                .retain(|tool| team_readonly_tool(tool.name()));
+            runtime.extra_hooks.push(Arc::new(TeamReadonlyHook));
+        }
+        TeamToolAccessMode::QaVerifyOnly => {
+            runtime.mcp = false;
+            runtime.shared_mcp_registry = None;
+            runtime
+                .extra_tools
+                .retain(|tool| team_qa_verify_tool(tool.name()));
+            runtime.extra_hooks.push(Arc::new(TeamQaVerifyHook));
+        }
+        TeamToolAccessMode::ReadWrite => {
+            if !runtime
+                .extra_tools
+                .iter()
+                .any(|t| t.name() == "team_publish_contract")
+            {
+                runtime
+                    .extra_tools
+                    .push(Arc::new(TeamPublishContractTool::new(sid.to_string())) as Arc<dyn Tool>);
+            }
+        }
     }
 
     if !runtime
@@ -108,6 +128,10 @@ fn team_readonly_tool(name: &str) -> bool {
     )
 }
 
+pub(crate) fn team_qa_verify_tool(name: &str) -> bool {
+    team_readonly_tool(name) || matches!(name, "run_command" | "todo_write")
+}
+
 struct TeamReadonlyHook;
 
 #[async_trait]
@@ -117,6 +141,18 @@ impl zap_kernel::hook::LifecycleHooks for TeamReadonlyHook {
         response
             .tool_calls
             .retain(|call| team_readonly_tool(&call.name));
+    }
+}
+
+struct TeamQaVerifyHook;
+
+#[async_trait]
+impl zap_kernel::hook::LifecycleHooks for TeamQaVerifyHook {
+    async fn on_model_response(&self, response: &mut Message) {
+        // QA gate may inspect code and run verification commands, but MUST NOT edit/write files.
+        response
+            .tool_calls
+            .retain(|call| team_qa_verify_tool(&call.name));
     }
 }
 
@@ -269,10 +305,98 @@ impl Tool for TeamPublishContractTool {
 
 #[derive(Debug, Deserialize)]
 struct AskPeerArgs {
+    #[serde(alias = "target", alias = "project_name")]
     target_domain: String,
     question: String,
     #[serde(default)]
     search_hint: String,
+}
+
+/// 按精确 `task.id` → 精确/模糊 `project_name`（忽略大小写）→ `domain` 优先级定位目标队友。
+pub(crate) fn resolve_peer_task<'a>(
+    tasks: &'a [TeamTask],
+    self_task_id: &str,
+    target_raw: &str,
+) -> Option<&'a TeamTask> {
+    let raw = target_raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let lower = raw.to_lowercase();
+
+    // 1. 精确 task.id 匹配
+    if let Some(hit) = tasks
+        .iter()
+        .find(|t| t.id == raw || t.id.eq_ignore_ascii_case(raw))
+    {
+        return Some(hit);
+    }
+
+    // 2. 精确 project_name 匹配（忽略大小写），优先非自身队友
+    if let Some(hit) = tasks
+        .iter()
+        .find(|t| {
+            t.id != self_task_id
+                && !t.project_name.trim().is_empty()
+                && t.project_name.trim().to_lowercase() == lower
+        })
+        .or_else(|| {
+            tasks.iter().find(|t| {
+                !t.project_name.trim().is_empty() && t.project_name.trim().to_lowercase() == lower
+            })
+        })
+    {
+        return Some(hit);
+    }
+
+    // 3. 模糊 project_name / title 匹配（忽略大小写，starts_with 优先于 contains），优先非自身队友
+    let raw_chars = lower.chars().count();
+    if raw_chars >= 2 {
+        let project_fuzzy = |t: &TeamTask, starts_only: bool| {
+            let pname = t.project_name.trim().to_lowercase();
+            if pname.is_empty() {
+                return false;
+            }
+            if starts_only {
+                pname.starts_with(&lower)
+            } else {
+                pname.contains(&lower) || (pname.chars().count() >= 2 && lower.contains(&pname))
+            }
+        };
+        if let Some(hit) = tasks
+            .iter()
+            .find(|t| t.id != self_task_id && project_fuzzy(t, true))
+            .or_else(|| {
+                tasks
+                    .iter()
+                    .find(|t| t.id != self_task_id && project_fuzzy(t, false))
+            })
+            .or_else(|| tasks.iter().find(|t| project_fuzzy(t, false)))
+        {
+            return Some(hit);
+        }
+
+        // 若目标并非典型领域名，允许按任务 title 模糊匹配
+        let is_plain_domain_word = matches!(
+            lower.as_str(),
+            "sql" | "db" | "database" | "backend" | "frontend" | "mobile" | "qa" | "general"
+        );
+        if !is_plain_domain_word {
+            if let Some(hit) = tasks
+                .iter()
+                .find(|t| t.id != self_task_id && t.title.trim().to_lowercase().contains(&lower))
+            {
+                return Some(hit);
+            }
+        }
+    }
+
+    // 4. 按规范化 domain 兜底匹配（优先非自身队友）
+    let norm_target = normalize_domain(raw);
+    tasks
+        .iter()
+        .find(|t| t.domain == norm_target && t.id != self_task_id)
+        .or_else(|| tasks.iter().find(|t| t.domain == norm_target))
 }
 
 pub struct TeamAskPeerTool {
@@ -292,7 +416,7 @@ impl Tool for TeamAskPeerTool {
     }
 
     fn description(&self) -> &str {
-        "Ask a cross-repository teammate (sql, backend, frontend, or general) a focused technical question to inspect their codebase or published contracts in read-only mode (e.g. verify exact field names, response envelope format, or table columns)."
+        "Ask a cross-repository teammate a focused technical question to inspect their codebase or published contracts in read-only mode (e.g. verify exact field names, response envelope format, or table columns). Address the teammate by task id, project name (e.g. 'tsm-ui'), or domain ('sql', 'backend', 'frontend', 'mobile', 'general')."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -301,7 +425,7 @@ impl Tool for TeamAskPeerTool {
             "properties": {
                 "target_domain": {
                     "type": "string",
-                    "description": "Target teammate domain ('sql', 'backend', 'frontend', 'general') or exact task id"
+                    "description": "Target teammate identifier: exact task id, project name (case-insensitive / fuzzy, e.g. 'tsm-ui'), or domain ('sql', 'backend', 'frontend', 'mobile', 'general')"
                 },
                 "question": {
                     "type": "string",
@@ -365,24 +489,25 @@ impl Tool for TeamAskPeerTool {
                     .ok_or_else(|| "Active team run no longer exists".to_string())?;
                 let tasks = load_tasks_for_run_conn(&store.conn, &ctx_for_lookup.run_id)?;
                 let contracts = load_contracts_for_run_conn(&store.conn, &ctx_for_lookup.run_id)?;
-                let peer_task = tasks
-                    .iter()
-                    .find(|t| t.id == target_raw)
-                    .or_else(|| {
-                        tasks.iter().find(|t| {
-                            t.domain == target_domain_lookup && t.id != ctx_for_lookup.task_id
-                        })
-                    })
-                    .or_else(|| tasks.iter().find(|t| t.domain == target_domain_lookup))
-                    .cloned();
+                let peer_task =
+                    resolve_peer_task(&tasks, &ctx_for_lookup.task_id, &target_raw).cloned();
+                let same_domain_count = peer_task
+                    .as_ref()
+                    .map(|pt| tasks.iter().filter(|t| t.domain == pt.domain).count())
+                    .unwrap_or(0);
 
                 let target_badge = peer_task
                     .as_ref()
                     .map(|t| {
-                        if t.agent_label.is_empty() {
-                            domain_badge_cn(&t.domain).to_string()
+                        let proj = if !t.project_name.trim().is_empty() {
+                            format!("{} · {}", domain_badge_cn(&t.domain), t.project_name.trim())
                         } else {
-                            format!("{} ({})", domain_badge_cn(&t.domain), t.agent_label)
+                            domain_badge_cn(&t.domain).to_string()
+                        };
+                        if t.agent_label.is_empty() {
+                            proj
+                        } else {
+                            format!("{proj} ({})", t.agent_label)
                         }
                     })
                     .unwrap_or_else(|| domain_badge_cn(&target_domain_lookup).to_string());
@@ -401,12 +526,12 @@ impl Tool for TeamAskPeerTool {
                     ),
                     &q_for_log,
                 );
-                Ok((run, peer_task, contracts, target_badge))
+                Ok((run, peer_task, contracts, target_badge, same_domain_count))
             })
         })
         .await;
 
-        let (run, peer_task, contracts, target_badge) = match lookup {
+        let (run, peer_task, contracts, target_badge, same_domain_count) = match lookup {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 return ToolResult {
@@ -444,11 +569,17 @@ impl Tool for TeamAskPeerTool {
         .await
         .unwrap_or_default();
 
+        let effective_domain = peer_task
+            .as_ref()
+            .map(|pt| pt.domain.as_str())
+            .unwrap_or(&norm_target);
         let relevant_contracts: Vec<String> = contracts
             .into_iter()
-            .filter(|c| {
-                c.domain == norm_target
-                    || peer_task.as_ref().is_some_and(|pt| pt.id == c.from_task_id)
+            .filter(|c| match &peer_task {
+                Some(pt) => {
+                    c.from_task_id == pt.id || (same_domain_count <= 1 && c.domain == pt.domain)
+                }
+                None => c.domain == norm_target,
             })
             .map(|c| {
                 format!(
@@ -467,7 +598,7 @@ impl Tool for TeamAskPeerTool {
         let prompt = match super::runner::execution_prompt(
             &run,
             super::prompts::TPL_PEER_CONSULTATION,
-            Some(&norm_target),
+            Some(effective_domain),
             &[
                 ("target_badge", &target_badge),
                 ("question", &question),
@@ -530,19 +661,26 @@ impl Tool for TeamAskPeerTool {
     }
 }
 
-fn scan_peer_repo_evidence(root: &Path, search_hint: &str, question: &str) -> String {
+/// 从问询词与提示词中提取检索关键词：支持英文/标识符与中文关键词，自动切分中英文边界。
+pub(crate) fn extract_peer_search_keywords(search_hint: &str, question: &str) -> Vec<String> {
     let mut keywords: Vec<String> = Vec::new();
-    for raw in search_hint
-        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
-        .chain(
-            question
-                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '/'),
-        )
-    {
-        let trimmed = raw.trim();
-        if trimmed.len() >= 3
-            && !keywords.iter().any(|k| k.eq_ignore_ascii_case(trimmed))
-            && !matches!(
+    let mut push_kw = |candidate: &str| {
+        if keywords.len() >= 8 {
+            return;
+        }
+        let trimmed =
+            candidate.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '/');
+        if trimmed.is_empty() {
+            return;
+        }
+        let has_non_ascii = trimmed.chars().any(|c| !c.is_ascii());
+        let char_count = trimmed.chars().count();
+        let min_chars = if has_non_ascii { 2 } else { 3 };
+        if char_count < min_chars {
+            return;
+        }
+        if !has_non_ascii
+            && matches!(
                 trimmed.to_ascii_lowercase().as_str(),
                 "what"
                     | "where"
@@ -559,25 +697,125 @@ fn scan_peer_repo_evidence(root: &Path, search_hint: &str, question: &str) -> St
                     | "for"
             )
         {
+            return;
+        }
+        if has_non_ascii
+            && matches!(
+                trimmed,
+                "什么"
+                    | "怎么"
+                    | "如何"
+                    | "哪些"
+                    | "请问"
+                    | "一下"
+                    | "这个"
+                    | "那个"
+                    | "是否"
+                    | "有没有"
+                    | "里面"
+                    | "需要"
+                    | "可以"
+                    | "帮我"
+                    | "查一下"
+                    | "看一下"
+                    | "确认"
+            )
+        {
+            return;
+        }
+        let low = trimmed.to_lowercase();
+        if !keywords.iter().any(|k| k.to_lowercase() == low) {
             keywords.push(trimmed.to_string());
-            if keywords.len() >= 6 {
-                break;
+        }
+    };
+
+    // 1. 先提取显式 search_hint（保留中英文与路径片段）
+    for raw in search_hint
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '，' | '；' | '、'))
+    {
+        push_kw(raw);
+    }
+
+    // 2. 再从 question 提取中英文关键词（保留 Unicode 字母/数字，并拆分中英文粘连与常见中文虚词）
+    for raw in question.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '/') {
+        if raw.is_empty() {
+            continue;
+        }
+        // 在 ASCII 标识符与非 ASCII（中文）字符边界切分，如 `sys_notice表的status字段` -> `sys_notice`, `表`, `status`, `字段`
+        let mut segments: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        let mut cur_is_ascii: Option<bool> = None;
+        for ch in raw.chars() {
+            let ch_ascii = ch.is_ascii();
+            if let Some(prev) = cur_is_ascii {
+                if prev != ch_ascii && !cur.is_empty() {
+                    segments.push(std::mem::take(&mut cur));
+                }
+            }
+            cur.push(ch);
+            cur_is_ascii = Some(ch_ascii);
+        }
+        if !cur.is_empty() {
+            segments.push(cur);
+        }
+
+        for seg in segments {
+            if seg.chars().any(|c| !c.is_ascii()) {
+                for sub in seg.split(|c: char| {
+                    matches!(
+                        c,
+                        '的' | '了'
+                            | '吗'
+                            | '呢'
+                            | '是'
+                            | '在'
+                            | '和'
+                            | '与'
+                            | '或'
+                            | '有'
+                            | '中'
+                            | '把'
+                            | '被'
+                            | '给'
+                            | '对'
+                            | '从'
+                            | '到'
+                    )
+                }) {
+                    push_kw(sub);
+                }
+            } else {
+                push_kw(&seg);
             }
         }
     }
 
+    keywords
+}
+
+pub(crate) fn scan_peer_repo_evidence(root: &Path, search_hint: &str, question: &str) -> String {
+    let keywords = extract_peer_search_keywords(search_hint, question);
+
     let mut snippets = Vec::new();
     let mut visited_files = 0usize;
+    let mut visited_dirs = 0usize;
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        if visited_files >= 350 || snippets.len() >= 8 {
+        if visited_files >= 350 || visited_dirs >= 500 || snippets.len() >= 8 {
             break;
         }
+        visited_dirs += 1;
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.')
@@ -594,7 +832,7 @@ fn scan_peer_repo_evidence(root: &Path, search_hint: &str, question: &str) -> St
             {
                 continue;
             }
-            if path.is_dir() {
+            if ft.is_dir() {
                 stack.push(path);
                 continue;
             }
@@ -620,6 +858,15 @@ fn scan_peer_repo_evidence(root: &Path, search_hint: &str, question: &str) -> St
                     | "yaml"
                     | "yml"
                     | "json"
+                    | "xml"
+                    | "dart"
+                    | "scss"
+                    | "less"
+                    | "wxml"
+                    | "wxss"
+                    | "kt"
+                    | "swift"
+                    | "properties"
             ) {
                 continue;
             }
@@ -638,18 +885,25 @@ fn scan_peer_repo_evidence(root: &Path, search_hint: &str, question: &str) -> St
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
+            let rel_lower = rel.to_lowercase();
 
             let file_matched_kw = keywords.iter().find(|kw| {
-                rel.to_ascii_lowercase().contains(&kw.to_ascii_lowercase())
+                let kw_lower = kw.to_lowercase();
+                rel_lower.contains(&kw_lower)
                     || content.contains(kw.as_str())
+                    || (kw.is_ascii()
+                        && content
+                            .to_ascii_lowercase()
+                            .contains(&kw.to_ascii_lowercase()))
             });
 
             if let Some(kw) = file_matched_kw {
                 let mut matched_lines = Vec::new();
                 let lines: Vec<&str> = content.lines().collect();
+                let kw_ascii_lower = kw.to_ascii_lowercase();
                 for (idx, line) in lines.iter().enumerate() {
                     if line.contains(kw.as_str())
-                        || line.to_ascii_lowercase().contains(&kw.to_ascii_lowercase())
+                        || (kw.is_ascii() && line.to_ascii_lowercase().contains(&kw_ascii_lower))
                     {
                         let start = idx.saturating_sub(2);
                         let end = (idx + 5).min(lines.len());

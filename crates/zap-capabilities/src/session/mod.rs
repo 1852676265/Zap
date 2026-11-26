@@ -56,12 +56,12 @@ pub use eval_trace::{
 };
 pub use inputs::SessionInput;
 pub use manager::{
-    aggregate_session_cost, CatalogDiagnostic, CatalogDiagnosticKind, CatalogEntry,
-    CatalogLocation, CatalogPresence, CatalogScan, DetachedUsageRecorder, ForkInfo, ImportInfo,
-    ImportKind, LoadedSession, ModelCostSummary, ModelPricing, ModelUsageStat,
-    NativeSessionRepairOutcome, PendingPermission, SessionCostReport, SessionForkChild,
-    SessionLease, SessionLineage, SessionManager, SessionMeta, SessionOrigin, SessionResult,
-    SessionStoreError, StorageOwner, TokenBreakdown, TurnStat,
+    aggregate_session_cost, is_team_session, is_team_session_id, CatalogDiagnostic,
+    CatalogDiagnosticKind, CatalogEntry, CatalogLocation, CatalogPresence, CatalogScan,
+    DetachedUsageRecorder, ForkInfo, ImportInfo, ImportKind, LoadedSession, ModelCostSummary,
+    ModelPricing, ModelUsageStat, NativeSessionRepairOutcome, PendingPermission, SessionCostReport,
+    SessionForkChild, SessionLease, SessionLineage, SessionManager, SessionMeta, SessionOrigin,
+    SessionResult, SessionStoreError, StorageOwner, TokenBreakdown, TurnStat,
 };
 pub use model_switch_log::{ModelSwitchRecord, MODEL_SWITCH_VERSION};
 pub use partial::{PartialStream, PartialToolCall};

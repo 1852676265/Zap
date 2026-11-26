@@ -555,6 +555,7 @@ pub(crate) async fn execute_git_workflow(
             event.repo_full_name, pr_or_issue_number
         )),
         is_scheduled: false,
+        is_team: false,
     };
 
     // 6. Shared admission: same identity, input-log and display rows as /chat.

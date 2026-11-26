@@ -19,7 +19,7 @@ import { GitWebhookDialog } from './GitWebhookDialog';
 import { ScheduleDialog } from './ScheduleDialog';
 import { showToast } from './Toast';
 import { CwdPicker } from './CwdPicker';
-import { foldProjectSessions, mergeOptimisticSession, mergeOptimisticSessions, mergeProjectSessions, sessionIdRange, uniqueSessionsById } from '../lib/sessionList';
+import { filterVisibleSidebarSessions, foldProjectSessions, isHiddenTeamSession, isTeamSessionId, mergeOptimisticSession, mergeOptimisticSessions, mergeProjectSessions, sessionIdRange, uniqueSessionsById } from '../lib/sessionList';
 import {
   loadSidebarMemory,
   loadSidebarSnapshot,
@@ -103,6 +103,8 @@ interface SidebarProps {
   onOpenUpdate?: () => void;
   /** 更新状态信息 */
   updateInfo?: UpdateCheckResponse | null;
+  /** 当前主聊天区打开的是隐藏会话（如团队子会话）：侧栏不回填、不凭空合成临时项目分组。 */
+  activeSessionHidden?: boolean;
 }
 
 type Translate = (key: MsgKey, params?: Record<string, string | number>) => string;
@@ -533,6 +535,7 @@ export function Sidebar({
   onSwitchWorkbenchView,
   onOpenUpdate,
   updateInfo,
+  activeSessionHidden = false,
 }: SidebarProps) {
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches,
@@ -574,7 +577,7 @@ export function Sidebar({
     typeof initialSidebarSnapshot?.scrollTop === 'number' ? initialSidebarSnapshot.scrollTop : null,
   );
   const [sessions, setSessions] = useState<SessionMetaWithProject[]>(
-    () => initialSidebarSnapshot?.sessions ?? [],
+    () => filterVisibleSidebarSessions(initialSidebarSnapshot?.sessions ?? []),
   );
   const [loading, setLoading] = useState(() => !initialSidebarSnapshot);
   // 活跃（正在运行 turn）的会话 id，来自 GET /chat/active；配合 5s 轮询，
@@ -595,7 +598,14 @@ export function Sidebar({
   // Project sessions accordion
   const [projects, setProjects] = useState<ProjectInfo[]>(() => initialSidebarSnapshot?.projects ?? []);
   const [projectSessionsMap, setProjectSessionsMap] = useState<Record<string, SessionMetaWithProject[]>>(
-    () => initialSidebarSnapshot?.projectSessions ?? {},
+    () => {
+      const raw = initialSidebarSnapshot?.projectSessions ?? {};
+      const cleaned: Record<string, SessionMetaWithProject[]> = {};
+      for (const [hash, list] of Object.entries(raw)) {
+        cleaned[hash] = filterVisibleSidebarSessions(list);
+      }
+      return cleaned;
+    },
   );
 
   const allOptimistic = useMemo<SessionMetaWithProject[]>(() => {
@@ -610,7 +620,7 @@ export function Sidebar({
     if (optimisticSession && !list.some((s) => s.id === optimisticSession.id)) {
       list.push(optimisticSession);
     }
-    return list;
+    return filterVisibleSidebarSessions(list);
   }, [optimisticSessions, optimisticSession]);
   // 同一浏览器刷新必须原样恢复上次展开的分组；只有跨设备/无痕冷启动
   // （localStorage 为空）才退回 daemon 的默认展开行为。
@@ -800,8 +810,9 @@ export function Sidebar({
     if (!silent) setLoading(true);
     // 加载全局会话
     listSessions()
-      .then((list) => {
+      .then((rawList) => {
         if (epoch !== loadEpochRef.current) return;
+        const list = filterVisibleSidebarSessions(rawList);
         setSessions(list);
         if (activeSessionId) {
           const found = list.find((s) => s.id === activeSessionId);
@@ -827,7 +838,7 @@ export function Sidebar({
     hashes.forEach((hash) => {
       listProjectSessions(hash)
         .then((list) => {
-          setProjectSessionsMap((m) => ({ ...m, [hash]: list }));
+          setProjectSessionsMap((m) => ({ ...m, [hash]: filterVisibleSidebarSessions(list) }));
         })
         .catch(() => {});
     });
@@ -862,9 +873,10 @@ export function Sidebar({
         getBootstrap()
           .then((boot) => {
             if (Array.isArray(boot.sessions)) {
-              setSessions(boot.sessions);
+              const visibleBootSessions = filterVisibleSidebarSessions(boot.sessions);
+              setSessions(visibleBootSessions);
               if (activeSessionId) {
-                const found = boot.sessions.find((s) => s.id === activeSessionId);
+                const found = visibleBootSessions.find((s) => s.id === activeSessionId);
                 if (found) onActiveSessionMeta?.(found);
               }
               setLoading(false);
@@ -929,6 +941,7 @@ export function Sidebar({
       }
       if (event.type === 'session_upsert') {
         const row = event.session;
+        if (isHiddenTeamSession(row)) return;
         setSessions((cur) => mergeSessionRow(cur, row));
         setProjectSessionsMap((prev) => {
           const list = prev[row.project_hash];
@@ -1131,7 +1144,7 @@ export function Sidebar({
     if (!projectSessionsMapRef.current[projectHash]) {
       listProjectSessions(projectHash)
         .then((list) => {
-          setProjectSessionsMap((m) => ({ ...m, [projectHash]: list }));
+          setProjectSessionsMap((m) => ({ ...m, [projectHash]: filterVisibleSidebarSessions(list) }));
         })
         .catch(() => {});
     }
@@ -1218,7 +1231,7 @@ export function Sidebar({
       if (!projectSessionsMapRef.current[hash]) {
         listProjectSessions(hash)
           .then((list) => {
-            setProjectSessionsMap((m) => ({ ...m, [hash]: list }));
+            setProjectSessionsMap((m) => ({ ...m, [hash]: filterVisibleSidebarSessions(list) }));
           })
           .catch(() => {});
       }
@@ -1248,7 +1261,7 @@ export function Sidebar({
         if (!projectSessionsMap[hash]) {
           listProjectSessions(hash)
             .then((list) => {
-              setProjectSessionsMap((m) => ({ ...m, [hash]: list }));
+              setProjectSessionsMap((m) => ({ ...m, [hash]: filterVisibleSidebarSessions(list) }));
             })
             .catch(() => {});
         }
@@ -1276,7 +1289,7 @@ export function Sidebar({
     if (projectSessionsMapRef.current[hash]) return;
     listProjectSessions(hash)
       .then((list) => {
-        setProjectSessionsMap((m) => ({ ...m, [hash]: list }));
+        setProjectSessionsMap((m) => ({ ...m, [hash]: filterVisibleSidebarSessions(list) }));
       })
       .catch(() => {});
   }
@@ -1399,12 +1412,12 @@ export function Sidebar({
       }
     }
 
-    const missing = [...running].filter((id) => !known.has(id));
+    const missing = [...running].filter((id) => !known.has(id) && !isTeamSessionId(id));
     void (async () => {
       for (const id of missing) {
         try {
           const found = await resolveSession(id);
-          if (cancelled || !found?.project_hash) continue;
+          if (cancelled || !found?.project_hash || isHiddenTeamSession(found)) continue;
           busyHashes.add(found.project_hash);
           knownRows.set(found.id, found);
         } catch {
@@ -1418,7 +1431,7 @@ export function Sidebar({
       // 因此这里把当前已知的运行行按 id 补进对应桶（不改动已有行，避免刷新时重排）。
       const runningRows = [...running]
         .map((id) => knownRows.get(id))
-        .filter((row): row is SessionMetaWithProject => !!row?.project_hash);
+        .filter((row): row is SessionMetaWithProject => !!row?.project_hash && !isHiddenTeamSession(row));
       if (runningRows.length > 0) {
         setProjectSessionsMap((prev) => {
           let changed = false;
@@ -2185,7 +2198,7 @@ export function Sidebar({
     const timer = setTimeout(() => {
       searchSessions(q)
         .then((r) => {
-          if (!cancelled) setSearchResults(r);
+          if (!cancelled) setSearchResults(filterVisibleSidebarSessions(r));
         })
         .catch(() => {
           if (!cancelled) setSearchResults([]);
@@ -2456,6 +2469,7 @@ export function Sidebar({
     }
   }
   if (
+    !activeSessionHidden &&
     projectHash &&
     cwd &&
     !isUserHomeDir(cwd) &&

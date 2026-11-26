@@ -24,7 +24,8 @@ use super::store::{
     with_read, with_write,
 };
 use super::team_bridge::{
-    format_team_overview_line, list_recent_team_runs_for_project, lookup_team_run_overview,
+    format_team_overview_line, lazy_sync_team_deliveries_if_changed,
+    list_recent_team_runs_for_project, lookup_team_run_overview,
 };
 use super::types::{
     normalize_project_key, normalize_project_key_str, normalize_project_name,
@@ -145,6 +146,7 @@ impl Tool for MemoryRecallTool {
         let started = Instant::now();
 
         let res = tokio::task::spawn_blocking(move || {
+            let _ = lazy_sync_team_deliveries_if_changed();
             with_read(|conn, _| execute_memory_recall_inner(conn, &sid, &working_dir, parsed))
         })
         .await;

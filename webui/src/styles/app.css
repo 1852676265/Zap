@@ -6559,8 +6559,10 @@ body {
 .input-footer-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   margin-left: auto;
 }
 
@@ -6587,6 +6589,7 @@ body {
   align-items: center;
   gap: 6px;
   margin-right: 2px;
+  flex-shrink: 0;
 }
 .composer-floating-elapsed {
   font-size: 11px;
@@ -6679,9 +6682,16 @@ body {
 .model-controls {
   flex-shrink: 1;
 }
+.input-footer-actions .model-controls {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.input-footer-actions .model-controls > .effort-selector {
+  flex-shrink: 0;
+}
 .input-footer-actions .model-controls > .model-selector:not(.effort-selector) {
   min-width: 60px;
-  max-width: 260px;
+  max-width: 240px;
   flex: 0 1 auto;
 }
 .input-footer-actions .model-controls > .model-selector:not(.effort-selector) .model-selector-trigger,
@@ -6691,6 +6701,38 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 0 10px !important;
+  gap: 6px !important;
+}
+.input-footer-actions .model-trigger-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-brand-accent, var(--app-brand));
+  flex-shrink: 0;
+}
+.input-footer-actions .model-capsule-name {
+  font-size: 12px;
+  font-weight: 500;
+}
+.input-footer-actions .effort-capsule-trigger {
+  background: var(--app-card-background, rgba(255, 255, 255, 0.04)) !important;
+  padding: 0 9px !important;
+  gap: 4px !important;
+}
+.input-footer-actions .effort-capsule-trigger:hover,
+.input-footer-actions .effort-capsule-trigger.is-active {
+  background: var(--app-ghost-button-hover-background, rgba(255, 255, 255, 0.08)) !important;
+  border-color: var(--app-primary, #6366f1) !important;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--app-primary, #6366f1) 25%, transparent);
+}
+.input-footer-actions .effort-prefix {
+  font-size: 11px;
+  opacity: 0.85;
+}
+.input-footer-actions .effort-value-label {
+  font-size: 11.5px;
+  font-weight: 600;
 }
 .input-footer-actions .model-capsule-provider-badge {
   display: none !important;
@@ -12666,11 +12708,42 @@ body {
     width: auto !important;
     display: flex !important;
     align-items: center !important;
+    justify-content: flex-end !important;
     gap: 6px !important;
-    flex-shrink: 0 !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+  }
+  .input-footer-actions .effort-selector {
+    display: none !important;
+  }
+  .input-footer-actions .model-controls {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .input-footer-actions .model-controls > .model-selector:not(.effort-selector) {
+    min-width: 0;
+    max-width: min(170px, 42vw);
+    flex: 0 1 auto;
+  }
+  .input-footer-actions .model-capsule-trigger {
+    height: 32px !important;
+    min-height: 32px !important;
+    max-height: 32px !important;
+    padding: 0 8px !important;
+    gap: 4px !important;
+    max-width: 100% !important;
+  }
+  .input-footer-actions .model-trigger-icon {
+    display: none !important;
+  }
+  .input-footer-actions .model-capsule-name {
+    font-size: 11.5px !important;
+    font-weight: 600 !important;
   }
   .input-footer-actions > .mode-selector {
     max-width: 100%;
+    flex-shrink: 0 !important;
   }
   .input-footer-actions .mode-selector-trigger {
     height: 32px !important;
@@ -20701,6 +20774,49 @@ select option {
 }
 .model-selector-down .effort-dropdown .effort-menu-row { gap: 6px !important; }
 .model-selector-down .effort-dropdown .effort-budget-input { width: 84px !important; }
+
+/* 输入框底部操作区向上弹出的思考强度菜单：与顶栏下拉保持同款宽度、不裁剪预算输入框 */
+.input-footer-actions .model-selector-up .effort-dropdown {
+  top: auto !important;
+  bottom: calc(100% + 6px) !important;
+  left: auto !important;
+  right: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  min-width: 300px !important;
+  max-width: min(360px, calc(100vw - 16px)) !important;
+  overflow-x: hidden !important;
+  background: var(--app-menu-background, #18181b);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--app-menu-border, rgba(255, 255, 255, 0.14));
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  z-index: 9999 !important;
+}
+:root[data-theme='light'] .input-footer-actions .model-selector-up .effort-dropdown {
+  border-color: rgba(15, 23, 42, 0.1);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+.input-footer-actions .model-selector-up .effort-dropdown .effort-menu-row { gap: 6px !important; }
+.input-footer-actions .model-selector-up .effort-dropdown .effort-budget-input { width: 84px !important; }
+
+:root[data-theme='light'] .input-footer-actions .effort-prefix {
+  color: #475569;
+  opacity: 1;
+}
+:root[data-theme='light'] .input-footer-actions .effort-value-label {
+  color: #0f172a;
+  font-weight: 600;
+}
+:root:not([data-theme='light']) .input-footer-actions .effort-prefix {
+  color: #a1a7b3;
+  opacity: 1;
+}
+:root:not([data-theme='light']) .input-footer-actions .effort-value-label {
+  color: #f3f4f6;
+  font-weight: 600;
+}
 
 /* Light header Effort readout: the muted prefix was too faint on the white bar. */
 :root[data-theme='light'] .top-nav-model-slot .effort-prefix {

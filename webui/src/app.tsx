@@ -23,6 +23,7 @@ import { PluginCenterHostApp } from './custom/custom-registry';
 import { zapPluginKernel, usePluginKernelVersion } from './custom/plugin-kernel';
 import { isUserHomeDir, parseFilePathAndLines } from './lib/displayPath';
 import { dropEditorTabSnapshot, mainEditorStateKey } from './lib/editorTabState';
+import { isHiddenTeamSession, isTeamSessionId } from './lib/sessionList';
 import { languageOptions } from './i18n';
 
 // 设置类弹窗体积小且高频直达，静态导入可彻底消除首次冷启动点击左下角齿轮时的 Suspense 骨架切换闪动。
@@ -711,9 +712,6 @@ export function App() {
     }
   }, []);
 
-  // 右上角模型选择器插槽宿主 DOM 元素
-  const [topModelSlot, setTopModelSlot] = useState<HTMLElement | null>(null);
-
   const handleCloseDiffTab = (tabId: string) => {
     const closing = diffTabs.find((t) => t.id === tabId);
     if (closing?.type === 'editor' && closing.filePath) {
@@ -946,6 +944,8 @@ export function App() {
   // Chat 完成首条消息后会回传它创建的 session id；刷新侧栏列表。
   // `claimView=false`：只对齐侧栏/列表，绝不切换当前视图（用户在发送飞行期间已切走）。
   function handleSessionAssigned(id: string, opts?: { claimView?: boolean }) {
+    // 团队子会话在左侧主列表保持隐藏：若命中团队子会话 ID，只清理临时条目，绝不回填进乐观池。
+    const hiddenTeam = isTeamSessionId(id) || (activeSession?.id === id && isHiddenTeamSession(activeSession));
     // 把乐观条目的临时 id 对齐到后端真实 id（落地页发送时乐观条目用的是临时 id），
     // 这样接下来的列表刷新能按 id 去重，用真实条目（含自动命名）覆盖乐观条目。
     setOptimisticSessions((prev) => {
@@ -954,7 +954,7 @@ export function App() {
         if (key.startsWith('optimistic-') || key === id) {
           const item = next[key];
           delete next[key];
-          if (item) next[id] = { ...item, id };
+          if (item && !hiddenTeam) next[id] = { ...item, id };
         }
       }
       return next;
@@ -965,13 +965,18 @@ export function App() {
       setSessionId(id);
     }
     // 关键触发：一旦服务端确认会话分配，立即刷新侧栏，确保切换会话后该会话稳固展示
-    setSessionListVersion((v) => v + 1);
+    if (!hiddenTeam) {
+      setSessionListVersion((v) => v + 1);
+    }
   }
 
   // 首条消息发出瞬间：用消息前 10 字做临时标题，乐观插入侧栏（即时可见）。
   // 优先复用已创建会话的 id / 目录（新建按钮、切目录会预建会话）；落地页直发时
   // 还没有 id，先用临时 id，待 done 回传真实 id 后由 handleSessionAssigned 对齐。
   function handleOptimisticSession(title: string) {
+    if (isHiddenTeamSession(activeSession) || isTeamSessionId(sessionId)) {
+      return;
+    }
     const now = Math.floor(Date.now() / 1000);
     const id = activeSession?.id ?? `optimistic-${now}`;
     const newSession: SessionMetaWithProject = {
@@ -1532,9 +1537,13 @@ export function App() {
 
   // 刷新首帧 activeSession 可能还未 resolve 完成：用本地记忆的项目桶让 Sidebar
   // 立即展开正确分组，避免先折叠再展开的闪动。
+  const activeIsHiddenTeam =
+    (activeSession?.id === sessionId && isHiddenTeamSession(activeSession)) ||
+    isTeamSessionId(sessionId);
   const rememberedNavSession = rememberedSessionRef.current;
-  const activeProjectHash =
-    activeSession?.id === sessionId
+  const activeProjectHash = activeIsHiddenTeam
+    ? undefined
+    : activeSession?.id === sessionId
       ? activeSession.project_hash
       : rememberedNavSession?.id === sessionId
         ? rememberedNavSession.project_hash
@@ -1544,8 +1553,9 @@ export function App() {
     <div class="app">
       {/* ===== Full-height sidebar (通栏)：品牌 + 收起按钮在其顶部 ===== */}
       <Sidebar
-        activeSessionId={sessionId}
+        activeSessionId={activeIsHiddenTeam ? null : sessionId}
         activeProjectHash={activeProjectHash}
+        activeSessionHidden={activeIsHiddenTeam}
         onSelect={handleSelectSession}
         onNew={handleNewSession}
         open={sidebarOpen}
@@ -2054,14 +2064,6 @@ export function App() {
               )}
             </div>
 
-            {/* 模型选择控件插槽（核心操作，内含思考档位与模型胶囊，齿轮已内置） */}
-            <div
-              ref={setTopModelSlot}
-              class="top-nav-model-slot"
-              id="top-nav-model-slot"
-              style={activePluginView ? { display: 'none' } : undefined}
-            />
-
             {/* 更多收纳菜单（桌面宽屏隐藏；缩放窄屏或手机时动态显现并承载收纳项） */}
             <div class="top-nav-more-wrap" ref={topNavMoreRef}>
               <button
@@ -2301,7 +2303,6 @@ export function App() {
             activeMainTabId={activeMainTabId}
             setActiveMainTabId={setActiveMainTabId}
             onRightPanelLayoutChange={handleRightPanelLayoutChange}
-            topModelSlot={topModelSlot}
             onOpenModelConfig={() => setSettingsSection('model')}
             onOpenModeSettings={() => setSettingsSection('agent_mode')}
             onLiveReview={onLiveReview}

@@ -73,11 +73,103 @@ pub(crate) fn build_user_message(text: &str, images: &[TeamImage]) -> Message {
     }
 }
 
+fn resolve_lead_agent_id(override_id: Option<&str>, default_id: &str) -> String {
+    if let Some(ov) = override_id.map(str::trim).filter(|s| !s.is_empty()) {
+        return ov.to_string();
+    }
+    let def = default_id.trim();
+    if def.is_empty() {
+        "none".to_string()
+    } else {
+        def.to_string()
+    }
+}
+
+fn strip_recall_tool_footer(text: &str) -> String {
+    if let Some(idx) = text.find("[Memory Recall Tool]") {
+        let prefix = text[..idx].trim_end();
+        if text.trim_end().ends_with("</system-reminder>")
+            && !prefix.ends_with("</system-reminder>")
+        {
+            format!("{prefix}\n</system-reminder>")
+        } else {
+            prefix.to_string()
+        }
+    } else {
+        text.to_string()
+    }
+}
+
+/// 当主控经理绑定了专属记忆智能体（非空且不为 `"none"`）时，读取其静态规则档案与按本次查询召回的相关神经记忆知识。
+pub(crate) async fn build_lead_agent_memory_context(
+    lead_agent_id: &str,
+    query_text: &str,
+) -> Option<String> {
+    let aid = lead_agent_id.trim();
+    if aid.is_empty() || aid == "none" {
+        return None;
+    }
+    let aid_owned = aid.to_string();
+    let query_owned = truncate_chars_safe(query_text, 1000);
+    tokio::task::spawn_blocking(move || {
+        let virtual_sid = format!("team_lead_memory_{aid_owned}");
+        if zap_neural_memory::bind_session_neural_agent(&virtual_sid, &aid_owned).is_err() {
+            return None;
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(static_blk) = zap_neural_memory::build_static_system_block(&virtual_sid) {
+            let trimmed = static_blk.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+        if !query_owned.trim().is_empty() {
+            if let Some(dynamic_blk) = zap_neural_memory::build_dynamic_turn_reminder(
+                &virtual_sid,
+                &query_owned,
+                Path::new(""),
+            ) {
+                let cleaned = strip_recall_tool_footer(dynamic_blk.trim());
+                if !cleaned.trim().is_empty() {
+                    parts.push(cleaned);
+                }
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        let body = truncate_chars_safe(&parts.join("\n\n"), 6000);
+        Some(format!(
+            "[Lead Manager Neural Memory Context]\n\
+Apply the bound lead manager agent's persona, architectural rules, preferences, and recalled knowledge below when planning, designing unified contracts, or assessing revision impact.\n\
+Note: tool calls are disabled in this planning request; rely directly on the injected context below.\n\n\
+{body}"
+        ))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn build_lead_messages(
+    lead_memory: Option<String>,
+    prompt: &str,
+    images: &[TeamImage],
+) -> Vec<Message> {
+    let user_msg = build_user_message(prompt, images);
+    match lead_memory.filter(|s| !s.trim().is_empty()) {
+        Some(sys) => vec![Message::system(sys), user_msg],
+        None => vec![user_msg],
+    }
+}
+
 /// 立即创建 `pipeline` 模式的初始任务单（`stage = "planning"`, `status = "running"`），随后由后台异步跑阶段 1+2。
+#[allow(clippy::too_many_arguments)]
 pub async fn create_pending_pipeline_run(
     host: &dyn TeamHost,
     user_goal: &str,
     lead_model_override: Option<&str>,
+    lead_agent_id_override: Option<&str>,
     source_triage_id: Option<&str>,
     images: Vec<TeamImage>,
     prompt_overrides: BTreeMap<String, String>,
@@ -92,16 +184,24 @@ pub async fn create_pending_pipeline_run(
         goal.to_string()
     };
 
-    let (global_cfg, custom_projects) = tokio::task::spawn_blocking(|| {
-        with_team_store(|s| {
+    let (global_cfg, presets, custom_projects, agents) = tokio::task::spawn_blocking(|| {
+        let (cfg, presets, custom_projects) = with_team_store(|s| {
             Ok((
                 load_config_conn(&s.conn),
+                load_role_presets_conn(&s.conn)?,
                 load_custom_projects_conn(&s.conn)?,
             ))
-        })
+        })?;
+        let agents = zap_neural_memory::list_neural_agents().unwrap_or_default();
+        Ok::<_, String>((cfg, presets, custom_projects, agents))
     })
     .await
     .map_err(|e| format!("加载任务配置失败: {e}"))??;
+
+    let preset_map: HashMap<String, RoleBindingPreset> = presets
+        .into_iter()
+        .map(|p| (normalize_domain(&p.domain), p))
+        .collect();
 
     let config = crate::host::load_config()?;
     let default_model = config.effective_model_selection().unwrap_or_default();
@@ -128,6 +228,12 @@ pub async fn create_pending_pipeline_run(
         } else {
             p.avatar_id.clone()
         };
+        let aid = resolve_agent_id_for_domain(&p.agent_id, &dom, &preset_map, &agents);
+        let agent_label = agents
+            .iter()
+            .find(|a| a.id == aid)
+            .map(|a| a.label.clone())
+            .unwrap_or_default();
         initial_tasks.push(TeamTask {
             id: new_team_id("tsk"),
             run_id: run_id.clone(),
@@ -147,8 +253,8 @@ pub async fn create_pending_pipeline_run(
             } else {
                 host.hash_path(Path::new(p.working_dir.trim()))
             },
-            agent_id: p.agent_id.clone(),
-            agent_label: String::new(),
+            agent_id: aid,
+            agent_label,
             model: p.model.clone(),
             session_id: String::new(),
             custom_prompt: String::new(),
@@ -163,6 +269,7 @@ pub async fn create_pending_pipeline_run(
             verify_verdict: String::new(),
             verify_feedback: String::new(),
             touched_files: Vec::new(),
+            round_touched_files: Vec::new(),
             started_at: String::new(),
             updated_at: now.clone(),
             finished_at: String::new(),
@@ -191,6 +298,11 @@ pub async fn create_pending_pipeline_run(
         auto_verify: global_cfg.auto_verify,
         max_repairs: global_cfg.max_repairs,
         lead_model,
+        lead_agent_id: resolve_lead_agent_id(
+            lead_agent_id_override,
+            &global_cfg.default_lead_agent_id,
+        ),
+        current_round_no: 1,
         source_triage_id: source_triage_id.unwrap_or("").to_string(),
         synthesis_report: String::new(),
         created_at: now.clone(),
@@ -256,6 +368,7 @@ pub async fn build_pipeline_plan_for_run(
     let llm_plan = call_planner_llm(
         &config,
         &run.lead_model,
+        &run.lead_agent_id,
         current_working_dir,
         &goal_for_llm,
         "pipeline",
@@ -437,7 +550,12 @@ pub async fn generate_unified_interface_spec(
         ],
     );
 
-    let msgs = vec![build_user_message(&prompt, &run.goal_images)];
+    let lead_memory = build_lead_agent_memory_context(
+        &run.lead_agent_id,
+        &format!("{} {}", run.title, truncate_chars_safe(&run.user_goal, 500)),
+    )
+    .await;
+    let msgs = build_lead_messages(lead_memory, &prompt, &run.goal_images);
     let fut = async {
         let mut stream = match provider.chat_stream(&msgs, &[], &options).await {
             Ok(s) => s,
@@ -490,11 +608,13 @@ fn goal_implies_db(goal: &str) -> bool {
 }
 
 /// 根据用户输入的需求（或线上报错），用于 `triage` 模式同步拆解任务草稿并预填项目目录与记忆智能体。
+#[allow(clippy::too_many_arguments)]
 pub async fn plan_team_run(
     host: &std::sync::Arc<dyn TeamHost>,
     user_goal: &str,
     mode: &str,
     lead_model_override: Option<&str>,
+    lead_agent_id_override: Option<&str>,
     current_working_dir: &Path,
     source_triage_id: Option<&str>,
     inherited_bindings: Option<&HashMap<String, (String, String, String)>>,
@@ -545,10 +665,13 @@ pub async fn plan_team_run(
                 .then(|| global_cfg.default_model.trim().to_string())
         })
         .unwrap_or(default_model);
+    let lead_agent_id =
+        resolve_lead_agent_id(lead_agent_id_override, &global_cfg.default_lead_agent_id);
 
     let llm_plan = call_planner_llm(
         &config,
         &lead_model,
+        &lead_agent_id,
         current_working_dir,
         &goal_text,
         norm_mode,
@@ -620,6 +743,8 @@ pub async fn plan_team_run(
             0
         },
         lead_model,
+        lead_agent_id,
+        current_round_no: 1,
         source_triage_id: source_triage_id.unwrap_or("").to_string(),
         synthesis_report: String::new(),
         created_at: now.clone(),
@@ -734,11 +859,7 @@ fn materialize_planned_tasks(
             } else {
                 cp.working_dir.trim().to_string()
             };
-            let chosen_aid = if cp.agent_id.trim().is_empty() {
-                "none".to_string()
-            } else {
-                cp.agent_id.trim().to_string()
-            };
+            let chosen_aid = resolve_agent_id_for_domain(&cp.agent_id, &dom, &preset_map, agents);
             let chosen_mdl = if cp.model.trim().is_empty() {
                 lead_model.to_string()
             } else {
@@ -836,6 +957,7 @@ fn materialize_planned_tasks(
             verify_verdict: String::new(),
             verify_feedback: String::new(),
             touched_files: Vec::new(),
+            round_touched_files: Vec::new(),
             started_at: String::new(),
             updated_at: now.clone(),
             finished_at: String::new(),
@@ -878,6 +1000,7 @@ pub async fn convert_triage_to_pipeline(
         host,
         &combined_goal,
         Some(&triage_detail.run.lead_model),
+        Some(&triage_detail.run.lead_agent_id),
         Some(&triage_detail.run.id),
         triage_detail.run.goal_images,
         triage_detail.run.prompt_overrides,
@@ -923,11 +1046,12 @@ fn resolve_role_binding(
         .or_else(|| guess_project_for_domain(domain, goal, projects))
         .unwrap_or_else(|| fallback_wd.to_string());
 
-    let aid = preset
-        .map(|p| p.agent_id.trim().to_string())
-        .filter(|s| !s.is_empty() && s != "none" && agents.iter().any(|a| a.id == *s))
-        .or_else(|| guess_agent_for_domain(domain, agents))
-        .unwrap_or_else(|| "none".to_string());
+    let aid = resolve_agent_id_for_domain(
+        preset.map(|p| p.agent_id.as_str()).unwrap_or(""),
+        domain,
+        presets,
+        agents,
+    );
 
     let mdl = preset
         .map(|p| p.model.trim().to_string())
@@ -937,6 +1061,24 @@ fn resolve_role_binding(
     (wd, aid, mdl)
 }
 
+fn resolve_agent_id_for_domain(
+    explicit_agent_id: &str,
+    domain: &str,
+    presets: &HashMap<String, RoleBindingPreset>,
+    agents: &[NeuralAgent],
+) -> String {
+    let explicit = explicit_agent_id.trim();
+    if !explicit.is_empty() && explicit != "none" && agents.iter().any(|a| a.id == explicit) {
+        return explicit.to_string();
+    }
+    presets
+        .get(domain)
+        .map(|p| p.agent_id.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "none" && agents.iter().any(|a| a.id == *s))
+        .or_else(|| guess_agent_for_domain(domain, agents))
+        .unwrap_or_else(|| "none".to_string())
+}
+
 fn guess_agent_for_domain(domain: &str, agents: &[NeuralAgent]) -> Option<String> {
     let patterns: &[&str] = match domain {
         "sql" => &["sql", "db", "data", "mysql", "postgres", "数据库", "数仓"],
@@ -944,6 +1086,20 @@ fn guess_agent_for_domain(domain: &str, agents: &[NeuralAgent]) -> Option<String
             "backend", "server", "api", "rust", "java", "go", "后端", "服务",
         ],
         "frontend" => &["frontend", "web", "ui", "vue", "react", "前端", "界面"],
+        "mobile" => &[
+            "mobile",
+            "app",
+            "android",
+            "ios",
+            "flutter",
+            "uniapp",
+            "react-native",
+            "移动",
+            "小程序",
+            "frontend",
+            "前端",
+        ],
+        "qa" => &["qa", "test", "verify", "review", "测试", "验收"],
         _ => &["general", "default", "arch", "lead", "通用", "架构"],
     };
     for pat in patterns {
@@ -955,7 +1111,7 @@ fn guess_agent_for_domain(domain: &str, agents: &[NeuralAgent]) -> Option<String
             return Some(found.id.clone());
         }
     }
-    agents.first().map(|a| a.id.clone())
+    None
 }
 
 fn guess_project_for_domain(
@@ -1003,6 +1159,7 @@ fn guess_project_for_domain(
 async fn call_planner_llm(
     config: &zap_config::Config,
     lead_model: &str,
+    lead_agent_id: &str,
     working_dir: &Path,
     goal: &str,
     mode: &str,
@@ -1103,7 +1260,8 @@ async fn call_planner_llm(
         ],
     );
 
-    let msgs = vec![build_user_message(&prompt, images)];
+    let lead_memory = build_lead_agent_memory_context(lead_agent_id, goal).await;
+    let msgs = build_lead_messages(lead_memory, &prompt, images);
     let fut = async {
         let mut stream = match provider.chat_stream(&msgs, &[], &options).await {
             Ok(s) => s,
@@ -1713,7 +1871,12 @@ User Note: {}",
         if user_note.trim().is_empty() { "(none)" } else { user_note.trim() }
     );
 
-    let msgs = vec![build_user_message(&prompt, &all_images)];
+    let lead_memory = build_lead_agent_memory_context(
+        &run.lead_agent_id,
+        &format!("{} {}", truncate_chars_safe(&run.user_goal, 400), user_note),
+    )
+    .await;
+    let msgs = build_lead_messages(lead_memory, &prompt, &all_images);
     let fut = async {
         let mut stream = provider.chat_stream(&msgs, &[], &options).await.ok()?;
         let mut raw = String::new();
@@ -1797,7 +1960,52 @@ pub(crate) struct RevisionPlanResult {
     #[serde(default)]
     pub(crate) interface_spec_addition: String,
     #[serde(default)]
+    pub(crate) requires_sql: bool,
+    #[serde(default)]
     pub(crate) members: Vec<RevisionPlanMember>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmRevisionPlanOutput {
+    #[serde(default)]
+    cascading: bool,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    interface_spec_addition: String,
+    #[serde(default)]
+    requires_sql: Option<bool>,
+    #[serde(default)]
+    members: Vec<RevisionPlanMember>,
+}
+
+pub(crate) fn revision_implies_sql(instruction: &str) -> bool {
+    let low = instruction.to_ascii_lowercase();
+    low.contains("建表")
+        || low.contains("改表")
+        || low.contains("新表")
+        || low.contains("加表")
+        || low.contains("表结构")
+        || low.contains("加字段")
+        || low.contains("新增字段")
+        || low.contains("增加字段")
+        || low.contains("删字段")
+        || low.contains("改字段")
+        || low.contains("数据库")
+        || low.contains("索引")
+        || low.contains("外键")
+        || low.contains("迁移")
+        || low.contains("达梦")
+        || low.contains("dm8")
+        || low.contains("ddl")
+        || low.contains("sql")
+        || low.contains("schema")
+        || low.contains("alter table")
+        || low.contains("create table")
+        || low.contains("add column")
+        || low.contains("字典表")
+        || low.contains("数据表")
 }
 
 fn heuristic_revision_plan(
@@ -1913,6 +2121,7 @@ fn heuristic_revision_plan(
             "评估为局部独立调整，仅执行所选单个成员改造，不影响其他成员。".to_string()
         },
         interface_spec_addition: String::new(),
+        requires_sql: revision_implies_sql(instruction),
         members,
     }
 }
@@ -2013,13 +2222,14 @@ pub(crate) async fn plan_revision_impact(
 
     let prompt = format!(
         "You are the Engineering Manager evaluating a revision/change request on an existing multi-agent team run.\n\
-Determine WHICH team members need to act and whether the change cascades across repositories.\n\
+Determine WHICH team members need to act, whether the change cascades across repositories, and whether it requires database schema / SQL changes.\n\
 Rules:\n\
 1. If the change is purely internal to one repo (e.g., frontend styling, internal refactor without API/schema/field changes), set `cascading: false` and select ONLY that single member.\n\
 2. If the change alters API paths, parameters, response fields, auth permissions, or DB schema, set `cascading: true`: assign the source member `roleInChange: \"primary\"`, `waveOrder: 1` (instructing it to call `team_publish_contract` with the updated contract), and assign affected consumer members (e.g. frontend/mobile) `roleInChange: \"cascade\"`, `waveOrder: 2`.\n\
-3. Include ALL existing taskId entries in `members` (with `selected: false` and `roleInChange: \"unaffected\"` for untouched ones).\n\
+3. Set `requiresSql: true` ONLY if this revision requires creating/altering database tables, columns, indexes, constraints, or data migration SQL; otherwise set `requiresSql: false`.\n\
+4. Include ALL existing taskId entries in `members` (with `selected: false` and `roleInChange: \"unaffected\"` for untouched ones).\n\
 Write text in Chinese. Output ONLY raw JSON (no markdown fences):\n\
-{{\"cascading\":true/false,\"summary\":\"1-2 sentence explanation\",\"interfaceSpecAddition\":\"optional addendum if shared spec changed, else empty\",\"members\":[{{\"taskId\":\"...\",\"selected\":true/false,\"roleInChange\":\"primary|cascade|unaffected\",\"waveOrder\":1,\"instruction\":\"specific revision instruction for this member\",\"reason\":\"why affected or unaffected\"}}]}}\n\n\
+{{\"cascading\":true/false,\"requiresSql\":true/false,\"summary\":\"1-2 sentence explanation\",\"interfaceSpecAddition\":\"optional addendum if shared spec changed, else empty\",\"members\":[{{\"taskId\":\"...\",\"selected\":true/false,\"roleInChange\":\"primary|cascade|unaffected\",\"waveOrder\":1,\"instruction\":\"specific revision instruction for this member\",\"reason\":\"why affected or unaffected\"}}]}}\n\n\
 Goal: {}\n\
 Current Interface Spec: {}\n\
 Published Contracts:\n{}\n\
@@ -2034,7 +2244,16 @@ User Change Request: {}",
         clean_inst
     );
 
-    let msgs = vec![build_user_message(&prompt, images)];
+    let lead_memory = build_lead_agent_memory_context(
+        &run.lead_agent_id,
+        &format!(
+            "{} {}",
+            truncate_chars_safe(&run.user_goal, 400),
+            clean_inst
+        ),
+    )
+    .await;
+    let msgs = build_lead_messages(lead_memory, &prompt, images);
     let fut = async {
         let mut stream = provider.chat_stream(&msgs, &[], &options).await.ok()?;
         let mut raw = String::new();
@@ -2045,7 +2264,8 @@ User Change Request: {}",
                 _ => {}
             }
         }
-        extract_json_object(&raw).and_then(|j| serde_json::from_str::<RevisionPlanResult>(j).ok())
+        extract_json_object(&raw)
+            .and_then(|j| serde_json::from_str::<LlmRevisionPlanOutput>(j).ok())
     };
 
     match tokio::time::timeout(Duration::from_secs(45), fut).await {
@@ -2089,9 +2309,154 @@ User Change Request: {}",
                     out.summary
                 },
                 interface_spec_addition: out.interface_spec_addition.trim().to_string(),
+                requires_sql: out.requires_sql.unwrap_or(fallback.requires_sql),
                 members: merged_members,
             }
         }
         _ => fallback,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::{HostModelInfo, TeamHost};
+    use std::path::PathBuf;
+    use tokio_util::sync::CancellationToken;
+
+    struct DummyHost;
+
+    #[async_trait::async_trait]
+    impl TeamHost for DummyHost {
+        async fn current_working_dir(&self) -> PathBuf {
+            PathBuf::from("/workspace")
+        }
+
+        fn list_projects(&self) -> Vec<HostProjectInfo> {
+            Vec::new()
+        }
+
+        fn hash_path(&self, path: &Path) -> String {
+            format!("hash_{}", path.to_string_lossy().len())
+        }
+
+        fn list_models(&self) -> (String, Vec<HostModelInfo>) {
+            ("gpt-5".to_string(), Vec::new())
+        }
+
+        async fn run_child_turn(
+            &self,
+            _req: crate::host::HostChildTurnRequest,
+            _cancel: CancellationToken,
+        ) -> Result<(String, Vec<String>), String> {
+            Ok((String::new(), Vec::new()))
+        }
+    }
+
+    fn test_agents() -> Vec<NeuralAgent> {
+        vec![
+            NeuralAgent {
+                id: "xiaoli".into(),
+                icon: "🎓".into(),
+                name: "学渣".into(),
+                label: "🎓 学渣".into(),
+                color: "#14b8a6".into(),
+                hint: String::new(),
+                system_prompt: String::new(),
+            },
+            NeuralAgent {
+                id: "backend".into(),
+                icon: "⚙".into(),
+                name: "后端大白".into(),
+                label: "⚙ 后端大白".into(),
+                color: "#eab308".into(),
+                hint: String::new(),
+                system_prompt: String::new(),
+            },
+            NeuralAgent {
+                id: "frontend".into(),
+                icon: "🎨".into(),
+                name: "前端小白".into(),
+                label: "🎨 前端小白".into(),
+                color: "#ec4899".into(),
+                hint: String::new(),
+                system_prompt: String::new(),
+            },
+        ]
+    }
+
+    #[test]
+    fn custom_project_without_agent_falls_back_to_domain_agent_and_skips_unrelated_first_agent() {
+        let agents = test_agents();
+        assert_eq!(
+            guess_agent_for_domain("frontend", &agents),
+            Some("frontend".into())
+        );
+        assert_eq!(guess_agent_for_domain("qa", &agents), None);
+
+        let custom_projects = vec![
+            TeamProjectPreset {
+                id: "prj-fe".into(),
+                name: "GMZ".into(),
+                domain: "frontend".into(),
+                working_dir: "D:/GMZ".into(),
+                agent_id: "none".into(),
+                avatar_id: "frontend_artist".into(),
+                model: String::new(),
+                notes: String::new(),
+                sort_order: 0,
+                updated_at: String::new(),
+            },
+            TeamProjectPreset {
+                id: "prj-qa".into(),
+                name: "QA".into(),
+                domain: "qa".into(),
+                working_dir: "D:/QA".into(),
+                agent_id: "none".into(),
+                avatar_id: "qa_detective".into(),
+                model: String::new(),
+                notes: String::new(),
+                sort_order: 1,
+                updated_at: String::new(),
+            },
+        ];
+        let raw_tasks = vec![
+            LlmPlannedTask {
+                key: "t1".into(),
+                project_id: "prj-fe".into(),
+                domain: "frontend".into(),
+                title: "GMZ".into(),
+                description: "前端任务".into(),
+                acceptance_criteria: String::new(),
+                depends_on: Vec::new(),
+            },
+            LlmPlannedTask {
+                key: "t2".into(),
+                project_id: "prj-qa".into(),
+                domain: "qa".into(),
+                title: "QA".into(),
+                description: "验收".into(),
+                acceptance_criteria: String::new(),
+                depends_on: Vec::new(),
+            },
+        ];
+
+        let tasks = materialize_planned_tasks(
+            &DummyHost,
+            "run_1",
+            "测试",
+            "pipeline",
+            "gpt-5",
+            Path::new("/workspace"),
+            raw_tasks,
+            &custom_projects,
+            &[],
+            &agents,
+            &[],
+            None,
+        );
+        assert_eq!(tasks[0].agent_id, "frontend");
+        assert_eq!(tasks[0].agent_label, "🎨 前端小白");
+        assert_eq!(tasks[1].agent_id, "none");
     }
 }

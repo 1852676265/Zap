@@ -5230,21 +5230,54 @@ pub(crate) struct SessionRowWire {
     pub thinking_budget: Option<u32>,
 }
 
+/// 将遗留团队子会话 ID 统一归一化为 `SessionOrigin::Team`，确保前端拿到一致的起源标记。
+pub(crate) fn effective_session_origin(
+    origin: zap_capabilities::session::SessionOrigin,
+    session_id: &str,
+) -> zap_capabilities::session::SessionOrigin {
+    if zap_capabilities::session::is_team_session(origin, session_id) {
+        zap_capabilities::session::SessionOrigin::Team
+    } else {
+        origin
+    }
+}
+
+/// 统一判定是否应从左侧主会话列表、搜索与增量 upsert 隐藏（子 Agent 与团队子会话）。
+pub(crate) fn is_hidden_from_sidebar(
+    origin: zap_capabilities::session::SessionOrigin,
+    session_id: &str,
+) -> bool {
+    matches!(
+        effective_session_origin(origin, session_id),
+        zap_capabilities::session::SessionOrigin::Subagent
+            | zap_capabilities::session::SessionOrigin::Team
+    )
+}
+
+fn session_origin_wire(origin: zap_capabilities::session::SessionOrigin) -> &'static str {
+    match origin {
+        zap_capabilities::session::SessionOrigin::Manual => "manual",
+        zap_capabilities::session::SessionOrigin::Scheduled => "scheduled",
+        zap_capabilities::session::SessionOrigin::Protocol => "protocol",
+        zap_capabilities::session::SessionOrigin::Subagent => "subagent",
+        zap_capabilities::session::SessionOrigin::Team => "team",
+    }
+}
+
 /// Build the incremental session row for one stored session. `None` when the
-/// aggregate is not (yet) durable.
+/// aggregate is not (yet) durable or should stay hidden from the main sidebar.
 pub(crate) fn session_row_wire(
     working_dir: &std::path::Path,
     session_id: &str,
 ) -> Option<SessionRowWire> {
     let manager = NativeSessionManager::for_project(working_dir);
     let meta = manager.read_meta(session_id).ok()?;
-    let is_scheduled = meta.origin == zap_capabilities::session::SessionOrigin::Scheduled;
-    let origin = match meta.origin {
-        zap_capabilities::session::SessionOrigin::Manual => "manual",
-        zap_capabilities::session::SessionOrigin::Scheduled => "scheduled",
-        zap_capabilities::session::SessionOrigin::Protocol => "protocol",
-        zap_capabilities::session::SessionOrigin::Subagent => "subagent",
-    };
+    let effective_origin = effective_session_origin(meta.origin, session_id);
+    if is_hidden_from_sidebar(effective_origin, session_id) {
+        return None;
+    }
+    let is_scheduled = effective_origin == zap_capabilities::session::SessionOrigin::Scheduled;
+    let origin = session_origin_wire(effective_origin);
     Some(SessionRowWire {
         id: session_id.to_string(),
         name: meta.name.clone(),
@@ -5274,13 +5307,12 @@ pub(crate) fn session_row_wire_in_bucket(
     let manager =
         NativeSessionManager::with_root(NativeSessionManager::sessions_root().join(project_bucket));
     let meta = manager.read_meta(session_id).ok()?;
-    let is_scheduled = meta.origin == zap_capabilities::session::SessionOrigin::Scheduled;
-    let origin = match meta.origin {
-        zap_capabilities::session::SessionOrigin::Manual => "manual",
-        zap_capabilities::session::SessionOrigin::Scheduled => "scheduled",
-        zap_capabilities::session::SessionOrigin::Protocol => "protocol",
-        zap_capabilities::session::SessionOrigin::Subagent => "subagent",
-    };
+    let effective_origin = effective_session_origin(meta.origin, session_id);
+    if is_hidden_from_sidebar(effective_origin, session_id) {
+        return None;
+    }
+    let is_scheduled = effective_origin == zap_capabilities::session::SessionOrigin::Scheduled;
+    let origin = session_origin_wire(effective_origin);
     Some(SessionRowWire {
         id: session_id.to_string(),
         name: meta.name.clone(),
@@ -8190,13 +8222,9 @@ fn catalog_entry_to_session_summary(
     // 全局开关优先，其余情况磁盘元数据 > 内存热态（不再回扫会话目录）。
     let approval_mode =
         live_api::live_display_approval_mode_wire(&entry.id, entry.approval_mode.as_deref());
-    let origin = match entry.origin {
-        zap_capabilities::session::SessionOrigin::Manual => "manual",
-        zap_capabilities::session::SessionOrigin::Scheduled => "scheduled",
-        zap_capabilities::session::SessionOrigin::Protocol => "protocol",
-        zap_capabilities::session::SessionOrigin::Subagent => "subagent",
-    };
-    let is_scheduled = entry.origin == zap_capabilities::session::SessionOrigin::Scheduled;
+    let effective_origin = effective_session_origin(entry.origin, &entry.id);
+    let origin = session_origin_wire(effective_origin);
+    let is_scheduled = effective_origin == zap_capabilities::session::SessionOrigin::Scheduled;
     SessionSummary {
         id: entry.id.clone(),
         name: entry.name.clone(),
@@ -8270,8 +8298,9 @@ fn catalog_entry_is_visible(
     entry: &zap_capabilities::session::CatalogEntry,
     active: Option<&zap_capabilities::session::CatalogLocation>,
 ) -> bool {
-    // `task` 衍生的子 Agent 会话不占用常规侧边栏或会话选择器；仅通过父会话评测联查访问。
-    if entry.origin == zap_capabilities::session::SessionOrigin::Subagent {
+    // `task` 衍生的子 Agent 会话与 Agent Teams 成员子会话均不占用左侧主列表或会话选择器；
+    // 团队子会话仍可通过 `/sessions/resolve/:id` 与 `/projects/:hash/sessions/:id` 直达查看与续聊。
+    if is_hidden_from_sidebar(entry.origin, &entry.id) {
         return false;
     }
     if entry.message_count > 0 {
@@ -9516,7 +9545,7 @@ fn build_session_detail_response(
                 reasoning_effort: session.meta.reasoning_effort.clone(),
                 thinking_budget: session.meta.thinking_budget,
                 token_usage,
-                origin: session.meta.origin,
+                origin: effective_session_origin(session.meta.origin, &id),
                 todos,
                 todos_revision,
                 daemon_instance_id: daemon_instance_id.to_string(),
@@ -11754,7 +11783,7 @@ fn search_sessions_by_name_in_root(
     let mut entries: Vec<_> = catalog_scan_in_root(sessions_root)?
         .entries
         .into_iter()
-        .filter(|entry| entry.message_count > 0)
+        .filter(|entry| entry.message_count > 0 && !is_hidden_from_sidebar(entry.origin, &entry.id))
         .collect();
     crate::legacy_convert::repair_catalog_names_for_display_in_root(sessions_root, &mut entries);
     Ok(entries
@@ -13513,8 +13542,11 @@ pub struct ChatRequest {
     #[serde(default)]
     pub session_title: Option<String>,
     /// 标记本次请求是否源自后台定时任务触发（用于打上 SessionOrigin::Scheduled 标签）
-    #[serde(default)]
+    #[serde(skip_deserializing)]
     pub is_scheduled: bool,
+    /// 标记本次请求是否源自 Agent Teams 成员子会话（用于打上 SessionOrigin::Team 标签并在主列表隐藏）
+    #[serde(skip_deserializing)]
+    pub is_team: bool,
 }
 
 /// One attached image from the webui (base64-encoded), mapped to core `ImagePart`.
@@ -17575,6 +17607,7 @@ pub(crate) async fn process_chat_request(
         live_api::persist_session_preferred_model(&working_dir, &session_id, &provider_name);
         None
     };
+    let is_team_turn = req.is_team || zap_capabilities::session::is_team_session_id(&session_id);
     publish_chat_session_assignment(
         &working_dir,
         &session_id,
@@ -17585,9 +17618,38 @@ pub(crate) async fn process_chat_request(
         initial_preferred.as_deref(),
         Some(approval_mode),
         req.is_scheduled,
+        is_team_turn,
     )?;
     if !is_new_session {
-        if req.is_scheduled {
+        if is_team_turn {
+            let trimmed_title = req
+                .session_title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+            let mgr = NativeSessionManager::for_project(&working_dir);
+            let now_ms = zap_capabilities::session::now_ms();
+            let _ = mgr.update_meta(&session_id, |meta| {
+                meta.origin = zap_capabilities::session::SessionOrigin::Team;
+                if let Some(title) = trimmed_title {
+                    meta.name = title.to_string();
+                    meta.user_renamed = true;
+                }
+                meta.updated_at = now_ms;
+            });
+            if let Some(title) = trimmed_title {
+                let _ = event_tx.send(ChatEvent::SessionRenamed {
+                    session_id: session_id.clone(),
+                    name: title.to_string(),
+                });
+            }
+            publish_global(GlobalWireEvent::Activity {
+                session_id: session_id.clone(),
+                running: true,
+                terminal: None,
+                status: None,
+            });
+        } else if req.is_scheduled {
             let trimmed_title = req
                 .session_title
                 .as_deref()
@@ -17838,7 +17900,7 @@ pub(crate) async fn process_chat_request(
         runtime_cfg.shared_mcp_registry = shared_mcp_reg;
         runtime_cfg.extra_system_append = req.extra_system_append.clone();
         crate::zap_extensions::apply_chat_extensions(&mut runtime_cfg, Some(&session_id)).await;
-        runtime_cfg.session_display_name = (!req.is_scheduled)
+        runtime_cfg.session_display_name = (!req.is_scheduled && !is_team_turn)
             .then(|| req.session_title.clone())
             .flatten();
         runtime_cfg.dangerously_skip_permissions = approval_mode
@@ -17915,7 +17977,11 @@ pub(crate) async fn process_chat_request(
 
     while let Some(event) = runtime_event_rx.recv().await {
         for mut chat_event in projector.project_runtime(event, &perm_session_key) {
-            if !first_ttft_promoted && is_first_turn_for_default && !req.is_scheduled {
+            if !first_ttft_promoted
+                && is_first_turn_for_default
+                && !req.is_scheduled
+                && !is_team_turn
+            {
                 if matches!(
                     chat_event,
                     ChatEvent::TextDelta { .. }
@@ -18123,6 +18189,7 @@ fn publish_chat_session_assignment(
     preferred_model: Option<&str>,
     resolved_approval_mode: Option<crate::approval_mode::ApprovalMode>,
     is_scheduled: bool,
+    is_team: bool,
 ) -> anyhow::Result<()> {
     let mut provisional_name = None;
     if is_new_session {
@@ -18140,11 +18207,11 @@ fn publish_chat_session_assignment(
             .map(str::trim)
             .is_some_and(|title| !title.is_empty());
         // Protocol sessions are automation-owned: their durable mode is Auto.
-        // Scheduled sessions honor resolved_approval_mode (which defaults to Auto).
+        // Scheduled and Team sessions honor resolved_approval_mode (which defaults to Auto).
         // Native WebUI sessions persist the turn's resolved session/global mode
         // so creating or chatting from a draft session remembers the chosen mode
         // across restarts and cross-instance upserts.
-        let persisted_mode = if is_scheduled {
+        let persisted_mode = if is_scheduled || is_team {
             resolved_approval_mode.unwrap_or(crate::approval_mode::ApprovalMode::Auto)
         } else if has_protocol_title {
             crate::approval_mode::ApprovalMode::Auto
@@ -18158,17 +18225,21 @@ fn publish_chat_session_assignment(
         meta.message_count = 1;
         if let Some(title) = session_title.map(str::trim).filter(|t| !t.is_empty()) {
             meta.name = title.to_string();
-            // Pin API / client-provided / scheduled timestamped titles so
+            // Pin API / client-provided / scheduled / team titles so
             // turn-complete auto-name and AI naming leave them alone.
             meta.user_renamed = true;
-            if is_scheduled {
+            if is_team {
+                meta.origin = zap_capabilities::session::SessionOrigin::Team;
+            } else if is_scheduled {
                 meta.origin = zap_capabilities::session::SessionOrigin::Scheduled;
             } else {
                 meta.protocol_key = Some(title.to_string());
                 meta.origin = zap_capabilities::session::SessionOrigin::Protocol;
             }
         } else {
-            if is_scheduled {
+            if is_team {
+                meta.origin = zap_capabilities::session::SessionOrigin::Team;
+            } else if is_scheduled {
                 meta.origin = zap_capabilities::session::SessionOrigin::Scheduled;
             }
             if let Some(provisional) = first_user_prompt
@@ -26449,6 +26520,7 @@ mod tests {
             None,
             Some(crate::approval_mode::ApprovalMode::Plan),
             false,
+            false,
         )
         .unwrap();
 
@@ -26500,6 +26572,7 @@ mod tests {
             None,
             Some(crate::approval_mode::ApprovalMode::AcceptEdits),
             false,
+            false,
         )
         .unwrap();
 
@@ -26537,6 +26610,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
 
@@ -27056,6 +27130,7 @@ mod tests {
             extra_system_append: None,
             session_title: None,
             is_scheduled: false,
+            is_team: false,
         };
 
         let first = chat_stream(
@@ -27109,6 +27184,7 @@ mod tests {
                 extra_system_append: None,
                 session_title: None,
                 is_scheduled: false,
+                is_team: false,
             }),
         )
         .await
@@ -27844,6 +27920,7 @@ mod tests {
                 extra_system_append: None,
                 session_title: None,
                 is_scheduled: false,
+                is_team: false,
             },
             event_tx,
             admission.cancellation,
@@ -28514,6 +28591,89 @@ mod tests {
         assert!(resolve_session_in_root(root, "zzzzzzzz").unwrap().is_none());
     }
 
+    #[test]
+    fn team_sessions_hidden_from_lists_and_search_but_resolvable_even_when_active() {
+        use zap_capabilities::session::{
+            CatalogLocation, PresentationFile, SessionManager, SessionMeta, SessionOrigin,
+            StorageOwner,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let wd = tmp.path().join("team-proj");
+        std::fs::create_dir_all(&wd).unwrap();
+        let bucket = NativeSessionManager::project_hash(&wd);
+        let wd_str = wd.to_string_lossy().into_owned();
+
+        let mk = |id: &str, name: &str, origin: SessionOrigin| {
+            let manager = SessionManager::with_root(root.join(&bucket));
+            let lease = manager.acquire_lease(id).unwrap();
+            let snapshot = zap_kernel::message::SessionSnapshot::new(vec![
+                zap_kernel::message::Message::user("hello"),
+            ]);
+            let mut meta = SessionMeta::new(id, &wd_str, 1000);
+            meta.name = name.to_string();
+            meta.owner = StorageOwner::Native;
+            meta.origin = origin;
+            meta.message_count = 2;
+            manager
+                .commit_native_import(
+                    &lease,
+                    Some(&snapshot),
+                    Some(&PresentationFile::default()),
+                    &meta,
+                )
+                .unwrap();
+        };
+
+        let normal_id = "22222222-2222-4222-8222-222222222222";
+        let tagged_team_id = "33333333-3333-4333-8333-333333333333";
+        let legacy_team_id = format!("team_run-abc123_tsk-def456-{bucket}");
+
+        mk(normal_id, "普通用户会话", SessionOrigin::Manual);
+        mk(
+            tagged_team_id,
+            "🤝 [后端] 标记团队子会话",
+            SessionOrigin::Team,
+        );
+        mk(
+            &legacy_team_id,
+            "🤝 [前端] 历史团队子会话",
+            SessionOrigin::Protocol,
+        );
+
+        // 即便历史团队子会话处于 active（查看/续聊状态），列表、项目计数、搜索均保持隐藏。
+        let active = CatalogLocation {
+            id: legacy_team_id.clone(),
+            project_bucket: bucket.clone(),
+        };
+        let all = list_all_sessions_in_root(root, Some(&active)).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].meta.id, normal_id);
+
+        let proj_sessions = list_sessions_in_root(root, &bucket, Some(&active)).unwrap();
+        assert_eq!(proj_sessions.len(), 1);
+        assert_eq!(proj_sessions[0].id, normal_id);
+
+        let projects = list_projects_in_root(root, Some(&active)).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].session_count, 1);
+
+        let searched = search_sessions_by_name_in_root(root, "团队").unwrap();
+        assert!(searched.is_empty());
+
+        // 但点击「↗ 原生会话」走 resolve_session 依然可直达，并统一返回 origin = "team"。
+        let resolved_tagged = resolve_session_in_root(root, tagged_team_id)
+            .unwrap()
+            .expect("tagged team session must resolve");
+        assert_eq!(resolved_tagged.meta.origin.as_deref(), Some("team"));
+
+        let resolved_legacy = resolve_session_in_root(root, &legacy_team_id)
+            .unwrap()
+            .expect("legacy team session must resolve");
+        assert_eq!(resolved_legacy.meta.origin.as_deref(), Some("team"));
+    }
+
     // 回归：/chat (HTTP) 路径上非致命提示作为独立的 `warning` 事件下发,而不是 error。
     // webui 的 /api/chat 消费 ChatEvent；旧实现把 Warning 当成 error-shaped 事件，
     // 被前端染成红色「[错误: …]」并塞进回复气泡。
@@ -28578,6 +28738,7 @@ mod tests {
                 extra_system_append: None,
                 session_title: None,
                 is_scheduled: false,
+                is_team: false,
             },
             event_tx,
             admission.cancellation,

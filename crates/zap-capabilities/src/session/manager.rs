@@ -376,6 +376,24 @@ pub enum SessionOrigin {
     Protocol,
     /// `task` 工具派生的隔离子 Agent 会话；默认从用户会话历史侧栏与 `/resume` 列表隐藏，通过父会话级联评测联查。
     Subagent,
+    /// Agent Teams 编排派生的成员子会话；从主侧边栏与常规历史列表直接隐藏，
+    /// 仍可通过团队面板「原生会话」入口直达弹出查看与续聊。
+    Team,
+}
+
+/// 识别历史或运行期 Agent Teams 子会话 ID（`team_<run_id>_<member_or_role>...`）。
+pub fn is_team_session_id(id: &str) -> bool {
+    let trimmed = id.trim();
+    let Some(rest) = trimmed.strip_prefix("team_") else {
+        return false;
+    };
+    rest.contains('_') && !rest.ends_with('_')
+}
+
+/// 判断会话是否属于 Agent Teams 子会话（优先信任持久化的 `SessionOrigin::Team`，
+/// 同时兼容升级前已落盘但 `origin` 尚未标记为 `team` 的存量团队子会话）。
+pub fn is_team_session(origin: SessionOrigin, id: &str) -> bool {
+    origin == SessionOrigin::Team || is_team_session_id(id)
 }
 
 /// Persisted pending interactive permission checkpoint.
@@ -3331,7 +3349,10 @@ impl SessionManager {
         self.list()
             .into_iter()
             .filter(|m| {
-                !matches!(m.origin, SessionOrigin::Scheduled | SessionOrigin::Subagent)
+                !matches!(
+                    m.origin,
+                    SessionOrigin::Scheduled | SessionOrigin::Subagent | SessionOrigin::Team
+                ) && !is_team_session_id(&m.id)
                     && m.parent_session_id.is_none()
             })
             .collect()
@@ -8774,10 +8795,21 @@ mod tests {
         m.origin = SessionOrigin::Protocol;
         let proto: SessionMeta = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(proto.origin, SessionOrigin::Protocol);
+        m.origin = SessionOrigin::Team;
+        let team: SessionMeta = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(team.origin, SessionOrigin::Team);
         // old meta without the field → Manual
         let old = r#"{"id":"x","name":"n","working_dir":"/w","created_at":0,"updated_at":0}"#;
         let parsed: SessionMeta = serde_json::from_str(old).unwrap();
         assert_eq!(parsed.origin, SessionOrigin::Manual);
+
+        assert!(is_team_session_id("team_run-1_tsk-2-0123456789abcdef"));
+        assert!(is_team_session_id(
+            "team_run-1_sql_designer-0123456789abcdef"
+        ));
+        assert!(!is_team_session_id("team_single"));
+        assert!(!is_team_session_id("team_trailing_"));
+        assert!(!is_team_session_id("11111111-1111-4111-8111-111111111111"));
     }
 
     #[test]

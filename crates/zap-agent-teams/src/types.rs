@@ -29,6 +29,9 @@ pub struct TeamGlobalConfig {
     /// 启用精简提示词模式（去除重复说教与交叉冗余，SQL 仅提取 DDL 块；默认开启）
     #[serde(default = "default_true")]
     pub compact_prompts: bool,
+    /// 主控经理（鲸鱼管家）默认绑定的专属记忆智能体 ID（默认 `"none"`）
+    #[serde(default = "default_agent_none")]
+    pub default_lead_agent_id: String,
 }
 
 fn default_true() -> bool {
@@ -53,6 +56,7 @@ impl Default for TeamGlobalConfig {
             max_parallel_per_wave: 3,
             prompt_templates: BTreeMap::new(),
             compact_prompts: true,
+            default_lead_agent_id: "none".to_string(),
         }
     }
 }
@@ -165,6 +169,12 @@ pub struct TeamRun {
     pub max_repairs: u32,
     #[serde(default)]
     pub lead_model: String,
+    /// 本单主控经理（鲸鱼管家）绑定的专属记忆智能体 ID（默认 `"none"`）
+    #[serde(default = "default_agent_none")]
+    pub lead_agent_id: String,
+    /// 当前所属迭代期号（从 1 开始递增）
+    #[serde(default = "default_round_one")]
+    pub current_round_no: u32,
     #[serde(default)]
     pub source_triage_id: String,
     #[serde(default)]
@@ -183,6 +193,10 @@ fn default_mode_pipeline() -> String {
 
 fn default_status_draft() -> String {
     "draft".to_string()
+}
+
+fn default_round_one() -> u32 {
+    1
 }
 
 /// 单个跨仓库子任务节点（绑定独立 `working_dir` 与专属 `neural_memory` 智能体）。
@@ -248,13 +262,16 @@ pub struct TeamTask {
     pub contract_summary: String,
     #[serde(default)]
     pub last_output_excerpt: String,
-    /// `""` | `"passed"` | `"rejected"` | `"skipped"`
+    /// `""` | `"passed"` | `"rejected"` | `"skipped"` | `"qa_rework"` | `"routed_rework"` | `"retest"`
     #[serde(default)]
     pub verify_verdict: String,
     #[serde(default)]
     pub verify_feedback: String,
     #[serde(default)]
     pub touched_files: Vec<String>,
+    /// 当前这一期单独记录的改动文件（开新一期时对选中成员清零；`touched_files` 保留累计全量）
+    #[serde(default)]
+    pub round_touched_files: Vec<String>,
     #[serde(default)]
     pub started_at: String,
     #[serde(default)]
@@ -307,6 +324,82 @@ pub struct TeamEvent {
     pub detail: String,
 }
 
+/// 单期迭代中某个成员的执行快照（区分是否参与本期，并仅记录本期改动文件）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRoundTaskSnapshot {
+    pub id: String,
+    #[serde(default = "default_domain_general")]
+    pub domain: String,
+    #[serde(default)]
+    pub project_name: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub participated: bool,
+    #[serde(default = "default_wave_one")]
+    pub wave: usize,
+    #[serde(default)]
+    pub repair_count: u32,
+    #[serde(default)]
+    pub working_dir: String,
+    #[serde(default = "default_agent_none")]
+    pub agent_id: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub instruction: String,
+    #[serde(default)]
+    pub contract_summary: String,
+    #[serde(default)]
+    pub last_output_excerpt: String,
+    #[serde(default)]
+    pub verify_verdict: String,
+    #[serde(default)]
+    pub verify_feedback: String,
+    #[serde(default)]
+    pub touched_files: Vec<String>,
+}
+
+/// 团队整体分期迭代存档快照（第 1 期 / 第 2 期 …）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRound {
+    pub round_no: u32,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub requirement: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default)]
+    pub requires_db: bool,
+    #[serde(default)]
+    pub execution_plan: String,
+    #[serde(default)]
+    pub sql_schema_draft: String,
+    #[serde(default)]
+    pub interface_spec: String,
+    #[serde(default)]
+    pub delivery_sql: String,
+    #[serde(default)]
+    pub synthesis_report: String,
+    #[serde(default)]
+    pub tasks: Vec<TeamRoundTaskSnapshot>,
+    #[serde(default)]
+    pub contracts: Vec<TeamContract>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub finished_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamRunDetail {
@@ -314,6 +407,8 @@ pub struct TeamRunDetail {
     pub tasks: Vec<TeamTask>,
     pub contracts: Vec<TeamContract>,
     pub events: Vec<TeamEvent>,
+    #[serde(default)]
+    pub rounds: Vec<TeamRound>,
 }
 
 pub(crate) fn clean_path_str(raw: &str) -> String {

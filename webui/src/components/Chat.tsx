@@ -155,7 +155,7 @@ import {
   showPermissionNotice,
   terminalKindFromDone,
 } from '../lib/sessionNotify';
-import { createPortal, memo } from 'preact/compat';
+import { memo } from 'preact/compat';
 import { Markdown } from './Markdown';
 import { ModelSelector } from './ModelSelector';
 import { ModeSelector } from './ModeSelector';
@@ -482,8 +482,6 @@ interface ChatProps {
   setActiveMainTabId?: (id: string) => void;
   /** 右侧面板折叠状态与宽度变更回调，供外层顶栏开关与左侧栏自适应联动 */
   onRightPanelLayoutChange?: (layout: { collapsed: boolean; width: number }) => void;
-  /** 顶部导航栏模型选择器挂载槽 */
-  topModelSlot?: HTMLElement | null;
   /** 打开模型配置（和模型选择框绑在一起）。 */
   onOpenModelConfig?: () => void;
   /** 打开模式配置（跳转到系统设置 -> Agent 模式）。 */
@@ -537,7 +535,6 @@ export function Chat({
   activeMainTabId: externalActiveMainTabId,
   setActiveMainTabId: externalSetActiveMainTabId,
   onRightPanelLayoutChange,
-  topModelSlot,
   onOpenModelConfig,
   onOpenModeSettings,
   onLiveReview,
@@ -14186,7 +14183,7 @@ export function Chat({
         onCopy={handleInputCopy}
       />
 
-      {/* 底部功能栏：左侧上传附件，右侧紧凑元数据 + 模式选择 + 发送控制 */}
+      {/* 底部功能栏：左侧上传附件，右侧紧凑元数据 + 模型选择 + 模式选择 + 发送控制 */}
       <div class="input-footer">
         <div class="input-footer-primary">
           <input
@@ -14429,6 +14426,19 @@ export function Chat({
             </div>
           )}
 
+          <ModelSelector
+            value={provider}
+            onChange={(p) => switchProvider(p)}
+            onDefaultChange={followDefaultProvider}
+            sessionId={sessionId ?? activeIdRef.current}
+            sessionEffort={sessionEffort}
+            sessionBudget={sessionBudget}
+            onEffortChange={(effort, budget) =>
+              rememberSessionEffort(sessionId ?? activeIdRef.current, effort, budget)
+            }
+            direction="up"
+            onOpenModelConfig={onOpenModelConfig}
+          />
           <ModeSelector
             value={modeState.displayMode}
             disabled={Boolean(modeState.pendingMode)}
@@ -14489,29 +14499,6 @@ export function Chat({
       resizeComposer(ta);
     });
   }
-
-  const topModelChrome = (() => {
-    const slot = topModelSlot || (typeof document !== 'undefined' ? document.getElementById('top-nav-model-slot') : null);
-    if (!slot) return null;
-    return createPortal(
-      <div class="top-model-row">
-        <ModelSelector
-          value={provider}
-          onChange={(p) => switchProvider(p)}
-          onDefaultChange={followDefaultProvider}
-          sessionId={sessionId ?? activeIdRef.current}
-          sessionEffort={sessionEffort}
-          sessionBudget={sessionBudget}
-          onEffortChange={(effort, budget) =>
-            rememberSessionEffort(sessionId ?? activeIdRef.current, effort, budget)
-          }
-          direction="down"
-          onOpenModelConfig={onOpenModelConfig}
-        />
-      </div>,
-      slot,
-    );
-  })();
 
   if (landing) {
     return (
@@ -14614,7 +14601,6 @@ export function Chat({
           />
         </div>
 
-        {topModelChrome}
         {globalPreviewImage && (
           <ImageLightbox
             src={globalPreviewImage}
@@ -15214,7 +15200,6 @@ export function Chat({
         </div>
       )}
       </div>
-      {topModelChrome}
       {globalPreviewImage && (
         <ImageLightbox
           src={globalPreviewImage}

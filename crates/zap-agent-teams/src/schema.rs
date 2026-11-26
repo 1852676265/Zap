@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 fn format_sqlite_err(err: &rusqlite::Error) -> String {
     if let rusqlite::Error::SqliteFailure(ffi_err, msg) = err {
@@ -191,10 +191,31 @@ pub(crate) fn init_schema(conn: &Connection) -> Result<(), String> {
             detail TEXT NOT NULL DEFAULT ''
         );
 
+        CREATE TABLE IF NOT EXISTS team_rounds (
+            run_id TEXT NOT NULL,
+            round_no INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            requirement TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'running',
+            stage TEXT NOT NULL DEFAULT '',
+            requires_db INTEGER NOT NULL DEFAULT 0,
+            execution_plan TEXT NOT NULL DEFAULT '',
+            sql_schema_draft TEXT NOT NULL DEFAULT '',
+            interface_spec TEXT NOT NULL DEFAULT '',
+            delivery_sql TEXT NOT NULL DEFAULT '',
+            synthesis_report TEXT NOT NULL DEFAULT '',
+            tasks_snapshot_json TEXT NOT NULL DEFAULT '[]',
+            contracts_snapshot_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT '',
+            finished_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (run_id, round_no)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_team_runs_updated ON team_runs(updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_team_tasks_run ON team_tasks(run_id, wave ASC, sort_order ASC);
         CREATE INDEX IF NOT EXISTS idx_team_contracts_run ON team_contracts(run_id, created_at ASC);
         CREATE INDEX IF NOT EXISTS idx_team_events_run_seq ON team_events(run_id, seq ASC);
+        CREATE INDEX IF NOT EXISTS idx_team_rounds_run ON team_rounds(run_id, round_no ASC);
         ",
     )
     .map_err(|e| format!("Failed to initialize agent_teams schema: {}", format_sqlite_err(&e)))?;
@@ -292,6 +313,24 @@ pub(crate) fn init_schema(conn: &Connection) -> Result<(), String> {
         "team_tasks",
         "revision_note",
         "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "team_runs",
+        "current_round_no",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    ensure_column(
+        conn,
+        "team_runs",
+        "lead_agent_id",
+        "TEXT NOT NULL DEFAULT 'none'",
+    )?;
+    ensure_column(
+        conn,
+        "team_tasks",
+        "round_touched_files_json",
+        "TEXT NOT NULL DEFAULT '[]'",
     )?;
 
     let ver: i64 = conn

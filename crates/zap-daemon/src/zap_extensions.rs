@@ -94,6 +94,7 @@ impl TeamHost for DaemonTeamHost {
                 extra_system_append: req.extra_system_append.clone(),
                 session_title: req.session_title.clone(),
                 is_scheduled: false,
+                is_team: true,
             };
             match crate::admit_chat_turn(&self.0, chat_req, ChatAdmissionMode::RejectIfBusy, None)
                 .await

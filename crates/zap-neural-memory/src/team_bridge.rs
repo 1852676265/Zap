@@ -4,7 +4,9 @@
 //! 2. **跨端总进度透视**：平时单智能体严格隔离，但在查询挂有 `team_run_id` 的需求进度时，
 //!    只读查一眼该 Team 单的各端实时状态（前端/后端/SQL 哪端完成、哪端待返工），杜绝信息盲区。
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
@@ -21,10 +23,11 @@ use super::types::{
     TimelineEvent,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TeamTaskDelivery {
     pub run_id: String,
     pub run_title: String,
+    pub run_mode: String,
     pub run_status: String,
     pub task_id: String,
     pub domain: String,
@@ -32,10 +35,13 @@ pub struct TeamTaskDelivery {
     pub task_status: String,
     pub agent_id: String,
     pub working_dir: String,
+    pub session_id: String,
     pub sql_schema: String,
     pub interface_spec: String,
     pub contract_summary: String,
     pub verify_feedback: String,
+    pub synthesis_report: String,
+    pub repair_count: u32,
     pub touched_files: Vec<String>,
     pub updated_at: String,
 }
@@ -89,13 +95,79 @@ fn open_teams_readonly(db_path: &Path) -> Option<Connection> {
     Some(conn)
 }
 
-fn file_mtime_secs(p: &Path) -> u64 {
-    std::fs::metadata(p)
-        .and_then(|m| m.modified())
+fn file_stamp(p: &Path) -> Option<(u128, u64)> {
+    let meta = std::fs::metadata(p).ok()?;
+    let mtime_nanos = meta
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Some((mtime_nanos, meta.len()))
+}
+
+fn wal_path_for(db_path: &Path) -> PathBuf {
+    let mut os = db_path.as_os_str().to_os_string();
+    os.push("-wal");
+    PathBuf::from(os)
+}
+
+/// 同时采样主库 `teams.db` 与 `teams.db-wal` 的 `(mtime_nanos, len)` 组合哈希。
+/// SQLite WAL 模式下未 checkpoint 前主库 mtime 不变，仅采样主库会导致漏归档。
+pub(crate) fn teams_db_fingerprint(db_path: &Path) -> u64 {
+    let Some(main_stamp) = file_stamp(db_path) else {
+        return 0;
+    };
+    let wal_stamp = file_stamp(&wal_path_for(db_path));
+    let mut hasher = DefaultHasher::new();
+    main_stamp.hash(&mut hasher);
+    wal_stamp.hash(&mut hasher);
+    let fp = hasher.finish();
+    if fp == 0 {
+        1
+    } else {
+        fp
+    }
+}
+
+/// 优先提取 Markdown 中的 ```sql 代码块作为核心 DDL 摘要，避免长篇说明挤掉表名锚点。
+fn extract_sql_ddl_summary(raw: &str, max_chars: usize) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut blocks = Vec::new();
+    let lower = trimmed.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find("```sql") {
+        let start = cursor + rel + 6;
+        if start >= trimmed.len() {
+            break;
+        }
+        if let Some(end_rel) = trimmed[start..].find("```") {
+            let block = trimmed[start..start + end_rel].trim();
+            if !block.is_empty() {
+                blocks.push(block);
+            }
+            cursor = start + end_rel + 3;
+        } else {
+            break;
+        }
+    }
+    if blocks.is_empty() {
+        truncate_chars(trimmed, max_chars)
+    } else {
+        truncate_chars(&blocks.join("\n"), max_chars)
+    }
+}
+
+/// 提取同任务单契约/决策要点的槽位前缀（如 `[Team r1] 前后端锁定契约：`），
+/// 防止同一轮交付中 DDL 与接口契约互相覆盖，同时确保二期修订准确作废同类旧契约。
+fn fact_slot_prefix<'a>(text: &'a str, run_prefix: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(run_prefix)?;
+    let colon_pos = rest.find('：')?;
+    let end = run_prefix.len() + colon_pos + '：'.len_utf8();
+    Some(&text[..end])
 }
 
 fn truncate_chars(s: &str, max_chars: usize) -> String {
@@ -163,6 +235,15 @@ pub(crate) fn apply_team_delivery_conn(
         "等待在 Team 协作单中继续收尾或修复".to_string()
     };
 
+    let real_session_id = {
+        let sid = d.session_id.trim();
+        if !sid.is_empty() {
+            sid.to_string()
+        } else {
+            format!("team_{}_{}", d.run_id, d.task_id)
+        }
+    };
+
     // 1. 抽屉 2（需求进度本）：按 (team_run_id, team_task_id) 幂等更新或新建进度卡
     let existing_tasks = load_tasks_conn(conn, Some(agent_id))?;
     let existing_task = existing_tasks
@@ -174,6 +255,9 @@ pub(crate) fn apply_team_delivery_conn(
             old.status = task_status.to_string();
             old.progress_note = progress_note.clone();
             old.remaining_note = remaining_note.clone();
+            if !d.session_id.trim().is_empty() {
+                old.session_id = real_session_id.clone();
+            }
             old.next_step = if is_done {
                 String::new()
             } else {
@@ -200,7 +284,7 @@ pub(crate) fn apply_team_delivery_conn(
             progress_note: progress_note.clone(),
             remaining_note: remaining_note.clone(),
             touched_files: d.touched_files.clone(),
-            session_id: format!("team_{}_{}", d.run_id, d.task_id),
+            session_id: real_session_id.clone(),
             source_turn_ids: Vec::new(),
             status: task_status.to_string(),
             created_at: ts.clone(),
@@ -218,24 +302,27 @@ pub(crate) fn apply_team_delivery_conn(
     };
     upsert_task_conn(conn, &task)?;
 
-    // 2. 抽屉 3（知识与经验活卡片）：按角色提取定案成果（DDL / 接口契约 / 验收摘要），追加为独立要点不覆盖旧结论
+    // 2. 抽屉 3（知识与经验活卡片）：按角色提取定案成果（DDL / 接口契约 / 会诊结论 / 避坑经验）
     let mut distilled_facts: Vec<NodeFact> = Vec::new();
     let domain_low = d.domain.trim().to_lowercase();
-    if domain_low == "sql" && !d.sql_schema.trim().is_empty() {
-        distilled_facts.push(NodeFact {
-            id: new_id("nf"),
-            kind: "contract".into(),
-            text: format!(
-                "[Team {}] 确认表结构/DDL：{}",
-                d.run_id,
-                truncate_chars(&d.sql_schema, 420)
-            ),
-            status: "active".into(),
-            updated_at: ts.clone(),
-            ..Default::default()
-        });
+    if matches!(domain_low.as_str(), "sql" | "backend") && !d.sql_schema.trim().is_empty() {
+        let ddl_summary = extract_sql_ddl_summary(&d.sql_schema, 420);
+        if !ddl_summary.is_empty() {
+            distilled_facts.push(NodeFact {
+                id: new_id("nf"),
+                kind: "contract".into(),
+                text: format!("[Team {}] 确认表结构/DDL：{}", d.run_id, ddl_summary),
+                status: "active".into(),
+                updated_at: ts.clone(),
+                ..Default::default()
+            });
+        }
     }
-    if !d.interface_spec.trim().is_empty() && matches!(domain_low.as_str(), "backend" | "frontend")
+    if !d.interface_spec.trim().is_empty()
+        && matches!(
+            domain_low.as_str(),
+            "backend" | "frontend" | "mobile" | "qa"
+        )
     {
         distilled_facts.push(NodeFact {
             id: new_id("nf"),
@@ -279,6 +366,35 @@ pub(crate) fn apply_team_delivery_conn(
             ..Default::default()
         });
     }
+    if d.run_mode.trim().eq_ignore_ascii_case("triage") && !d.synthesis_report.trim().is_empty() {
+        distilled_facts.push(NodeFact {
+            id: new_id("nf"),
+            kind: "fact".into(),
+            text: format!(
+                "[Team {}] 联合会诊结论：{}",
+                d.run_id,
+                truncate_chars(&d.synthesis_report, 420)
+            ),
+            status: "active".into(),
+            updated_at: ts.clone(),
+            ..Default::default()
+        });
+    }
+    if d.repair_count > 0 && !d.verify_feedback.trim().is_empty() {
+        distilled_facts.push(NodeFact {
+            id: new_id("nf"),
+            kind: "pitfall".into(),
+            text: format!(
+                "[Team {}] 返工避坑（返工 {} 次）：{}",
+                d.run_id,
+                d.repair_count,
+                truncate_chars(&d.verify_feedback, 260)
+            ),
+            status: "active".into(),
+            updated_at: ts.clone(),
+            ..Default::default()
+        });
+    }
 
     let mut linked_node_ids = Vec::new();
     if !distilled_facts.is_empty() {
@@ -316,12 +432,37 @@ pub(crate) fn apply_team_delivery_conn(
             ..Default::default()
         });
 
+        let run_prefix = format!("[Team {}]", d.run_id);
+        let mut inserted_ids: HashSet<String> = HashSet::new();
         for fact in distilled_facts {
             let dup = node
                 .facts
                 .iter()
                 .any(|f| f.is_active() && f.text == fact.text);
             if !dup {
+                if matches!(fact.kind.as_str(), "contract" | "decision") {
+                    let new_slot = fact_slot_prefix(&fact.text, &run_prefix);
+                    for old_fact in &mut node.facts {
+                        if !old_fact.is_active()
+                            || inserted_ids.contains(&old_fact.id)
+                            || old_fact.kind != fact.kind
+                            || !old_fact.text.starts_with(&run_prefix)
+                        {
+                            continue;
+                        }
+                        let old_slot = fact_slot_prefix(&old_fact.text, &run_prefix);
+                        let same_slot = match (new_slot, old_slot) {
+                            (Some(ns), Some(os)) => ns == os,
+                            _ => true,
+                        };
+                        if same_slot && old_fact.text != fact.text {
+                            old_fact.status = "superseded".into();
+                            old_fact.superseded_by = fact.id.clone();
+                            old_fact.invalid_at = ts.clone();
+                        }
+                    }
+                }
+                inserted_ids.insert(fact.id.clone());
                 node.facts.insert(0, fact);
             }
         }
@@ -351,14 +492,17 @@ pub(crate) fn apply_team_delivery_conn(
             node.status = "solid".into();
             node.mastery = node.mastery.max(85);
         }
-        node.events.insert(
-            0,
-            NodeEvent {
-                ts: ts.clone(),
-                text: format!("[Team {}] {}", d.run_id, progress_note),
-            },
-        );
-        node.events.truncate(12);
+        let ev_text = format!("[Team {}] {}", d.run_id, progress_note);
+        if node.events.first().map(|e| e.text.as_str()) != Some(ev_text.as_str()) {
+            node.events.insert(
+                0,
+                NodeEvent {
+                    ts: ts.clone(),
+                    text: ev_text,
+                },
+            );
+            node.events.truncate(12);
+        }
         upsert_node_conn(conn, &node)?;
         linked_node_ids.push(node.id);
     }
@@ -373,7 +517,7 @@ pub(crate) fn apply_team_delivery_conn(
             project,
             project_key,
             working_dir: d.working_dir.clone(),
-            session_id: format!("team_{}_{}", d.run_id, d.task_id),
+            session_id: real_session_id,
             turn_id: String::new(),
             raw_file: "team".into(),
             user_goal: task_title.clone(),
@@ -399,18 +543,18 @@ pub(crate) fn apply_team_delivery_conn(
 }
 
 /// 惰性增量同步 `teams.db` 中已验收通过或已暂停/失败的 Team 子任务成果到对应智能体记忆。
-/// 若 `teams.db` 不存在或文件 mtime 未变化，直接 <0.1ms 短路返回。
+/// 若 `teams.db` 不存在或主库与 `-wal` 组合指纹未变化，直接 <0.1ms 短路返回。
 pub(crate) fn lazy_sync_team_deliveries_if_changed() -> usize {
-    static LAST_MTIME: AtomicU64 = AtomicU64::new(0);
+    static LAST_FINGERPRINT: AtomicU64 = AtomicU64::new(0);
     let Some(db_path) = teams_db_path() else {
         return 0;
     };
-    let mtime = file_mtime_secs(&db_path);
-    if mtime == 0 {
+    let fp = teams_db_fingerprint(&db_path);
+    if fp == 0 {
         return 0;
     }
-    let prev = LAST_MTIME.load(Ordering::Relaxed);
-    if prev == mtime {
+    let prev = LAST_FINGERPRINT.load(Ordering::Relaxed);
+    if prev == fp {
         return 0;
     }
 
@@ -420,12 +564,12 @@ pub(crate) fn lazy_sync_team_deliveries_if_changed() -> usize {
     let deliveries = read_finalized_deliveries_from_teams_conn(&tconn);
     drop(tconn);
 
-    LAST_MTIME.store(mtime, Ordering::Relaxed);
     if deliveries.is_empty() {
+        LAST_FINGERPRINT.store(fp, Ordering::Relaxed);
         return 0;
     }
 
-    super::store::with_write(|store| {
+    match super::store::with_write(|store| {
         let mut count = 0usize;
         for d in &deliveries {
             if apply_team_delivery_conn(&store.conn, d).unwrap_or(false) {
@@ -433,15 +577,25 @@ pub(crate) fn lazy_sync_team_deliveries_if_changed() -> usize {
             }
         }
         Ok(count)
-    })
-    .unwrap_or(0)
+    }) {
+        Ok(count) => {
+            LAST_FINGERPRINT.store(fp, Ordering::Relaxed);
+            count
+        }
+        Err(_) => 0,
+    }
 }
 
-fn read_finalized_deliveries_from_teams_conn(tconn: &Connection) -> Vec<TeamTaskDelivery> {
+pub(crate) fn read_finalized_deliveries_from_teams_conn(
+    tconn: &Connection,
+) -> Vec<TeamTaskDelivery> {
+    let mut deliveries: Vec<TeamTaskDelivery> = Vec::new();
     let sql = "
-        SELECT r.id, r.title, r.status, r.sql_schema_draft, r.interface_spec, r.delivery_sql,
+        SELECT r.id, r.title, r.mode, r.status, r.sql_schema_draft, r.interface_spec,
+               r.delivery_sql, r.synthesis_report, r.finished_at,
                t.id, t.domain, t.title, t.status, t.agent_id, t.working_dir,
-               t.contract_summary, t.verify_feedback, t.touched_files_json, t.updated_at
+               t.session_id, t.repair_count, t.contract_summary, t.verify_feedback,
+               t.touched_files_json, t.updated_at
         FROM team_tasks t
         JOIN team_runs r ON r.id = t.run_id
         WHERE t.agent_id != '' AND t.agent_id != 'none'
@@ -452,38 +606,131 @@ fn read_finalized_deliveries_from_teams_conn(tconn: &Connection) -> Vec<TeamTask
         ORDER BY t.updated_at DESC
         LIMIT 80
     ";
-    let Ok(mut stmt) = tconn.prepare(sql) else {
-        return Vec::new();
-    };
-    let Ok(rows) = stmt.query_map([], |row| {
-        let sql_draft: String = row.get::<_, String>(3).unwrap_or_default();
-        let delivery_sql: String = row.get::<_, String>(5).unwrap_or_default();
-        let tf_str: String = row.get::<_, String>(14).unwrap_or_else(|_| "[]".into());
-        Ok(TeamTaskDelivery {
-            run_id: row.get(0)?,
-            run_title: row.get(1)?,
-            run_status: row.get(2)?,
-            sql_schema: if !delivery_sql.trim().is_empty() {
-                delivery_sql
+    if let Ok(mut stmt) = tconn.prepare(sql) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            let sql_draft: String = row.get::<_, String>(4).unwrap_or_default();
+            let delivery_sql: String = row.get::<_, String>(6).unwrap_or_default();
+            let run_finished_at: String = row.get::<_, String>(8).unwrap_or_default();
+            let tf_str: String = row.get::<_, String>(19).unwrap_or_else(|_| "[]".into());
+            let task_updated_at: String = row.get::<_, String>(20).unwrap_or_default();
+            // 整单完结后 r.finished_at 会晚于单个子任务的 t.updated_at，据此触发二段同步以补全会诊结论与最终 delivery_sql
+            let effective_updated_at =
+                if !run_finished_at.trim().is_empty() && run_finished_at > task_updated_at {
+                    run_finished_at
+                } else {
+                    task_updated_at
+                };
+            Ok(TeamTaskDelivery {
+                run_id: row.get(0)?,
+                run_title: row.get(1)?,
+                run_mode: row.get::<_, String>(2).unwrap_or_default(),
+                run_status: row.get(3)?,
+                sql_schema: if !delivery_sql.trim().is_empty() {
+                    delivery_sql
+                } else {
+                    sql_draft
+                },
+                interface_spec: row.get::<_, String>(5).unwrap_or_default(),
+                synthesis_report: row.get::<_, String>(7).unwrap_or_default(),
+                task_id: row.get(9)?,
+                domain: row.get(10)?,
+                task_title: row.get(11)?,
+                task_status: row.get(12)?,
+                agent_id: row.get(13)?,
+                working_dir: row.get(14)?,
+                session_id: row.get::<_, String>(15).unwrap_or_default(),
+                repair_count: row.get::<_, i64>(16).unwrap_or(0).max(0) as u32,
+                contract_summary: row.get::<_, String>(17).unwrap_or_default(),
+                verify_feedback: row.get::<_, String>(18).unwrap_or_default(),
+                touched_files: serde_json::from_str(&tf_str).unwrap_or_default(),
+                updated_at: effective_updated_at,
+            })
+        }) {
+            deliveries.extend(rows.flatten());
+        }
+    }
+
+    // 常规全栈流水线不会往 team_tasks 写入 domain = 'sql'，补充扫描 team_runs 中的 SQL 架构师成果
+    let sql_runs_query = "
+        SELECT r.id, r.title, r.mode, r.status, r.stage,
+               r.sql_schema_draft, r.interface_spec, r.delivery_sql, r.synthesis_report,
+               r.sql_agent_id, r.sql_working_dir, r.sql_session_id, r.updated_at
+        FROM team_runs r
+        WHERE r.sql_agent_id != '' AND r.sql_agent_id != 'none'
+          AND (TRIM(r.delivery_sql) != '' OR TRIM(r.sql_schema_draft) != '')
+          AND (
+            r.status IN ('completed', 'paused', 'failed')
+            OR r.stage IN ('contracting', 'executing', 'completed')
+            OR TRIM(r.delivery_sql) != ''
+          )
+        ORDER BY r.updated_at DESC
+        LIMIT 40
+    ";
+    if let Ok(mut stmt) = tconn.prepare(sql_runs_query) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            let run_id: String = row.get(0)?;
+            let run_title: String = row.get(1)?;
+            let run_mode: String = row.get::<_, String>(2).unwrap_or_default();
+            let run_status: String = row.get(3)?;
+            let run_stage: String = row.get::<_, String>(4).unwrap_or_default();
+            let sql_draft: String = row.get::<_, String>(5).unwrap_or_default();
+            let interface_spec: String = row.get::<_, String>(6).unwrap_or_default();
+            let delivery_sql: String = row.get::<_, String>(7).unwrap_or_default();
+            let synthesis_report: String = row.get::<_, String>(8).unwrap_or_default();
+            let sql_agent_id: String = row.get(9)?;
+            let sql_working_dir: String = row.get::<_, String>(10).unwrap_or_default();
+            let sql_session_id: String = row.get::<_, String>(11).unwrap_or_default();
+            let updated_at: String = row.get::<_, String>(12).unwrap_or_default();
+            let task_status = if !delivery_sql.trim().is_empty()
+                || run_status == "completed"
+                || matches!(
+                    run_stage.as_str(),
+                    "contracting" | "executing" | "completed"
+                ) {
+                "completed".to_string()
             } else {
-                sql_draft
-            },
-            interface_spec: row.get::<_, String>(4).unwrap_or_default(),
-            task_id: row.get(6)?,
-            domain: row.get(7)?,
-            task_title: row.get(8)?,
-            task_status: row.get(9)?,
-            agent_id: row.get(10)?,
-            working_dir: row.get(11)?,
-            contract_summary: row.get::<_, String>(12).unwrap_or_default(),
-            verify_feedback: row.get::<_, String>(13).unwrap_or_default(),
-            touched_files: serde_json::from_str(&tf_str).unwrap_or_default(),
-            updated_at: row.get(15)?,
-        })
-    }) else {
-        return Vec::new();
-    };
-    rows.flatten().collect()
+                run_status.clone()
+            };
+            Ok(TeamTaskDelivery {
+                run_id,
+                run_title,
+                run_mode,
+                run_status,
+                task_id: "__sql__".into(),
+                domain: "sql".into(),
+                task_title: "表结构与 DDL 设计".into(),
+                task_status,
+                agent_id: sql_agent_id,
+                working_dir: sql_working_dir,
+                session_id: sql_session_id,
+                sql_schema: if !delivery_sql.trim().is_empty() {
+                    delivery_sql
+                } else {
+                    sql_draft
+                },
+                interface_spec,
+                contract_summary: String::new(),
+                verify_feedback: String::new(),
+                synthesis_report,
+                repair_count: 0,
+                touched_files: Vec::new(),
+                updated_at,
+            })
+        }) {
+            for sql_delivery in rows.flatten() {
+                let has_explicit_sql_task = deliveries.iter().any(|d| {
+                    d.run_id == sql_delivery.run_id
+                        && d.domain.eq_ignore_ascii_case("sql")
+                        && d.agent_id == sql_delivery.agent_id
+                });
+                if !has_explicit_sql_task {
+                    deliveries.push(sql_delivery);
+                }
+            }
+        }
+    }
+
+    deliveries
 }
 
 /// 只读透视指定 Team 需求单的跨端总进度（用于单聊回答“这个需求改好没？还剩哪端？”）。

@@ -549,6 +549,7 @@ fn list_project_sessions(working_dir: &std::path::Path) -> Vec<(String, SessionS
                 zap_capabilities::session::SessionOrigin::Scheduled => "scheduled".to_string(),
                 zap_capabilities::session::SessionOrigin::Protocol => "protocol".to_string(),
                 zap_capabilities::session::SessionOrigin::Subagent => "subagent".to_string(),
+                zap_capabilities::session::SessionOrigin::Team => "team".to_string(),
             }),
             is_scheduled: meta
                 .as_ref()
@@ -1011,6 +1012,7 @@ async fn run_compat_turn(state: AppState, turn: CompatTurn, format: WireFormat) 
         // (`user_renamed=true`) so later lookups by `user` stay stable.
         session_title: Some(session_key_raw.clone()),
         is_scheduled: false,
+        is_team: false,
     };
 
     let occupancy = format!("compat-user:{session_key_raw}");

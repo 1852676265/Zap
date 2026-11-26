@@ -1667,7 +1667,7 @@ export interface SessionMeta {
   /** Per-session reasoning effort; absent means "inherit the provider default". */
   reasoning_effort?: string | null;
   thinking_budget?: number | null;
-  origin?: 'manual' | 'scheduled' | 'protocol' | string;
+  origin?: 'manual' | 'scheduled' | 'protocol' | 'subagent' | 'team' | string;
   is_scheduled?: boolean;
 }
 
@@ -1802,8 +1802,8 @@ export interface SessionDetail {
   thinking_budget?: number | null;
   /** Last-request occupancy for the footer (persists across restart). Not turn-cumulative billing. */
   token_usage?: SessionTokenUsage | null;
-  /** `manual` / `scheduled` / `protocol`. Protocol sessions are observed in Auto. */
-  origin?: 'manual' | 'scheduled' | 'protocol';
+  /** `manual` / `scheduled` / `protocol` / `subagent` / `team`. Protocol sessions are observed in Auto. */
+  origin?: 'manual' | 'scheduled' | 'protocol' | 'subagent' | 'team';
   /** Authoritative active todo list from backend transcript. */
   todos?: Array<{ id?: string; content: string; status: 'pending' | 'in_progress' | 'completed' }>;
   /** Monotonic server revision of `todos`; lower revisions must never overwrite higher ones. */

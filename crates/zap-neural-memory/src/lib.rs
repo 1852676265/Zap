@@ -51,6 +51,11 @@ pub fn bind_session_neural_agent(session_id: &str, agent_id: &str) -> Result<(),
     store::with_write(|s| store::set_session_agent_conn(&s.conn, session_id, agent_id))
 }
 
+/// 供 `agent_teams` 在成员验收通过、整单交付或修订完结后主动触发增量回流同步。
+pub fn sync_team_deliveries_now() -> usize {
+    team_bridge::lazy_sync_team_deliveries_if_changed()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -90,7 +95,10 @@ mod tests {
         set_session_agent_conn, setup_mem_db, upsert_agent_conn, upsert_node_conn,
         upsert_profile_conn, upsert_raw_turn_conn, upsert_task_conn, KnownProject,
     };
-    use super::team_bridge::{apply_team_delivery_conn, is_team_managed_session, TeamTaskDelivery};
+    use super::team_bridge::{
+        apply_team_delivery_conn, is_team_managed_session,
+        read_finalized_deliveries_from_teams_conn, teams_db_fingerprint, TeamTaskDelivery,
+    };
     use super::types::{
         default_windows, normalize_project_key, DraftTurn, NeuralAgent, NeuralNode, NeuralTask,
         NodeFact, ProfileFact, RawTurn, TimelineEvent, MAX_NODES_PER_AGENT,
@@ -1443,6 +1451,7 @@ mod tests {
         let delivery = TeamTaskDelivery {
             run_id: "trun_order_export".into(),
             run_title: "订单批量导出需求".into(),
+            run_mode: "pipeline".into(),
             run_status: "completed".into(),
             task_id: "tt_be_1".into(),
             domain: "backend".into(),
@@ -1450,10 +1459,13 @@ mod tests {
             task_status: "completed".into(),
             agent_id: "backend".into(),
             working_dir: "/work/tsm-server".into(),
+            session_id: "team_trun_order_export_tt_be_1-a1b2c3d4".into(),
             sql_schema: String::new(),
             interface_spec: "POST /api/orders/export 接受 dateRange 返回异步 taskId".into(),
             contract_summary: "完成导出接口与限流保护".into(),
             verify_feedback: "单测与接口契约验收通过".into(),
+            synthesis_report: String::new(),
+            repair_count: 0,
             touched_files: vec!["src/routes/orders_export.rs".into()],
             updated_at: "2026-11-20 10:30:00".into(),
         };
@@ -1466,6 +1478,17 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].team_run_id, "trun_order_export");
         assert_eq!(tasks[0].status, "done");
+        assert_eq!(
+            tasks[0].session_id,
+            "team_trun_order_export_tt_be_1-a1b2c3d4"
+        );
+
+        let timeline = load_timeline_conn(&conn, Some("backend"), 10).unwrap();
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(
+            timeline[0].session_id,
+            "team_trun_order_export_tt_be_1-a1b2c3d4"
+        );
 
         let nodes = load_nodes_conn(&conn, Some("backend")).unwrap();
         assert_eq!(nodes.len(), 1);
@@ -1542,5 +1565,262 @@ mod tests {
         assert_eq!(remaining, 1);
         let final_nodes = load_nodes_conn(&conn, Some("backend")).unwrap();
         assert_eq!(final_nodes[0].active_facts().len(), 2);
+    }
+
+    #[test]
+    fn get_session_agent_payload_reflects_explicit_and_unbound_sessions() {
+        let conn = setup_mem_db();
+        seed_backend_agent(&conn);
+
+        let unbound = super::rpc::get_session_agent_payload_conn(&conn, "team_unseen").unwrap();
+        assert_eq!(unbound["sessionId"], "team_unseen");
+        assert_eq!(unbound["agentId"], "none");
+        assert_eq!(unbound["explicitlyBound"], false);
+        assert_eq!(unbound["agents"].as_array().unwrap().len(), 1);
+
+        set_session_agent_conn(&conn, "team_r1_t1", "backend").unwrap();
+        let bound = super::rpc::get_session_agent_payload_conn(&conn, "team_r1_t1").unwrap();
+        assert_eq!(bound["sessionId"], "team_r1_t1");
+        assert_eq!(bound["agentId"], "backend");
+        assert_eq!(bound["explicitlyBound"], true);
+    }
+
+    #[test]
+    fn teams_db_fingerprint_detects_wal_only_writes() {
+        struct CleanDir(std::path::PathBuf);
+        impl Drop for CleanDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir_path = std::env::temp_dir().join(format!(
+            "zap-nm-fp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir_path).unwrap();
+        let _guard = CleanDir(dir_path.clone());
+        let db_path = dir_path.join("teams.db");
+        let wal_path = dir_path.join("teams.db-wal");
+
+        assert_eq!(teams_db_fingerprint(&db_path), 0);
+
+        std::fs::write(&db_path, b"sqlite-main-v1").unwrap();
+        let fp1 = teams_db_fingerprint(&db_path);
+        assert_ne!(fp1, 0);
+        assert_eq!(teams_db_fingerprint(&db_path), fp1);
+
+        // 仅写入 -wal，主库 teams.db 的 mtime/len 完全不变时，指纹也必须变化
+        std::fs::write(&wal_path, b"wal-frame-1").unwrap();
+        let fp2 = teams_db_fingerprint(&db_path);
+        assert_ne!(fp2, fp1);
+
+        std::fs::write(&wal_path, b"wal-frame-1-plus-commit-2").unwrap();
+        let fp3 = teams_db_fingerprint(&db_path);
+        assert_ne!(fp3, fp2);
+    }
+
+    #[test]
+    fn team_bridge_syncs_sql_architect_and_backend_ddl_and_supersedes_revised_contracts() {
+        // 1. 构造模拟 teams.db，验证常规全栈单从 team_runs 回流 SQL 架构师与真实字段
+        let tconn = Connection::open_in_memory().unwrap();
+        tconn
+            .execute_batch(
+                "CREATE TABLE team_runs (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'pipeline',
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    stage TEXT NOT NULL DEFAULT 'completed',
+                    sql_schema_draft TEXT NOT NULL DEFAULT '',
+                    interface_spec TEXT NOT NULL DEFAULT '',
+                    delivery_sql TEXT NOT NULL DEFAULT '',
+                    synthesis_report TEXT NOT NULL DEFAULT '',
+                    sql_agent_id TEXT NOT NULL DEFAULT 'none',
+                    sql_working_dir TEXT NOT NULL DEFAULT '',
+                    sql_session_id TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE team_tasks (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    working_dir TEXT NOT NULL,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    repair_count INTEGER NOT NULL DEFAULT 0,
+                    contract_summary TEXT NOT NULL DEFAULT '',
+                    verify_feedback TEXT NOT NULL DEFAULT '',
+                    touched_files_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        tconn
+            .execute(
+                "INSERT INTO team_runs VALUES (
+                    'trun_rbac', 'RBAC 权限中心', 'pipeline', 'completed', 'completed',
+                    '```sql\nCREATE TABLE sys_role (id BIGINT PRIMARY KEY, code VARCHAR(64));\n```',
+                    'GET /api/v1/roles 返回分页列表',
+                    'CREATE TABLE sys_role (id BIGINT PRIMARY KEY, code VARCHAR(64));',
+                    '',
+                    'sql_arch', '/work/db-migrations', 'team_trun_rbac_sql-99aa',
+                    '2026-11-21 10:00:00', '2026-11-21 10:05:00'
+                )",
+                [],
+            )
+            .unwrap();
+        tconn
+            .execute(
+                "INSERT INTO team_tasks VALUES (
+                    't_be', 'trun_rbac', 'backend', '实现角色接口', 'completed',
+                    'backend', '/work/tsm-server', 'team_trun_rbac_t_be-11bb',
+                    1, '实现角色 CRUD 接口', '首轮缺少租户隔离校验，二轮已补齐并通过',
+                    '[\"src/role.rs\"]', '2026-11-21 10:03:00'
+                )",
+                [],
+            )
+            .unwrap();
+        tconn
+            .execute(
+                "INSERT INTO team_tasks VALUES (
+                    't_mob', 'trun_rbac', 'mobile', '实现移动端角色切换', 'completed',
+                    'mobile', '/work/tsm-app', 'team_trun_rbac_t_mob-22cc',
+                    0, '移动端接入角色列表', '移动端联调通过',
+                    '[\"lib/role_page.dart\"]', '2026-11-21 10:04:00'
+                )",
+                [],
+            )
+            .unwrap();
+
+        let deliveries = read_finalized_deliveries_from_teams_conn(&tconn);
+        let sql_del = deliveries
+            .iter()
+            .find(|d| d.task_id == "__sql__")
+            .expect("team_runs 中的 SQL 架构师应被构造为 __sql__ 回流");
+        assert_eq!(sql_del.domain, "sql");
+        assert_eq!(sql_del.agent_id, "sql_arch");
+        assert_eq!(sql_del.working_dir, "/work/db-migrations");
+        assert_eq!(sql_del.session_id, "team_trun_rbac_sql-99aa");
+
+        let conn = setup_mem_db();
+        seed_backend_agent(&conn);
+        for (id, name) in [("sql_arch", "SQL"), ("mobile", "Mobile")] {
+            upsert_agent_conn(
+                &conn,
+                &NeuralAgent {
+                    id: id.into(),
+                    icon: "*".into(),
+                    name: name.into(),
+                    label: name.into(),
+                    color: "#22c55e".into(),
+                    hint: name.into(),
+                    system_prompt: name.into(),
+                },
+                1,
+            )
+            .unwrap();
+        }
+
+        for d in &deliveries {
+            assert!(apply_team_delivery_conn(&conn, d).unwrap());
+        }
+
+        // SQL 架构师拿到 DDL
+        let sql_nodes = load_nodes_conn(&conn, Some("sql_arch")).unwrap();
+        assert_eq!(sql_nodes.len(), 1);
+        assert!(sql_nodes[0]
+            .active_facts()
+            .iter()
+            .any(|f| f.kind == "contract" && f.text.contains("CREATE TABLE sys_role")));
+
+        // 后端拿到 DDL + 接口契约 + 返工避坑（pitfall），且 DDL 与接口契约互不作废
+        let be_nodes = load_nodes_conn(&conn, Some("backend")).unwrap();
+        assert_eq!(be_nodes.len(), 1);
+        let be_active = be_nodes[0].active_facts();
+        assert!(be_active
+            .iter()
+            .any(|f| f.kind == "contract" && f.text.contains("CREATE TABLE sys_role")));
+        assert!(be_active
+            .iter()
+            .any(|f| f.kind == "contract" && f.text.contains("GET /api/v1/roles")));
+        assert!(be_active
+            .iter()
+            .any(|f| f.kind == "pitfall" && f.text.contains("返工 1 次")));
+
+        // 移动端拿到接口契约
+        let mob_nodes = load_nodes_conn(&conn, Some("mobile")).unwrap();
+        assert_eq!(mob_nodes.len(), 1);
+        assert!(mob_nodes[0]
+            .active_facts()
+            .iter()
+            .any(|f| f.kind == "contract" && f.text.contains("GET /api/v1/roles")));
+
+        // 2. 二期修订回流：接口契约升级为 v2，旧的 v1 contract 应被标为 superseded，同时保留 DDL 为 active
+        let mut revised_be = deliveries
+            .iter()
+            .find(|d| d.task_id == "t_be")
+            .unwrap()
+            .clone();
+        revised_be.interface_spec = "GET /api/v2/roles 增加 tenantId 过滤参数".into();
+        revised_be.contract_summary = "升级至 v2 角色接口并支持租户过滤".into();
+        revised_be.updated_at = "2026-11-22 09:00:00".into();
+        assert!(apply_team_delivery_conn(&conn, &revised_be).unwrap());
+
+        let be_nodes_v2 = load_nodes_conn(&conn, Some("backend")).unwrap();
+        let all_facts = &be_nodes_v2[0].facts;
+        let old_api = all_facts
+            .iter()
+            .find(|f| f.text.contains("GET /api/v1/roles"))
+            .expect("旧 v1 契约应保留作废历史");
+        let new_api = all_facts
+            .iter()
+            .find(|f| f.text.contains("GET /api/v2/roles"))
+            .expect("新 v2 契约应写入");
+        assert_eq!(old_api.status, "superseded");
+        assert_eq!(old_api.superseded_by, new_api.id);
+        assert!(!old_api.invalid_at.is_empty());
+        assert!(new_api.is_active());
+        // 同轮未改动的 DDL 仍保持 active
+        assert!(be_nodes_v2[0]
+            .active_facts()
+            .iter()
+            .any(|f| f.kind == "contract" && f.text.contains("CREATE TABLE sys_role")));
+
+        // 3. 联合会诊（triage）回流 synthesis_report 作为 fact
+        let triage_del = TeamTaskDelivery {
+            run_id: "trun_triage_1".into(),
+            run_title: "支付回调超时排查".into(),
+            run_mode: "triage".into(),
+            run_status: "completed".into(),
+            task_id: "t_qa".into(),
+            domain: "qa".into(),
+            task_title: "复现回调链路".into(),
+            task_status: "completed".into(),
+            agent_id: "backend".into(),
+            working_dir: "/work/tsm-server".into(),
+            session_id: "team_trun_triage_1_t_qa-55ee".into(),
+            interface_spec: "POST /api/pay/callback".into(),
+            synthesis_report: "根因：连接池上限 10 导致回调阻塞，建议扩容并异步化。".into(),
+            updated_at: "2026-11-22 11:00:00".into(),
+            ..Default::default()
+        };
+        assert!(apply_team_delivery_conn(&conn, &triage_del).unwrap());
+        let triage_node = load_nodes_conn(&conn, Some("backend"))
+            .unwrap()
+            .into_iter()
+            .find(|n| n.name.contains("支付回调超时排查"))
+            .expect("会诊知识卡应创建");
+        assert!(triage_node
+            .active_facts()
+            .iter()
+            .any(|f| f.kind == "fact" && f.text.contains("连接池上限 10")));
+        assert!(triage_node
+            .active_facts()
+            .iter()
+            .any(|f| f.kind == "contract" && f.text.contains("POST /api/pay/callback")));
     }
 }

@@ -28,8 +28,9 @@ use super::store::{
     load_contracts_for_run_conn, load_custom_projects_conn, load_role_presets_conn, load_run_conn,
     load_run_detail_conn, load_task_statuses_by_run_conn, load_tasks_for_run_conn,
     reset_run_to_team_binding_conn, save_config_conn, transition_run_stage_conn,
-    update_run_design_texts_conn, update_run_draft_cas_conn, upsert_custom_project_conn,
-    upsert_role_preset_conn, with_team_store, RevisionTaskTarget,
+    update_run_design_texts_conn, update_run_draft_cas_conn, update_run_lead_agent_conn,
+    upsert_custom_project_conn, upsert_role_preset_conn, with_team_store, RevisionRoundOptions,
+    RevisionTaskTarget,
 };
 use super::types::{
     clean_path_str, compute_and_assign_waves, new_team_id, normalize_domain, now_ts,
@@ -50,6 +51,8 @@ struct SaveDraftPayload {
     max_repairs: u32,
     #[serde(default)]
     lead_model: String,
+    #[serde(default)]
+    lead_agent_id: Option<String>,
     #[serde(default)]
     requires_db: Option<bool>,
     #[serde(default)]
@@ -223,6 +226,11 @@ async fn dispatch_rpc(
                 .get("leadModel")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.trim().is_empty());
+            let lead_agent_id = payload
+                .get("leadAgentId")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
             let images: Vec<TeamImage> = payload
                 .get("images")
                 .cloned()
@@ -236,6 +244,7 @@ async fn dispatch_rpc(
                     goal,
                     mode,
                     lead_model,
+                    lead_agent_id,
                     &current_wd,
                     None,
                     None,
@@ -253,6 +262,7 @@ async fn dispatch_rpc(
                     host.as_ref(),
                     goal,
                     lead_model,
+                    lead_agent_id,
                     None,
                     images,
                     overrides,
@@ -565,6 +575,13 @@ async fn dispatch_rpc(
                 let parsed: SaveDraftPayload =
                     serde_json::from_value(payload).map_err(|e| format!("任务参数无效: {e}"))?;
                 let _ = save_draft_internal(host.as_ref(), parsed).await?;
+            } else if let Some(lead_aid) = optional_string(&payload, "leadAgentId")? {
+                let rid_aid = run_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    with_team_store(|s| update_run_lead_agent_conn(&s.conn, &rid_aid, &lead_aid))
+                })
+                .await
+                .map_err(|e| e.to_string())??;
             }
             start_or_resume_run(host, &run_id).await?;
             let rid_q = run_id.clone();
@@ -791,6 +808,7 @@ async fn dispatch_rpc(
             }
             let has_compact = payload.get("compactPrompts").is_some();
             let has_default_model = payload.get("defaultModel").is_some();
+            let has_default_lead_agent = payload.get("defaultLeadAgentId").is_some();
             let mut cfg: TeamGlobalConfig =
                 serde_json::from_value(payload).map_err(|e| format!("配置格式错误: {e}"))?;
             let templates_only = action == "teams:save_prompt_templates";
@@ -808,6 +826,9 @@ async fn dispatch_rpc(
                         }
                         if !has_default_model {
                             cfg.default_model = old.default_model;
+                        }
+                        if !has_default_lead_agent {
+                            cfg.default_lead_agent_id = old.default_lead_agent_id;
                         }
                     }
                     if let Some(templates) = templates {
@@ -1125,9 +1146,20 @@ async fn dispatch_rpc(
                 .get("autoStart")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let (detail, live) =
-                dispatch_member_revision(host, &run_id, targets, spec_add, spec_rep, auto_start)
-                    .await?;
+            let round_opts = RevisionRoundOptions {
+                round_requirement: optional_string(&payload, "roundRequirement")?,
+                round_title: optional_string(&payload, "roundTitle")?,
+                requires_sql: payload.get("requiresSql").and_then(|v| v.as_bool()),
+                sql_note: optional_string(&payload, "sqlNote")?,
+                in_place_rework: payload
+                    .get("inPlaceRework")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            };
+            let (detail, live) = dispatch_member_revision(
+                host, &run_id, targets, spec_add, spec_rep, auto_start, round_opts,
+            )
+            .await?;
             Ok(json!({
                 "success": true,
                 "detail": detail,
@@ -1226,6 +1258,7 @@ async fn save_draft_internal(
                     sql_model: parsed.sql_model.as_deref(),
                     interface_spec: parsed.interface_spec.as_deref(),
                     prompt_overrides: parsed.prompt_overrides.as_ref(),
+                    lead_agent_id: parsed.lead_agent_id.as_deref(),
                 },
             )?;
             if parsed.execution_plan.is_some() || parsed.sql_schema_draft.is_some() {
@@ -1250,8 +1283,21 @@ async fn save_draft_internal(
                     );
                 }
             }
-            load_run_detail_conn(&s.conn, &parsed.run_id, 0)?
-                .ok_or_else(|| "更新后读取任务失败".to_string())
+            let detail = load_run_detail_conn(&s.conn, &parsed.run_id, 0)?
+                .ok_or_else(|| "更新后读取任务失败".to_string())?;
+            if !detail.run.sql_session_id.trim().is_empty() {
+                let _ = zap_neural_memory::bind_session_neural_agent(
+                    &detail.run.sql_session_id,
+                    &detail.run.sql_agent_id,
+                );
+            }
+            for t in &detail.tasks {
+                if !t.session_id.trim().is_empty() {
+                    let _ =
+                        zap_neural_memory::bind_session_neural_agent(&t.session_id, &t.agent_id);
+                }
+            }
+            Ok(detail)
         })
     })
     .await

@@ -52,6 +52,20 @@ test('mobile composer integrates media upload and action controls into a single 
   assert.match(css, /padding:\s*6px 8px max\(8px, env\(safe-area-inset-bottom\)\);/);
 });
 
+test('composer footer renders ModelSelector upward immediately before ModeSelector instead of top header portal', () => {
+  const chat = readFileSync(join(root, 'src/components/Chat.tsx'), 'utf8');
+  const app = readFileSync(join(root, 'src/app.tsx'), 'utf8');
+  const actionsIdx = chat.indexOf('class="input-footer-actions"');
+  const modelIdx = chat.indexOf('<ModelSelector', actionsIdx);
+  const modeIdx = chat.indexOf('<ModeSelector', actionsIdx);
+
+  assert.ok(actionsIdx >= 0 && modelIdx > actionsIdx && modeIdx > modelIdx);
+  const modelBlock = chat.slice(modelIdx, modeIdx);
+  assert.match(modelBlock, /direction="up"/);
+  assert.doesNotMatch(chat, /topModelChrome|top-nav-model-slot/);
+  assert.doesNotMatch(app, /topModelSlot|top-nav-model-slot/);
+});
+
 test('mobile keyboard keeps the composer against the IME without a dead gap', () => {
   const html = readFileSync(join(root, 'index.html'), 'utf8');
   const css = readFileSync(join(root, 'src/styles/app.css'), 'utf8');

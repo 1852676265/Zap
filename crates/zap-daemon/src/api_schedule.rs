@@ -698,6 +698,7 @@ async fn dispatch_schedule_task_inner(
         extra_system_append: None,
         session_title: Some(session_title),
         is_scheduled: true,
+        is_team: false,
     };
 
     let admitted = admit_chat_turn(state, chat_req, ChatAdmissionMode::RejectIfBusy, None)

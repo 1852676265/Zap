@@ -9,6 +9,41 @@ export interface SessionLike {
   // same-project check: `working_dir` is a mutable field the daemon can
   // restamp, whereas the bucket a session lives in is fixed.
   project_hash?: string;
+  origin?: string | null;
+}
+
+/** 识别 Agent Teams 子会话 ID（`team_<run_id>_<member_or_role>...`），用于兼容升级前存量会话。 */
+export function isTeamSessionId(id: string | null | undefined): boolean {
+  const trimmed = (id ?? '').trim();
+  if (!trimmed.startsWith('team_')) return false;
+  const rest = trimmed.slice('team_'.length);
+  return rest.includes('_') && !rest.endsWith('_');
+}
+
+/** 判断会话是否应从左侧主列表直接过滤隐藏（团队子会话 / task 子 Agent 会话）。 */
+export function isHiddenTeamSession(
+  session: { id?: string | null; origin?: string | null } | null | undefined,
+): boolean {
+  if (!session) return false;
+  if (session.origin === 'team' || session.origin === 'subagent') return true;
+  return isTeamSessionId(session.id);
+}
+
+/** 过滤掉主侧边栏需直接隐藏的团队子会话。 */
+export function filterVisibleSidebarSessions<T extends { id?: string | null; origin?: string | null }>(
+  list: T[],
+): T[] {
+  if (list.length === 0) return list;
+  let changed = false;
+  const out: T[] = [];
+  for (const item of list) {
+    if (isHiddenTeamSession(item)) {
+      changed = true;
+      continue;
+    }
+    out.push(item);
+  }
+  return changed ? out : list;
 }
 
 const normDir = (p: string): string => (p || '').replace(/\/+$/, '');

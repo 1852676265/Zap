@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   FOLDED_SESSION_LIMIT,
+  filterVisibleSidebarSessions,
   foldProjectSessions,
+  isHiddenTeamSession,
+  isTeamSessionId,
   mergeOptimisticSession,
   mergeOptimisticSessions,
   mergeProjectSessions,
@@ -337,4 +340,34 @@ test('重复 id 不占用折叠名额，5 条可见行去重后仍尽量填满',
   assert.deepEqual(folded.visible.map((row) => row.id), ['a', 'b', 'c', 'd', 'e']);
   assert.equal(folded.total, 6);
   assert.equal(folded.canToggle, true);
+});
+
+test('isTeamSessionId 与 isHiddenTeamSession 准确识别新建与历史团队子会话', () => {
+  assert.equal(isTeamSessionId('team_run-19ab-cd1234_tsk-19ab-ef5678-0123456789abcdef'), true);
+  assert.equal(isTeamSessionId('team_run-19ab-cd1234_sql_designer-0123456789abcdef'), true);
+  assert.equal(isTeamSessionId('11111111-1111-4111-8111-111111111111'), false);
+  assert.equal(isTeamSessionId('team_single'), false);
+  assert.equal(isTeamSessionId('team_trailing_'), false);
+
+  assert.equal(isHiddenTeamSession({ id: 'uuid-1', origin: 'team' }), true);
+  assert.equal(isHiddenTeamSession({ id: 'uuid-2', origin: 'subagent' }), true);
+  assert.equal(
+    isHiddenTeamSession({ id: 'team_run-1_tsk-2-abcdef0123456789', origin: 'protocol' }),
+    true,
+  );
+  assert.equal(isHiddenTeamSession({ id: 'uuid-3', origin: 'manual' }), false);
+  assert.equal(isHiddenTeamSession({ id: 'uuid-4', origin: 'scheduled' }), false);
+  assert.equal(isHiddenTeamSession({ id: 'uuid-5', origin: 'protocol' }), false);
+});
+
+test('filterVisibleSidebarSessions 直接过滤隐藏团队子会话并保留普通与定时会话', () => {
+  const rows = [
+    { id: 'uuid-manual', origin: 'manual' },
+    { id: 'uuid-sched', origin: 'scheduled' },
+    { id: 'uuid-team', origin: 'team' },
+    { id: 'team_run-1_tsk-2-abcdef0123456789', origin: 'protocol' },
+    { id: 'team_run-1_sql_designer-abcdef0123456789', origin: 'manual' },
+  ];
+  const visible = filterVisibleSidebarSessions(rows);
+  assert.deepEqual(visible.map((r) => r.id), ['uuid-manual', 'uuid-sched']);
 });
